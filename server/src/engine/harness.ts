@@ -3,41 +3,45 @@
  * runtime engine using mock providers.
  *
  * Run with:
+ *   npm run harness          (from server/)
  *   npx tsx src/engine/harness.ts
- * Or add to package.json scripts:
- *   "harness": "tsx src/engine/harness.ts"
  */
 
 import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
+
 import type { InstanceState } from "@prisma/client";
-import { listInstancesByVersion, updateInstanceState, findInstanceById } from "../db/index.js";
+import {
+  listInstancesByVersion,
+  updateInstanceState,
+  findInstanceById,
+  listEventsByInstance,
+  listMessagesByInstance,
+} from "../db/index.js";
 import { WorkflowRuntime } from "./runtime.js";
 import { MockEmailProvider, MockAgentProvider } from "./providers.js";
 
 // ---------------------------------------------------------------------------
-// Logging helpers
+// Trace collector
 // ---------------------------------------------------------------------------
 
-function log(label: string, instanceId: string, state: string, node: string | null, msg: string) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] [${label}] instance=${instanceId.slice(-8)} state=${state} node=${node ?? "none"} | ${msg}`);
-}
-
-function separator(title: string) {
-  console.log(`\n${"=".repeat(72)}`);
-  console.log(`  ${title}`);
-  console.log(`${"=".repeat(72)}\n`);
+interface PathResult {
+  label: string;
+  title: string;
+  trace: InstanceState[];
+  finalState: InstanceState;
+  eventsWritten: number;
+  messagesWritten: number;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function resetInstance(instanceId: string, nodeId = "node_import"): Promise<void> {
+async function resetInstance(instanceId: string): Promise<void> {
   await updateInstanceState(instanceId, {
     currentState: "ENROLLED",
-    currentNodeId: nodeId,
+    currentNodeId: "node_import",
     followUpCount: 0,
     negotiationRound: 0,
     dueAt: null,
@@ -45,160 +49,178 @@ async function resetInstance(instanceId: string, nodeId = "node_import"): Promis
   });
 }
 
-async function getState(instanceId: string): Promise<{ state: InstanceState; nodeId: string | null }> {
+async function currentState(instanceId: string): Promise<InstanceState> {
   const inst = await findInstanceById(instanceId);
   if (!inst) throw new Error(`Instance not found: ${instanceId}`);
-  return { state: inst.currentState, nodeId: inst.currentNodeId ?? null };
+  return inst.currentState;
+}
+
+// Record a state into the trace only when it differs from the last entry.
+function record(trace: InstanceState[], state: InstanceState): void {
+  if (trace[trace.length - 1] !== state) trace.push(state);
 }
 
 // ---------------------------------------------------------------------------
-// Path A: ACCEPTED (happy path with negotiation)
+// Path A: Happy path — ACCEPTED via negotiation
 // ---------------------------------------------------------------------------
 
-async function runHappyPath(instance: { id: string }, runtime: WorkflowRuntime): Promise<void> {
-  separator("Path A — Happy Path (ENROLLED → ACCEPTED via negotiation)");
+async function runHappyPath(instanceId: string): Promise<PathResult> {
+  const label = "A";
+  const title = "Happy Path";
+  const trace: InstanceState[] = [];
 
-  const { id } = instance;
-  await resetInstance(id);
-  log("A", id, "ENROLLED", "node_import", "Reset to ENROLLED. Starting runUntilWaiting...");
+  const runtime = new WorkflowRuntime(
+    new MockEmailProvider(),
+    new MockAgentProvider({
+      replyIntent: "POSITIVE",
+      negotiationOutcome: "accept",
+      negotiationCounterUntilRound: 1, // counter round 0, accept round 1
+    }),
+  );
 
-  // Run import → outreach → follow-up entry (AWAITING_REPLY)
-  let state = await runtime.runUntilWaiting(id);
-  let snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, `runUntilWaiting stopped at ${state}`);
+  const eventsBefore = (await listEventsByInstance(instanceId)).length;
+  const messagesBefore = (await listMessagesByInstance(instanceId)).length;
 
-  console.log("  -> Simulating time passing (follow-up due)...");
+  await resetInstance(instanceId);
+  record(trace, "ENROLLED");
 
-  // Trigger a follow-up: AWAITING_REPLY → FOLLOWED_UP
-  let ctx = await runtime.stepInstance(id);
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, "Follow-up step 1 complete (FOLLOWED_UP)");
+  // import → outreach → follow-up entry → AWAITING_REPLY
+  await runtime.runUntilWaiting(instanceId);
+  record(trace, await currentState(instanceId));
 
-  // Reschedule: FOLLOWED_UP → AWAITING_REPLY
-  ctx = await runtime.stepInstance(id);
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, "Follow-up reschedule complete (AWAITING_REPLY)");
+  // Trigger one follow-up cycle: AWAITING_REPLY → FOLLOWED_UP → AWAITING_REPLY
+  await runtime.stepInstance(instanceId);
+  record(trace, await currentState(instanceId));
+  await runtime.stepInstance(instanceId);
+  record(trace, await currentState(instanceId));
 
-  console.log("  -> Injecting positive reply...");
-
-  // Inject inbound reply
-  await runtime.injectReply(id, {
+  // Inject positive reply → REPLY_RECEIVED
+  await runtime.injectReply(instanceId, {
     subject: "Re: Collaboration opportunity",
     body: "Yes I'm interested! Let's discuss terms.",
-    threadId: `mock-thread-${id}`,
   });
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, "Reply injected → REPLY_RECEIVED");
+  record(trace, await currentState(instanceId));
 
-  // Run reply detection → NEGOTIATING
-  state = await runtime.runUntilWaiting(id);
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, `After reply detection: ${state}`);
+  // Reply detection → NEGOTIATING
+  await runtime.runUntilWaiting(instanceId);
+  record(trace, await currentState(instanceId));
 
-  console.log("  -> Creator is negotiating. Simulating 2-round negotiation (counter then accept)...");
+  // Negotiation: round 0 counter → round 1 accept → ACCEPTED
+  await runtime.stepInstance(instanceId);
+  record(trace, await currentState(instanceId));
+  await runtime.stepInstance(instanceId);
+  record(trace, await currentState(instanceId));
 
-  // Round 1: counter
-  ctx = await runtime.stepInstance(id);
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, `Negotiation round 1: ${snap.state}`);
+  const finalState = await currentState(instanceId);
+  const eventsAfter = (await listEventsByInstance(instanceId)).length;
+  const messagesAfter = (await listMessagesByInstance(instanceId)).length;
 
-  // Round 2: accept
-  ctx = await runtime.stepInstance(id);
-  snap = await getState(id);
-  log("A", id, snap.state, snap.nodeId, `Negotiation round 2: ${snap.state}`);
-
-  if (snap.state === "ACCEPTED") {
-    console.log("\n  *** Path A complete: creator ACCEPTED the deal! ***\n");
-  } else {
-    console.log(`\n  *** Path A finished with state: ${snap.state} ***\n`);
-  }
-  void ctx;
+  return {
+    label, title, trace, finalState,
+    eventsWritten: eventsAfter - eventsBefore,
+    messagesWritten: messagesAfter - messagesBefore,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Path B: OPT_OUT
+// Path B: Opt-out
 // ---------------------------------------------------------------------------
 
-async function runOptOutPath(instance: { id: string }): Promise<void> {
-  separator("Path B — Opt-Out Path (ENROLLED → OPTED_OUT)");
+async function runOptOutPath(instanceId: string): Promise<PathResult> {
+  const label = "B";
+  const title = "Opt-Out";
+  const trace: InstanceState[] = [];
 
-  const { id } = instance;
+  const runtime = new WorkflowRuntime(
+    new MockEmailProvider(),
+    new MockAgentProvider({ replyIntent: "OPT_OUT" }),
+  );
 
-  // Use an agent that will classify as OPT_OUT
-  const optOutAgent = new MockAgentProvider({ replyIntent: "OPT_OUT" });
-  const optOutRuntime = new WorkflowRuntime(new MockEmailProvider(), optOutAgent);
+  const eventsBefore = (await listEventsByInstance(instanceId)).length;
+  const messagesBefore = (await listMessagesByInstance(instanceId)).length;
 
-  await resetInstance(id);
-  log("B", id, "ENROLLED", "node_import", "Reset to ENROLLED. Starting runUntilWaiting...");
+  await resetInstance(instanceId);
+  record(trace, "ENROLLED");
 
-  // Run to AWAITING_REPLY
-  let state = await optOutRuntime.runUntilWaiting(id);
-  let snap = await getState(id);
-  log("B", id, snap.state, snap.nodeId, `Reached ${state}. Injecting opt-out reply...`);
+  await runtime.runUntilWaiting(instanceId);
+  record(trace, await currentState(instanceId));
 
-  // Inject opt-out reply
-  await optOutRuntime.injectReply(id, {
+  await runtime.injectReply(instanceId, {
     subject: "Re: Collaboration opportunity",
     body: "Please remove me from your list. Not interested.",
   });
-  snap = await getState(id);
-  log("B", id, snap.state, snap.nodeId, "Reply injected → REPLY_RECEIVED");
+  record(trace, await currentState(instanceId));
 
-  // Run reply detection → OPTED_OUT
-  state = await optOutRuntime.runUntilWaiting(id);
-  snap = await getState(id);
-  log("B", id, snap.state, snap.nodeId, `Final state: ${state}`);
+  await runtime.runUntilWaiting(instanceId);
+  record(trace, await currentState(instanceId));
 
-  if (snap.state === "OPTED_OUT") {
-    console.log("\n  *** Path B complete: creator OPTED_OUT as expected. ***\n");
-  } else {
-    console.log(`\n  *** Path B finished with unexpected state: ${snap.state} ***\n`);
-  }
+  const finalState = await currentState(instanceId);
+  const eventsAfter = (await listEventsByInstance(instanceId)).length;
+  const messagesAfter = (await listMessagesByInstance(instanceId)).length;
+
+  return {
+    label, title, trace, finalState,
+    eventsWritten: eventsAfter - eventsBefore,
+    messagesWritten: messagesAfter - messagesBefore,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Path C: NO_RESPONSE (exhaust all follow-ups)
+// Path C: No response — exhaust all follow-ups
 // ---------------------------------------------------------------------------
 
-async function runNoResponsePath(instance: { id: string }): Promise<void> {
-  separator("Path C — No Response Path (ENROLLED → NO_RESPONSE after max follow-ups)");
+async function runNoResponsePath(instanceId: string): Promise<PathResult> {
+  const label = "C";
+  const title = "No Response";
+  const trace: InstanceState[] = [];
 
-  const { id } = instance;
-  const silentRuntime = new WorkflowRuntime(new MockEmailProvider(), new MockAgentProvider());
+  const runtime = new WorkflowRuntime(new MockEmailProvider(), new MockAgentProvider());
 
-  await resetInstance(id);
-  log("C", id, "ENROLLED", "node_import", "Reset to ENROLLED. Starting runUntilWaiting...");
+  const eventsBefore = (await listEventsByInstance(instanceId)).length;
+  const messagesBefore = (await listMessagesByInstance(instanceId)).length;
 
-  // Run to AWAITING_REPLY
-  let state = await silentRuntime.runUntilWaiting(id);
-  let snap = await getState(id);
-  log("C", id, snap.state, snap.nodeId, `Reached ${state}. Simulating maxCount follow-ups...`);
+  await resetInstance(instanceId);
+  record(trace, "ENROLLED");
 
-  // The follow-up node config has maxCount=3.
-  // We need to step through: 3x (AWAITING_REPLY → FOLLOWED_UP → AWAITING_REPLY)
-  // then one final step AWAITING_REPLY → NO_RESPONSE
+  await runtime.runUntilWaiting(instanceId);
+  record(trace, await currentState(instanceId));
+
+  // Step through follow-up cycles until NO_RESPONSE
   let iteration = 0;
-  const maxIterations = 20; // safety guard
+  const maxIterations = 20;
+  let state = await currentState(instanceId);
 
-  while (snap.state !== "NO_RESPONSE" && !["ACCEPTED", "REJECTED", "OPTED_OUT"].includes(snap.state)) {
-    if (iteration++ >= maxIterations) {
-      console.log("  (safety limit reached)");
-      break;
-    }
-
-    const before = snap.state;
-    await silentRuntime.stepInstance(id);
-    snap = await getState(id);
-    log("C", id, snap.state, snap.nodeId, `Step ${iteration}: ${before} → ${snap.state}`);
-
-    // No reply injected — keep stepping through follow-up cycle
+  while (state !== "NO_RESPONSE" && iteration++ < maxIterations) {
+    await runtime.stepInstance(instanceId);
+    state = await currentState(instanceId);
+    record(trace, state);
   }
 
-  if (snap.state === "NO_RESPONSE") {
-    console.log("\n  *** Path C complete: creator hit NO_RESPONSE after max follow-ups. ***\n");
-  } else {
-    console.log(`\n  *** Path C finished with state: ${snap.state} ***\n`);
+  const finalState = await currentState(instanceId);
+  const eventsAfter = (await listEventsByInstance(instanceId)).length;
+  const messagesAfter = (await listMessagesByInstance(instanceId)).length;
+
+  return {
+    label, title, trace, finalState,
+    eventsWritten: eventsAfter - eventsBefore,
+    messagesWritten: messagesAfter - messagesBefore,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Output formatter
+// ---------------------------------------------------------------------------
+
+function printResult(result: PathResult): void {
+  console.log(`Path ${result.label} — ${result.title}`);
+  for (const [i, state] of result.trace.entries()) {
+    console.log(i === 0 ? `  ${state}` : `  → ${state}`);
   }
+  console.log();
+  console.log(`  Final State:      ${result.finalState}`);
+  console.log(`  Events Written:   ${result.eventsWritten}`);
+  console.log(`  Messages Written: ${result.messagesWritten}`);
+  console.log();
 }
 
 // ---------------------------------------------------------------------------
@@ -206,16 +228,10 @@ async function runNoResponsePath(instance: { id: string }): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  console.log("\nPluvus Workflow Runtime — Phase 3 Test Harness");
-  console.log(`Run started at: ${new Date().toISOString()}\n`);
-
-  // Load seeded instances from the DB
   const instances = await listInstancesByVersion("wfv_seed_v1");
 
   if (instances.length < 3) {
-    console.error(
-      `Need at least 3 seeded instances, found ${instances.length}. Run: npm run db:seed`,
-    );
+    console.error(`Need at least 3 seeded instances, found ${instances.length}. Run: npm run db:seed`);
     process.exit(1);
   }
 
@@ -225,25 +241,18 @@ async function main() {
     (typeof instances)[number],
   ];
 
-  // Path A — happy path with negotiation (counter once then accept)
-  const happyRuntime = new WorkflowRuntime(
-    new MockEmailProvider(),
-    new MockAgentProvider({
-      replyIntent: "POSITIVE",
-      negotiationOutcome: "accept",
-      negotiationCounterUntilRound: 1, // counter on round 0, accept on round 1
-    }),
-  );
-  await runHappyPath(inst0, happyRuntime);
+  console.log("\nPluvus Workflow Runtime — Phase 3 Harness\n");
 
-  // Path B — opt-out
-  await runOptOutPath(inst1);
+  const results = [
+    await runHappyPath(inst0.id),
+    await runOptOutPath(inst1.id),
+    await runNoResponsePath(inst2.id),
+  ];
 
-  // Path C — no response (exhaust all follow-ups)
-  await runNoResponsePath(inst2);
+  for (const result of results) {
+    printResult(result);
+  }
 
-  separator("Harness Complete");
-  console.log("All three journeys finished successfully.\n");
   process.exit(0);
 }
 
