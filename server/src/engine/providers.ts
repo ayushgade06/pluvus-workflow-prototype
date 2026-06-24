@@ -1,5 +1,7 @@
 import type { Creator, ReplyIntent } from "@prisma/client";
 import type { EmailDraft, ClassifyResult, NegotiateResult, NegotiateOutcome } from "./types.js";
+import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
+import type { NegotiationTerm } from "../adapters/negotiation/types.js";
 
 // ---------------------------------------------------------------------------
 // IEmailProvider
@@ -69,10 +71,22 @@ export class MockEmailProvider implements IEmailProvider {
 export interface IAgentProvider {
   classify(body: string, intent?: string): Promise<ClassifyResult>;
   negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult>;
+  /**
+   * Generate email copy via the draft agent.
+   * Phase 8: executors call this instead of the raw template when
+   * NEGOTIATION_PROVIDER=langgraph (or mock with richer copy).
+   * Returns null to signal "use the template fallback" (so old harnesses work).
+   */
+  draftEmail(
+    purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance",
+    creator: Creator,
+    config: Record<string, unknown>,
+    extra?: { round?: number; proposedTerms?: NegotiationTerm },
+  ): Promise<EmailDraft | null>;
 }
 
 // ---------------------------------------------------------------------------
-// MockAgentProvider
+// MockAgentOptions
 // ---------------------------------------------------------------------------
 
 export interface MockAgentOptions {
@@ -81,15 +95,23 @@ export interface MockAgentOptions {
   negotiationCounterUntilRound?: number;
 }
 
+// ---------------------------------------------------------------------------
+// MockAgentProvider
+// ---------------------------------------------------------------------------
+
 export class MockAgentProvider implements IAgentProvider {
   private readonly replyIntent: ReplyIntent;
   private readonly negotiationOutcome: NegotiateOutcome;
   private readonly negotiationCounterUntilRound: number;
+  private readonly _negotiationProvider: MockNegotiationProvider;
 
   constructor(opts: MockAgentOptions = {}) {
     this.replyIntent = opts.replyIntent ?? "POSITIVE";
     this.negotiationOutcome = opts.negotiationOutcome ?? "accept";
     this.negotiationCounterUntilRound = opts.negotiationCounterUntilRound ?? 0;
+    this._negotiationProvider = new MockNegotiationProvider({
+      counterUntilRound: this.negotiationCounterUntilRound,
+    });
   }
 
   async classify(_body: string, _intent?: string): Promise<ClassifyResult> {
@@ -99,32 +121,44 @@ export class MockAgentProvider implements IAgentProvider {
     };
   }
 
-  async negotiate(round: number, _config: Record<string, unknown>): Promise<NegotiateResult> {
-    if (round < this.negotiationCounterUntilRound) {
-      return {
-        outcome: "counter",
-        message: `Thank you for your interest! We'd like to propose a slightly adjusted rate that better aligns with our campaign budget. Here's our counter-offer for round ${round + 1}.`,
-      };
-    }
+  async negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult> {
+    const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
+    const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
+    const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
 
-    switch (this.negotiationOutcome) {
-      case "accept":
-        return {
-          outcome: "accept",
-          message:
-            "We're pleased to confirm the collaboration terms. Welcome to the campaign — our team will follow up with the formal agreement.",
-        };
-      case "reject":
-        return {
-          outcome: "reject",
-          message:
-            "Thank you for considering the partnership. Unfortunately we're unable to reach mutually agreeable terms at this time. We hope to work together in the future.",
-        };
-      case "counter":
+    const resp = await this._negotiationProvider.negotiate({
+      creatorReply: "",
+      currentOffer: termFloor,
+      round,
+      maxRounds,
+      negotiationHistory: [],
+      campaignConstraints: { termFloor, termCeiling },
+    });
+
+    // Map NegotiationAction → legacy NegotiateOutcome for backwards compat.
+    // ESCALATE is treated as reject in the legacy path (new executors use the
+    // NegotiationProvider directly and handle ESCALATE → MANUAL_REVIEW).
+    switch (resp.action) {
+      case "ACCEPT":
+        return { outcome: "accept", message: resp.responseDraft ?? "Partnership confirmed." };
+      case "COUNTER":
         return {
           outcome: "counter",
-          message: `We appreciate your continued engagement. Here's our revised offer for round ${round + 1}.`,
+          message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
         };
+      case "REJECT":
+        return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
+      case "ESCALATE":
+        return { outcome: "escalate", message: resp.reasoning ?? "Escalated for human review." };
     }
+  }
+
+  async draftEmail(
+    _purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance",
+    _creator: Creator,
+    _config: Record<string, unknown>,
+  ): Promise<EmailDraft | null> {
+    // Mock returns null — executors fall back to IEmailProvider.draft() template.
+    return null;
   }
 }

@@ -2,10 +2,6 @@ import { createMessage } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 
-// Resolve the interval (in seconds) for a given follow-up attempt.
-// Config stores `intervals` (array of days) and `intervalUnit` ("days"|"seconds").
-// In test/harness mode pass intervalUnit:"seconds" to use tiny values without
-// modifying production config.
 function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: number): number {
   const intervals = Array.isArray(config["intervals"]) ? config["intervals"] as number[] : [3, 5, 7];
   const unit = typeof config["intervalUnit"] === "string" ? config["intervalUnit"] : "days";
@@ -17,14 +13,13 @@ function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: numbe
 export async function executeFollowUp(
   ctx: ExecutionContext,
   email: IEmailProvider,
-  _agent: IAgentProvider,
+  agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance, node, creator } = ctx;
   const config = node.config;
   const maxCount = typeof config["maxCount"] === "number" ? config["maxCount"] : 3;
 
-  // Case 1: Just sent outreach, entering the first waiting period.
-  // Set dueAt so the scheduler knows when to fire the first follow-up.
+  // Case 1: Just sent outreach — enter the first waiting period.
   if (instance.currentState === "OUTREACH_SENT") {
     const dueAt = new Date(Date.now() + resolveIntervalMs(config, 0));
     return {
@@ -36,8 +31,7 @@ export async function executeFollowUp(
     };
   }
 
-  // Case 2: Rescheduled after sending a follow-up (FOLLOWED_UP → AWAITING_REPLY).
-  // Set dueAt for the next follow-up window.
+  // Case 2: Rescheduled after sending a follow-up.
   if (instance.currentState === "FOLLOWED_UP") {
     const dueAt = new Date(Date.now() + resolveIntervalMs(config, instance.followUpCount));
     return {
@@ -49,24 +43,26 @@ export async function executeFollowUp(
     };
   }
 
-  // Case 3: AWAITING_REPLY — a follow-up is due (triggered by scheduler)
+  // Case 3: AWAITING_REPLY — a follow-up is due (triggered by scheduler).
   if (instance.currentState === "AWAITING_REPLY") {
     if (instance.followUpCount >= maxCount) {
-      // Max follow-ups reached — no response
       return {
         nextState: "NO_RESPONSE",
         nextNodeId: null,
         completedAt: new Date(),
-        dueAt: null, // clear the schedule
+        dueAt: null,
         eventType: "NODE_COMPLETED",
         eventPayload: { reason: "max_follow_ups_reached", followUpCount: instance.followUpCount },
       };
     }
 
-    // Send follow-up email
     const bodyTemplate =
       typeof config["bodyTemplate"] === "string" ? config["bodyTemplate"] : "";
-    const draft = await email.draft(creator, bodyTemplate, config);
+
+    // Try AI-generated follow-up copy; fall back to template-based email.draft().
+    const followUpRound = instance.followUpCount + 1;
+    const aiDraft = await agent.draftEmail("follow_up", creator, config, { round: followUpRound });
+    const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
     const { messageId, threadId } = await email.send(draft, creator);
 
     await createMessage({
@@ -85,9 +81,14 @@ export async function executeFollowUp(
       nextState: "FOLLOWED_UP",
       nextNodeId: node.id,
       followUpCount: newFollowUpCount,
-      dueAt: null, // cleared — runtime will set new dueAt when transitioning back to AWAITING_REPLY
+      dueAt: null,
       eventType: "FOLLOW_UP_DUE",
-      eventPayload: { followUpCount: newFollowUpCount, messageId, threadId },
+      eventPayload: {
+        followUpCount: newFollowUpCount,
+        messageId,
+        threadId,
+        aiGenerated: aiDraft !== null,
+      },
     };
   }
 

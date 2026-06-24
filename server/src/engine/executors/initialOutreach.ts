@@ -5,7 +5,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 export async function executeInitialOutreach(
   ctx: ExecutionContext,
   email: IEmailProvider,
-  _agent: IAgentProvider,
+  agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance, node, nodeGraph, creator } = ctx;
 
@@ -18,11 +18,11 @@ export async function executeInitialOutreach(
   const config = node.config;
   const bodyTemplate = typeof config["bodyTemplate"] === "string" ? config["bodyTemplate"] : "";
 
-  // Draft and send the email via mock provider
-  const draft = await email.draft(creator, bodyTemplate, config);
+  // Try AI-generated draft first; fall back to template-based email.draft().
+  const aiDraft = await agent.draftEmail("initial_outreach", creator, config);
+  const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
   const { messageId, threadId } = await email.send(draft, creator);
 
-  // Persist outbound message record
   await createMessage({
     instance: { connect: { id: instance.id } },
     direction: "OUTBOUND",
@@ -33,13 +33,17 @@ export async function executeInitialOutreach(
     sentAt: new Date(),
   });
 
-  // Find the follow-up node (next by order)
   const nextNode = nodeGraph.find((n) => n.order === node.order + 1) ?? null;
 
   return {
     nextState: "OUTREACH_SENT",
     nextNodeId: nextNode?.id ?? null,
     eventType: "OUTREACH_DRAFTED",
-    eventPayload: { subject: draft.subject, messageId, threadId },
+    eventPayload: {
+      subject: draft.subject,
+      messageId,
+      threadId,
+      aiGenerated: aiDraft !== null,
+    },
   };
 }
