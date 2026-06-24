@@ -1,0 +1,255 @@
+// =============================================================================
+// Pluvus Workflow Prototype — Prisma Schema
+// Architecture ref: .claude/docs/system-architecture.md §6
+//
+// Design principles:
+//   - Definition models (Workflow, WorkflowVersion) are separated from
+//     execution models (ExecutionInstance, Message, Event).
+//   - WorkflowVersion is immutable once published. Node configs are stored
+//     as a JSON snapshot so instances stay pinned to the version they enrolled
+//     under, regardless of later edits to the Workflow.
+//   - ExecutionInstance is the unit of execution, scheduling, and audit.
+//   - Event is append-only. Never update or delete rows.
+//   - Message stores every inbound and outbound email tied to an instance,
+//     with fields for Nylas thread/message id correlation (Phase 6).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// The lifecycle state of a single creator running through a workflow.
+/// Source of truth: source-of-truth.md §6
+enum InstanceState {
+  ENROLLED
+  OUTREACH_SENT
+  AWAITING_REPLY
+  FOLLOWED_UP
+  REPLY_RECEIVED
+  NEGOTIATING
+  // Terminal states
+  ACCEPTED
+  REJECTED
+  OPTED_OUT
+  NO_RESPONSE
+}
+
+/// The node types that make up the in-scope linear workflow.
+/// Stored here so node snapshots inside WorkflowVersion.nodeGraph can be
+/// validated at the application layer without magic strings.
+enum NodeType {
+  IMPORT_CREATOR_LIST
+  INITIAL_OUTREACH
+  FOLLOW_UP
+  REPLY_DETECTION
+  NEGOTIATION
+  END
+}
+
+/// Direction of a message: sent by us (OUTBOUND) or received (INBOUND).
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+/// The classified intent of an inbound reply. Populated by the LangGraph
+/// classify operation (Phase 7). NULL until classification runs.
+enum ReplyIntent {
+  POSITIVE
+  NEGATIVE
+  QUESTION
+  OPT_OUT
+}
+
+/// Coarse category for Event log entries, used for filtering and replay.
+enum EventType {
+  // Trigger events
+  FOLLOW_UP_SCHEDULED
+  FOLLOW_UP_CANCELLED
+  FOLLOW_UP_DUE
+  INBOUND_REPLY_RECEIVED
+  // Transition events
+  STATE_TRANSITION
+  NODE_ENTERED
+  NODE_COMPLETED
+  // AI events
+  OUTREACH_DRAFTED
+  REPLY_CLASSIFIED
+  NEGOTIATION_TURN
+}
+
+/// Lifecycle of a Workflow definition.
+enum WorkflowStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+// ---------------------------------------------------------------------------
+// Definition models
+// ---------------------------------------------------------------------------
+
+/// A campaign definition. The logical container for a sequence of nodes.
+/// Editing a Workflow does not mutate existing WorkflowVersions.
+model Workflow {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  status      WorkflowStatus @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  versions WorkflowVersion[]
+}
+
+/// An immutable published snapshot of a Workflow.
+/// Node configurations, types, and ordering are captured in `nodeGraph`
+/// as a JSON array at publish time. Instances reference this record and
+/// never see post-publish edits to the parent Workflow.
+///
+/// nodeGraph shape (array of NodeSnapshot):
+///   [{ id, type, order, config: { ... node-specific fields ... } }]
+model WorkflowVersion {
+  id         String   @id @default(cuid())
+  workflowId String
+  version    Int
+  nodeGraph  Json
+  publishedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  workflow  Workflow            @relation(fields: [workflowId], references: [id])
+  instances ExecutionInstance[]
+
+  @@unique([workflowId, version])
+}
+
+// ---------------------------------------------------------------------------
+// Creator model
+// ---------------------------------------------------------------------------
+
+/// A mocked creator profile. In the prototype these are seeded rather than
+/// imported from a real source. In production this would come from the
+/// creator database.
+model Creator {
+  id       String  @id @default(cuid())
+  name     String
+  email    String  @unique
+  handle   String?
+  niche    String?
+  platform String?
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instances ExecutionInstance[]
+}
+
+// ---------------------------------------------------------------------------
+// Execution models
+// ---------------------------------------------------------------------------
+
+/// One Creator running through one WorkflowVersion.
+/// This is the unit of execution, scheduling, and audit.
+///
+/// Scheduling fields (used from Phase 5):
+///   followUpCount    — how many follow-ups have been sent; bounded by node config
+///   negotiationRound — how many negotiation turns have occurred; bounded by node config
+///   dueAt            — wall-clock time when the next scheduled action becomes due;
+///                      persisted alongside the BullMQ delayed job for audit + recovery
+///
+/// Navigation field:
+///   currentNodeId    — id of the node (within the version's nodeGraph) the instance
+///                      is currently executing; null before the first node runs
+///
+/// State field:
+///   currentState     — the InstanceState enum value; the state machine's single
+///                      source of truth for this instance
+model ExecutionInstance {
+  id                String        @id @default(cuid())
+  workflowVersionId String
+  creatorId         String
+
+  currentState     InstanceState @default(ENROLLED)
+  currentNodeId    String?
+  followUpCount    Int           @default(0)
+  negotiationRound Int           @default(0)
+  dueAt            DateTime?
+
+  enrolledAt   DateTime  @default(now())
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workflowVersion WorkflowVersion @relation(fields: [workflowVersionId], references: [id])
+  creator         Creator         @relation(fields: [creatorId], references: [id])
+  messages        Message[]
+  events          Event[]
+
+  @@unique([workflowVersionId, creatorId])
+}
+
+/// Every outbound and inbound email tied to an ExecutionInstance.
+///
+/// Email correlation fields (used from Phase 6):
+///   threadId          — Nylas thread id; all messages in a conversation share
+///                       the same threadId so replies can be matched to the
+///                       correct instance
+///   externalMessageId — Nylas message id for the individual message; used to
+///                       deduplicate webhook deliveries
+///
+/// Classification fields (populated by LangGraph classify, Phase 7):
+///   replyIntent       — classified intent of an inbound reply
+///   classifyConfidence — confidence score (0–1) from the classifier
+model Message {
+  id                  String           @id @default(cuid())
+  instanceId          String
+  direction           MessageDirection
+  subject             String?
+  body                String
+  threadId            String?
+  externalMessageId   String?          @unique
+  replyIntent         ReplyIntent?
+  classifyConfidence  Float?
+  sentAt              DateTime?
+  receivedAt          DateTime?
+
+  createdAt DateTime @default(now())
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([threadId])
+  @@index([instanceId])
+}
+
+/// Append-only audit log of every trigger and state transition for an
+/// ExecutionInstance. Never updated or deleted.
+///
+/// payload — free-form JSON capturing event-specific context:
+///   STATE_TRANSITION: { from, to }
+///   FOLLOW_UP_DUE:    { followUpCount, jobId }
+///   REPLY_CLASSIFIED: { intent, confidence, messageId }
+///   NEGOTIATION_TURN: { round, action }
+///   etc.
+model Event {
+  id         String    @id @default(cuid())
+  instanceId String
+  type       EventType
+  nodeId     String?
+  payload    Json?
+  occurredAt DateTime  @default(now())
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([instanceId, occurredAt])
+}
