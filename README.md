@@ -122,9 +122,50 @@ curl http://localhost:3001/health/db
 
 ---
 
-## Optional Infrastructure
+## Phase 4 — Event System (BullMQ Queues)
 
-Redis is not needed until Phase 4 (BullMQ queues).
+Redis is required from Phase 4 onward.
+
+```bash
+npm run infra:up    # start Postgres + Redis
+```
+
+### Run the Phase 4 harness
+
+```bash
+cd server
+npm run harness:phase4
+# Validates: node-execution job advances an instance
+#            inbound-email job triggers reply path
+#            re-delivered jobs are idempotent
+```
+
+### Queue API endpoints
+
+Once the server is running (`npm run dev:server`), the following endpoints are available:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/queues/health` | Live job counts for both queues |
+| GET | `/queues/jobs` | Recent waiting/active/failed jobs |
+| POST | `/queues/node-execution` | Manually enqueue a node-execution job |
+| POST | `/queues/inbound-email` | Inject a mocked inbound email event |
+
+**Example — advance an instance:**
+```bash
+curl -X POST http://localhost:3001/queues/node-execution \
+  -H "Content-Type: application/json" \
+  -d '{"instanceId": "<id>"}'
+```
+
+**Example — inject a reply:**
+```bash
+curl -X POST http://localhost:3001/queues/inbound-email \
+  -H "Content-Type: application/json" \
+  -d '{"instanceId": "<id>", "mockIntent": "POSITIVE"}'
+```
+
+### Infrastructure
 
 ```bash
 npm run infra:up    # start Postgres + Redis
@@ -149,7 +190,16 @@ pluvus-workflow-proto/
 │       ├── routes/           # HTTP routes (Phase 2+)
 │       ├── services/         # Business logic, no transitions (Phase 2+)
 │       ├── engine/           # State machine + node executors (Phase 3)
-│       ├── workers/          # BullMQ workers (Phase 4)
+│       ├── workers/          # BullMQ queues + workers (Phase 4) ✓
+│       │   ├── redis.ts          # Redis connection config
+│       │   ├── jobs.ts           # Job payload type definitions
+│       │   ├── queues.ts         # Queue singletons + enqueue helpers
+│       │   ├── nodeExecutionWorker.ts  # Advances instance one step
+│       │   ├── inboundEmailWorker.ts   # Processes inbound email reply
+│       │   ├── index.ts          # Worker startup + graceful shutdown
+│       │   └── harness.ts        # Phase 4 acceptance test harness
+│       ├── routes/           # HTTP routes (Phase 4+)
+│       │   └── queues.ts         # Queue health + diagnostics endpoints
 │       ├── scheduler/        # Delayed job management (Phase 5)
 │       └── adapters/         # Email + agent adapters (Phases 3–7)
 ├── agent/            # Python LangGraph service (Phase 1, 7–8)
@@ -171,8 +221,8 @@ pluvus-workflow-proto/
 |-------|-------------|--------|
 | 1 | Repository foundation (this) | ✓ done |
 | 2 | Data models (Prisma schema, seed) | ✓ done |
-| 3 | Workflow runtime engine (stubs) | pending |
-| 4 | Event system (BullMQ queues + workers) | pending |
+| 3 | Workflow runtime engine (stubs) | ✓ done |
+| 4 | Event system (BullMQ queues + workers) | ✓ done |
 | 5 | Scheduler (follow-up timers) | pending |
 | 6 | Nylas integration layer | pending |
 | 7 | Reply classification (LangGraph) | pending |

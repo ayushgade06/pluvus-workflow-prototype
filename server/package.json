@@ -14,14 +14,17 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
-    "harness": "cross-env NODE_ENV=production tsx --no-warnings src/engine/harness.ts"
+    "harness": "cross-env NODE_ENV=production tsx --no-warnings src/engine/harness.ts",
+    "harness:phase4": "cross-env NODE_ENV=production tsx --no-warnings src/workers/harness.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.0.0",
     "@types/pg": "^8.20.0",
+    "bullmq": "^5.79.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "ioredis": "^5.11.1",
     "pg": "^8.22.0"
   },
   "devDependencies": {

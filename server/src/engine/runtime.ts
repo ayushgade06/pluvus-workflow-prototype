@@ -149,6 +149,7 @@ export class WorkflowRuntime {
       subject: string;
       body: string;
       threadId?: string;
+      externalMessageId?: string;
     },
   ): Promise<void> {
     const instance = await findInstanceById(instanceId);
@@ -157,7 +158,10 @@ export class WorkflowRuntime {
     }
 
     const now = new Date();
-    const externalMessageId = `mock-inbound-${instanceId}-${Date.now()}`;
+    // Use caller-provided id when available so the inbound-email worker's
+    // idempotency check (findMessageByExternalId) can find the row it created.
+    const externalMessageId =
+      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
 
     // Create inbound message record
     await createMessage({
