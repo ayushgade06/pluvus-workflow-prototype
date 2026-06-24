@@ -75,7 +75,11 @@ async function handleNodeExecution(
   );
 
   try {
-    await runtime.stepInstance(instanceId);
+    await runtime.stepInstance(instanceId, {
+      source: "node-execution-worker",
+      worker: "node-execution",
+      queueJobId: job.id,
+    });
   } catch (err) {
     if (err instanceof StaleInstanceError) {
       console.log(`[node-execution] OCC conflict — ${err.message} (job ${job.id})`);

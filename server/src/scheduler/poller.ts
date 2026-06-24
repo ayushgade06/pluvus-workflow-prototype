@@ -1,5 +1,6 @@
 import { listDueInstances } from "../db/instances.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
+import { logTrace } from "../observability/logger.js";
 
 // ---------------------------------------------------------------------------
 // Due-instance poller
@@ -40,6 +41,14 @@ async function poll(): Promise<void> {
           triggerRef,
         });
         console.log(`[scheduler/poller] enqueued ${inst.id} (${inst.currentState})`);
+        logTrace("scheduler_enqueued", {
+          source: "scheduler",
+          instanceId: inst.id,
+          creatorId: inst.creatorId,
+          state: inst.currentState,
+          dueAt: inst.dueAt?.toISOString() ?? null,
+          triggerRef,
+        });
       } catch (err) {
         console.error(
           `[scheduler/poller] failed to enqueue ${inst.id}:`,

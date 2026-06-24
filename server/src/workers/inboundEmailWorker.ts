@@ -98,8 +98,14 @@ async function handleInboundEmail(
     }
 
     // stepInstance runs executeReplyDetection → classifies → transitions.
+    // Source is left to be inferred from the emitted event (REPLY_CLASSIFIED →
+    // classification-agent) so the timeline attributes the decision to the
+    // agent, not the worker; worker/job are still recorded for traceability.
     try {
-      await runtime.stepInstance(instanceId);
+      await runtime.stepInstance(instanceId, {
+        worker: "inbound-email",
+        queueJobId: job.id,
+      });
     } catch (err) {
       if (err instanceof StaleInstanceError) {
         console.log(`[inbound-email] OCC conflict on stepInstance — ${err.message} (job ${job.id})`);

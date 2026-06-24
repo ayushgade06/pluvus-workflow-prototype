@@ -1,4 +1,4 @@
-import type { InstanceState, Prisma } from "@prisma/client";
+import type { InstanceState, Prisma, EventType } from "@prisma/client";
 import {
   findInstanceById,
   findCreatorById,
@@ -11,6 +11,7 @@ import {
 import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot } from "./types.js";
+import { logTransition, type TransitionSource } from "../observability/logger.js";
 import {
   executeImportCreatorList,
   executeInitialOutreach,
@@ -88,9 +89,16 @@ export class WorkflowRuntime {
   // stepInstance
   // -------------------------------------------------------------------------
 
-  async stepInstance(instanceId: string): Promise<ExecutionContext> {
+  async stepInstance(
+    instanceId: string,
+    opts?: {
+      source?: TransitionSource;
+      worker?: string | undefined;
+      queueJobId?: string | undefined;
+    },
+  ): Promise<ExecutionContext> {
     const ctx = await this.loadContext(instanceId);
-    const { instance, node } = ctx;
+    const { instance, node, creator } = ctx;
 
     if (isTerminal(instance.currentState)) {
       throw new Error(
@@ -135,6 +143,12 @@ export class WorkflowRuntime {
 
     const now = new Date();
 
+    // Attribute the transition. Explicit caller source wins; otherwise infer
+    // the responsible agent from the domain event type so the timeline/logs can
+    // answer "who triggered this" even when the worker doesn't pass a source.
+    const source: TransitionSource =
+      opts?.source ?? inferSourceFromEvent(result.eventType);
+
     // Write domain event (OUTREACH_DRAFTED, FOLLOW_UP_DUE, etc.)
     await appendEvent({
       instance: { connect: { id: instanceId } },
@@ -150,8 +164,27 @@ export class WorkflowRuntime {
         instance: { connect: { id: instanceId } },
         type: "STATE_TRANSITION",
         nodeId: node.id,
-        payload: { from: instance.currentState, to: result.nextState } as Prisma.InputJsonValue,
+        // `source`, `worker`, `queueJobId` are persisted so end-to-end
+        // traceability (Phase 9 Part 10) does not depend on stdout.
+        payload: {
+          from: instance.currentState,
+          to: result.nextState,
+          source,
+          ...(opts?.worker ? { worker: opts.worker } : {}),
+          ...(opts?.queueJobId ? { queueJobId: opts.queueJobId } : {}),
+        } as Prisma.InputJsonValue,
         occurredAt: now,
+      });
+
+      logTransition({
+        instanceId,
+        creatorId: creator.id,
+        fromState: instance.currentState,
+        toState: result.nextState,
+        source,
+        worker: opts?.worker,
+        queueJobId: opts?.queueJobId,
+        nodeId: node.id,
       });
     }
 
@@ -213,13 +246,23 @@ export class WorkflowRuntime {
       occurredAt: now,
     });
 
-    // Write state transition event
+    // Write state transition event — attributed to the inbound email itself.
     await appendEvent({
       instance: { connect: { id: instanceId } },
       type: "STATE_TRANSITION",
       nodeId: instance.currentNodeId ?? null,
-      payload: { from: instance.currentState, to: "REPLY_RECEIVED" },
+      payload: { from: instance.currentState, to: "REPLY_RECEIVED", source: "inbound-email" },
       occurredAt: now,
+    });
+
+    logTransition({
+      instanceId,
+      creatorId: instance.creatorId,
+      fromState: instance.currentState,
+      toState: "REPLY_RECEIVED",
+      source: "inbound-email",
+      nodeId: instance.currentNodeId ?? null,
+      meta: { externalMessageId },
     });
   }
 
@@ -275,5 +318,25 @@ export class WorkflowRuntime {
       default:
         throw new Error(`Unknown node type: ${node.type}`);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// inferSourceFromEvent — attribute a transition to the responsible agent based
+// on the domain event the executor emitted. Used when the caller (worker)
+// doesn't pass an explicit source. The node-execution worker passes its own
+// source for plain advances; classification/negotiation transitions are
+// attributed here because the agent — not the worker — owns the decision.
+// ---------------------------------------------------------------------------
+
+function inferSourceFromEvent(eventType: EventType): TransitionSource {
+  switch (eventType) {
+    case "REPLY_CLASSIFIED":
+    case "MANUAL_REVIEW_FLAGGED":
+      return "classification-agent";
+    case "NEGOTIATION_TURN":
+      return "negotiation-agent";
+    default:
+      return "node-execution-worker";
   }
 }

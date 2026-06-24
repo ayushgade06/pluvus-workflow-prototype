@@ -3,6 +3,7 @@ import express from "express";
 import { prisma } from "./db/index.js";
 import queuesRouter from "./routes/queues.js";
 import webhooksRouter from "./routes/webhooks.js";
+import observabilityRouter from "./routes/observability.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
@@ -44,6 +45,12 @@ app.get("/health/db", async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.use("/queues", queuesRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Observability dashboard APIs (read-only)
+// ---------------------------------------------------------------------------
+
+app.use("/observability", observabilityRouter);
 
 startWorkers();
 startScheduler();
