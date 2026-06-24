@@ -4,7 +4,10 @@ import { listMessagesByInstance } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 
-// Inline helper — updates classification fields on a Message row.
+// Replies with confidence below this threshold are treated as UNKNOWN and
+// routed to MANUAL_REVIEW rather than auto-advanced.
+const LOW_CONFIDENCE_THRESHOLD = 0.70;
+
 async function updateMessageClassification(
   id: string,
   intent: ReplyIntent,
@@ -29,7 +32,6 @@ export async function executeReplyDetection(
     );
   }
 
-  // Find the most recent inbound message for this instance
   const messages = await listMessagesByInstance(instance.id);
   const inboundMessages = messages.filter((m) => m.direction === "INBOUND");
 
@@ -37,18 +39,22 @@ export async function executeReplyDetection(
     throw new Error(`No inbound messages found for instance ${instance.id}`);
   }
 
-  // The last inbound message is the one to classify
   const latestInbound = inboundMessages[inboundMessages.length - 1];
   if (!latestInbound) {
     throw new Error(`No inbound messages found for instance ${instance.id}`);
   }
 
-  const { intent, confidence } = await agent.classify(latestInbound.body);
+  let { intent, confidence } = await agent.classify(latestInbound.body);
 
-  // Persist classification on the message
+  // Enforce low-confidence threshold: if the classifier is not confident
+  // enough, override to UNKNOWN so the reply routes to MANUAL_REVIEW.
+  if (confidence < LOW_CONFIDENCE_THRESHOLD) {
+    intent = "UNKNOWN";
+  }
+
+  // Persist intent (which may now be UNKNOWN) + raw confidence score.
   await updateMessageClassification(latestInbound.id, intent, confidence);
 
-  // Find negotiation node (next by order)
   const negotiationNode = nodeGraph.find((n) => n.order === node.order + 1) ?? null;
 
   switch (intent) {
@@ -76,6 +82,16 @@ export async function executeReplyDetection(
         nextNodeId: null,
         completedAt: new Date(),
         eventType: "REPLY_CLASSIFIED",
+        eventPayload: { intent, confidence, messageId: latestInbound.id },
+      };
+
+    case "UNKNOWN":
+    default:
+      return {
+        nextState: "MANUAL_REVIEW",
+        nextNodeId: null,
+        completedAt: new Date(),
+        eventType: "MANUAL_REVIEW_FLAGGED",
         eventPayload: { intent, confidence, messageId: latestInbound.id },
       };
   }

@@ -3,7 +3,7 @@ import { redisConnection } from "./redis.js";
 import { QUEUE_NODE_EXECUTION } from "./queues.js";
 import type { NodeExecutionJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
-import { MockEmailProvider, MockAgentProvider } from "../engine/providers.js";
+import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { findInstanceById } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
@@ -27,12 +27,10 @@ import { acquireLock, releaseLock } from "../scheduler/lock.js";
 // ---------------------------------------------------------------------------
 // Runtime (shared across all jobs in this worker process)
 // ---------------------------------------------------------------------------
-// Phase 4 uses mock providers. Phases 6–8 swap these for real adapters.
+// Email provider is chosen by EMAIL_PROVIDER (mock | nylas) via the factory
+// (Phase 6). Agent provider stays mocked until Phase 7.
 
-const runtime = new WorkflowRuntime(
-  new MockEmailProvider(),
-  new MockAgentProvider(),
-);
+const runtime = new WorkflowRuntime(emailProvider(), agentProvider());
 
 // ---------------------------------------------------------------------------
 // Job handler

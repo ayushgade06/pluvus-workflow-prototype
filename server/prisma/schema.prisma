@@ -40,6 +40,8 @@ enum InstanceState {
   REJECTED
   OPTED_OUT
   NO_RESPONSE
+  // Requires human review (low-confidence classification, Phase 7)
+  MANUAL_REVIEW
 }
 
 /// The node types that make up the in-scope linear workflow.
@@ -62,11 +64,14 @@ enum MessageDirection {
 
 /// The classified intent of an inbound reply. Populated by the LangGraph
 /// classify operation (Phase 7). NULL until classification runs.
+/// UNKNOWN is set when the classifier confidence is below the threshold (0.70),
+/// routing the instance to MANUAL_REVIEW instead of auto-advancing.
 enum ReplyIntent {
   POSITIVE
   NEGATIVE
   QUESTION
   OPT_OUT
+  UNKNOWN
 }
 
 /// Coarse category for Event log entries, used for filtering and replay.
@@ -84,6 +89,7 @@ enum EventType {
   OUTREACH_DRAFTED
   REPLY_CLASSIFIED
   NEGOTIATION_TURN
+  MANUAL_REVIEW_FLAGGED
 }
 
 /// Lifecycle of a Workflow definition.

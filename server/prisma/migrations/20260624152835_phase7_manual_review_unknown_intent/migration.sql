@@ -1,0 +1,8 @@
+-- AlterEnum
+ALTER TYPE "EventType" ADD VALUE 'MANUAL_REVIEW_FLAGGED';
+
+-- AlterEnum
+ALTER TYPE "InstanceState" ADD VALUE 'MANUAL_REVIEW';
+
+-- AlterEnum
+ALTER TYPE "ReplyIntent" ADD VALUE 'UNKNOWN';

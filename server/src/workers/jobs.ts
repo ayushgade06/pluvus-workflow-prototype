@@ -40,7 +40,12 @@ export interface InboundEmailJobData {
   body: string;
   /**
    * Declared reply intent for Phase 4 (mocked).
-   * In Phase 7 this will be omitted and classification will happen in the worker.
+   * Phase 6: real Nylas-webhook-originated jobs OMIT this field — the webhook
+   * only ingests and correlates, it does not classify. The worker currently
+   * defaults the intent to POSITIVE when absent; Phase 7 replaces that default
+   * with a real LangGraph classify call. The field stays optional so both the
+   * mocked-injection path (queues route / harness) and the real webhook path
+   * share one job type.
    */
   mockIntent?: string;
 }

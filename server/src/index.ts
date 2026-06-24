@@ -2,11 +2,21 @@ import "dotenv/config";
 import express from "express";
 import { prisma } from "./db/index.js";
 import queuesRouter from "./routes/queues.js";
+import webhooksRouter from "./routes/webhooks.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
 const app = express();
 const port = process.env["PORT"] ? Number(process.env["PORT"]) : 3001;
+
+// ---------------------------------------------------------------------------
+// Webhooks (Phase 6) — MUST be mounted before express.json().
+// ---------------------------------------------------------------------------
+// Nylas signs the RAW request body; signature verification needs the exact
+// bytes, so this route uses a raw body parser. express.json() would consume the
+// stream and re-parsing would not reproduce the original bytes. GET (challenge)
+// carries no body, so the raw parser is a harmless no-op there.
+app.use("/webhooks", express.raw({ type: "*/*", limit: "2mb" }), webhooksRouter);
 
 app.use(express.json());
 

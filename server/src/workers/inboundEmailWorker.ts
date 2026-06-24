@@ -3,7 +3,7 @@ import { redisConnection } from "./redis.js";
 import { QUEUE_INBOUND_EMAIL } from "./queues.js";
 import type { InboundEmailJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
-import { MockEmailProvider, MockAgentProvider } from "../engine/providers.js";
+import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { findInstanceById, findMessageByExternalId } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
 import type { ReplyIntent } from "@prisma/client";
@@ -12,26 +12,26 @@ import { acquireLock, releaseLock } from "../scheduler/lock.js";
 // ---------------------------------------------------------------------------
 // InboundEmail worker
 // ---------------------------------------------------------------------------
-// Processes a mocked inbound email reply and advances the instance to
-// REPLY_RECEIVED, then immediately steps through Reply Detection so the
-// instance lands in NEGOTIATING / REJECTED / OPTED_OUT.
+// Processes an inbound email reply:
+//   1. Idempotency — skip if the externalMessageId was already processed.
+//   2. Lock — per-instance Redis lock (optimization; OCC is the guarantee).
+//   3. injectReply — persists the INBOUND Message row + transitions to REPLY_RECEIVED.
+//   4. stepInstance — runs executeReplyDetection, which calls the classification
+//      provider (mock keyword-based or real LangGraph) and routes to
+//      NEGOTIATING / REJECTED / OPTED_OUT / MANUAL_REVIEW.
 //
-// Idempotency guarantee:
-//   The job carries `externalMessageId`. Before creating a Message row the
-//   worker checks whether one already exists with that id. If it does, the
-//   job was already processed and exits early — no double transition.
-//
-// Instance-level serialization:
-//   jobId = `inbound|<externalMessageId>` — BullMQ ensures only one job with
-//   this id can be active or waiting at a time.
+// Phase 7: mockIntent (from harness / manual queue injections) still bypasses
+// the classification provider so existing harnesses are unaffected. When
+// mockIntent is absent (real Nylas webhook path), the agentProvider routes
+// through the ClassificationProvider abstraction.
 
-const VALID_INTENTS: ReplyIntent[] = ["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT"];
+const VALID_INTENTS: ReplyIntent[] = ["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN"];
 
-function resolveIntent(raw?: string): ReplyIntent {
+function resolveIntent(raw?: string): ReplyIntent | undefined {
   if (raw && (VALID_INTENTS as string[]).includes(raw)) {
     return raw as ReplyIntent;
   }
-  return "POSITIVE";
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,21 +73,20 @@ async function handleInboundEmail(
     return;
   }
 
-  // ── Transition to REPLY_RECEIVED ─────────────────────────────────────
+  // Phase 7: resolveIntent returns undefined when mockIntent is absent (real
+  // webhook path). agentProvider with no replyIntent routes through the
+  // ClassificationProvider (mock keyword-based or real LangGraph).
+  const intent = resolveIntent(mockIntent);
   console.log(
-    `[inbound-email] processing reply for ${instanceId} (state: ${instance.currentState}, intent: ${mockIntent ?? "POSITIVE"}) (job ${job.id})`,
+    `[inbound-email] processing reply for ${instanceId} (state: ${instance.currentState}, classification: ${intent ?? "real"}) (job ${job.id})`,
   );
 
-  const intent = resolveIntent(mockIntent);
   const runtime = new WorkflowRuntime(
-    new MockEmailProvider(),
-    new MockAgentProvider({ replyIntent: intent }),
+    emailProvider(),
+    agentProvider(intent !== undefined ? { replyIntent: intent } : {}),
   );
 
   try {
-    // injectReply persists the Message row using the job's externalMessageId as
-    // the anchor. The idempotency check above (findMessageByExternalId) can then
-    // find this row on any retry, making the guard effective.
     try {
       await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
     } catch (err) {
@@ -98,10 +97,7 @@ async function handleInboundEmail(
       throw err;
     }
 
-    // ── Step through Reply Detection ──────────────────────────────────────
-    // One stepInstance() call runs executeReplyDetection, which classifies
-    // the intent (via MockAgentProvider) and transitions to
-    // NEGOTIATING / REJECTED / OPTED_OUT.
+    // stepInstance runs executeReplyDetection → classifies → transitions.
     try {
       await runtime.stepInstance(instanceId);
     } catch (err) {
@@ -125,8 +121,6 @@ async function handleInboundEmail(
 // Worker factory
 // ---------------------------------------------------------------------------
 
-// Concurrency 5: Phase 5 instance-level Redis locks (lock.ts) protect
-// per-instance serialization; OCC guards against any residual races.
 const WORKER_CONCURRENCY = 5;
 
 export function createInboundEmailWorker(): Worker<InboundEmailJobData> {
