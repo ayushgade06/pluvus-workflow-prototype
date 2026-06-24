@@ -2,10 +2,11 @@ import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
 import { QUEUE_NODE_EXECUTION } from "./queues.js";
 import type { NodeExecutionJobData } from "./jobs.js";
-import { WorkflowRuntime } from "../engine/runtime.js";
+import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { MockEmailProvider, MockAgentProvider } from "../engine/providers.js";
 import { findInstanceById } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
+import { acquireLock, releaseLock } from "../scheduler/lock.js";
 
 // ---------------------------------------------------------------------------
 // NodeExecution worker
@@ -63,12 +64,29 @@ async function handleNodeExecution(
     return;
   }
 
+  // ── Acquire instance lock ────────────────────────────────────────────────
+  const locked = await acquireLock(instanceId);
+  if (!locked) {
+    console.log(`[node-execution] lock busy — skip ${instanceId} (job ${job.id})`);
+    return;
+  }
+
   // ── Execute ─────────────────────────────────────────────────────────────
   console.log(
     `[node-execution] advancing ${instanceId} from ${expectedState} (job ${job.id})`,
   );
 
-  await runtime.stepInstance(instanceId);
+  try {
+    await runtime.stepInstance(instanceId);
+  } catch (err) {
+    if (err instanceof StaleInstanceError) {
+      console.log(`[node-execution] OCC conflict — ${err.message} (job ${job.id})`);
+      return; // another worker already advanced this instance — clean skip
+    }
+    throw err;
+  } finally {
+    await releaseLock(instanceId);
+  }
 
   const updated = await findInstanceById(instanceId);
   console.log(

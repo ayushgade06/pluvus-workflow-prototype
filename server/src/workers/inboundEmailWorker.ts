@@ -2,11 +2,12 @@ import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
 import { QUEUE_INBOUND_EMAIL } from "./queues.js";
 import type { InboundEmailJobData } from "./jobs.js";
-import { WorkflowRuntime } from "../engine/runtime.js";
+import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { MockEmailProvider, MockAgentProvider } from "../engine/providers.js";
 import { findInstanceById, findMessageByExternalId } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
 import type { ReplyIntent } from "@prisma/client";
+import { acquireLock, releaseLock } from "../scheduler/lock.js";
 
 // ---------------------------------------------------------------------------
 // InboundEmail worker
@@ -21,7 +22,7 @@ import type { ReplyIntent } from "@prisma/client";
 //   job was already processed and exits early — no double transition.
 //
 // Instance-level serialization:
-//   jobId = `inbound:<externalMessageId>` — BullMQ ensures only one job with
+//   jobId = `inbound|<externalMessageId>` — BullMQ ensures only one job with
 //   this id can be active or waiting at a time.
 
 const VALID_INTENTS: ReplyIntent[] = ["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT"];
@@ -65,6 +66,13 @@ async function handleInboundEmail(
     return;
   }
 
+  // ── Acquire instance lock ────────────────────────────────────────────────
+  const locked = await acquireLock(instanceId);
+  if (!locked) {
+    console.log(`[inbound-email] lock busy — skip ${instanceId} (job ${job.id})`);
+    return;
+  }
+
   // ── Transition to REPLY_RECEIVED ─────────────────────────────────────
   console.log(
     `[inbound-email] processing reply for ${instanceId} (state: ${instance.currentState}, intent: ${mockIntent ?? "POSITIVE"}) (job ${job.id})`,
@@ -76,16 +84,36 @@ async function handleInboundEmail(
     new MockAgentProvider({ replyIntent: intent }),
   );
 
-  // injectReply persists the Message row using the job's externalMessageId as
-  // the anchor. The idempotency check above (findMessageByExternalId) can then
-  // find this row on any retry, making the guard effective.
-  await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
+  try {
+    // injectReply persists the Message row using the job's externalMessageId as
+    // the anchor. The idempotency check above (findMessageByExternalId) can then
+    // find this row on any retry, making the guard effective.
+    try {
+      await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
+    } catch (err) {
+      if (err instanceof StaleInstanceError) {
+        console.log(`[inbound-email] OCC conflict on injectReply — ${err.message} (job ${job.id})`);
+        return;
+      }
+      throw err;
+    }
 
-  // ── Step through Reply Detection ──────────────────────────────────────
-  // One stepInstance() call runs executeReplyDetection, which classifies
-  // the intent (via MockAgentProvider) and transitions to
-  // NEGOTIATING / REJECTED / OPTED_OUT.
-  await runtime.stepInstance(instanceId);
+    // ── Step through Reply Detection ──────────────────────────────────────
+    // One stepInstance() call runs executeReplyDetection, which classifies
+    // the intent (via MockAgentProvider) and transitions to
+    // NEGOTIATING / REJECTED / OPTED_OUT.
+    try {
+      await runtime.stepInstance(instanceId);
+    } catch (err) {
+      if (err instanceof StaleInstanceError) {
+        console.log(`[inbound-email] OCC conflict on stepInstance — ${err.message} (job ${job.id})`);
+        return;
+      }
+      throw err;
+    }
+  } finally {
+    await releaseLock(instanceId);
+  }
 
   const updated = await findInstanceById(instanceId);
   console.log(
@@ -97,10 +125,9 @@ async function handleInboundEmail(
 // Worker factory
 // ---------------------------------------------------------------------------
 
-// Concurrency 1: inbound-email jobs mutate instance state. A single worker
-// process at concurrency 1 provides safe serialization without a distributed
-// lock in Phase 4. Phase 5+ can raise this with instance-level Redis locks.
-const WORKER_CONCURRENCY = 1;
+// Concurrency 5: Phase 5 instance-level Redis locks (lock.ts) protect
+// per-instance serialization; OCC guards against any residual races.
+const WORKER_CONCURRENCY = 5;
 
 export function createInboundEmailWorker(): Worker<InboundEmailJobData> {
   const worker = new Worker<InboundEmailJobData>(

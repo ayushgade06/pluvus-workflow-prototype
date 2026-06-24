@@ -3,6 +3,7 @@ import express from "express";
 import { prisma } from "./db/index.js";
 import queuesRouter from "./routes/queues.js";
 import { startWorkers } from "./workers/index.js";
+import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
 const app = express();
 const port = process.env["PORT"] ? Number(process.env["PORT"]) : 3001;
@@ -35,6 +36,7 @@ app.get("/health/db", async (_req, res) => {
 app.use("/queues", queuesRouter);
 
 startWorkers();
+startScheduler();
 
 const server = app.listen(port, () => {
   console.log(`[server] listening on http://localhost:${port}`);
@@ -45,7 +47,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[server] ${signal} received — shutting down`);
   server.close();
   const { stopWorkers } = await import("./workers/index.js");
-  await stopWorkers();
+  await Promise.all([stopWorkers(), stopScheduler()]);
   console.log("[server] shutdown complete");
   process.exit(0);
 }

@@ -108,7 +108,7 @@ async function test1NodeExecution(instanceId: string): Promise<void> {
 
   // Enqueue a node-execution job targeting ENROLLED state
   const triggerRef = `harness-t1-${Date.now()}`;
-  const jobId = `node-exec:${instanceId}:ENROLLED:${triggerRef}`;
+  const jobId = `node-exec|${instanceId}|ENROLLED|${triggerRef}`;
 
   await enqueueNodeExecution({
     instanceId,
@@ -155,9 +155,11 @@ async function test2InboundEmail(instanceId: string): Promise<void> {
     if (!inst || inst.currentState !== expectedState) continue;
 
     const ref = `harness-t2-${expectedState}-${Date.now()}`;
+    const jobId = `node-exec|${instanceId}|${expectedState}|${ref}`;
     await enqueueNodeExecution({ instanceId, expectedState, triggerRef: ref });
-    // Give worker time to process
-    await delay(1_500);
+    // Wait for job completion before next step so lock is released
+    await waitForJobCompletion("node-execution", jobId, 10_000);
+    await delay(200); // brief settle time after lock release
   }
 
   // Allow up to 10 s for AWAITING_REPLY
@@ -177,7 +179,7 @@ async function test2InboundEmail(instanceId: string): Promise<void> {
 
   // ── Enqueue inbound-email job ──────────────────────────────────────────
   const externalMessageId = `mock-inbound-${instanceId}-${Date.now()}`;
-  const jobId = `inbound:${externalMessageId}`;
+  const jobId = `inbound|${externalMessageId}`;
 
   await enqueueInboundEmail({
     instanceId,
@@ -240,7 +242,7 @@ async function test3Idempotency(instanceId: string): Promise<void> {
   if (stateNow !== "ENROLLED") {
     // State advanced — simulate a stale re-delivery with wrong expectedState
     const staleRef = `harness-t3-stale-${Date.now()}`;
-    const staleJobId = `node-exec:${instanceId}:ENROLLED:${staleRef}`;
+    const staleJobId = `node-exec|${instanceId}|ENROLLED|${staleRef}`;
     // Use queue directly to force a new job with stale expectedState
     const q = getNodeExecutionQueue();
     await q.add(

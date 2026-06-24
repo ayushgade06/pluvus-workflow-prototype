@@ -66,7 +66,7 @@ export function getInboundEmailQueue(): Queue<InboundEmailJobData> {
 /**
  * Enqueue a node-execution job.
  *
- * jobId = `node-exec:<instanceId>:<expectedState>:<triggerRef>`
+ * jobId uses | as separator (BullMQ v5 disallows : in custom jobIds).
  * BullMQ deduplicates on jobId within the active+waiting set, so a duplicate
  * enqueue from a retrying producer is a no-op.
  */
@@ -74,14 +74,14 @@ export async function enqueueNodeExecution(
   data: NodeExecutionJobData,
 ): Promise<void> {
   const queue = getNodeExecutionQueue();
-  const jobId = `node-exec:${data.instanceId}:${data.expectedState}:${data.triggerRef}`;
+  const jobId = `node-exec|${data.instanceId}|${data.expectedState}|${data.triggerRef}`;
   await queue.add("advance", data, { jobId });
 }
 
 /**
  * Enqueue an inbound-email job.
  *
- * jobId = `inbound:<externalMessageId>`
+ * jobId uses | as separator (BullMQ v5 disallows : in custom jobIds).
  * Guarantees exactly one processing attempt per unique inbound message even if
  * the producer retries.
  */
@@ -89,7 +89,7 @@ export async function enqueueInboundEmail(
   data: InboundEmailJobData,
 ): Promise<void> {
   const queue = getInboundEmailQueue();
-  const jobId = `inbound:${data.externalMessageId}`;
+  const jobId = `inbound|${data.externalMessageId}`;
   await queue.add("reply", data, { jobId });
 }
 

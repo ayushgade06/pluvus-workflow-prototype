@@ -4,6 +4,7 @@ import {
   findCreatorById,
   findVersionById,
   updateInstanceState,
+  updateInstanceStateConditional,
   appendEvent,
   createMessage,
 } from "../db/index.js";
@@ -18,6 +19,17 @@ import {
   executeNegotiation,
   executeEnd,
 } from "./executors/index.js";
+
+// ---------------------------------------------------------------------------
+// StaleInstanceError — thrown when OCC detects a concurrent state change
+// ---------------------------------------------------------------------------
+
+export class StaleInstanceError extends Error {
+  constructor(instanceId: string, observedState: string) {
+    super(`Stale instance: ${instanceId} state changed away from ${observedState}`);
+    this.name = "StaleInstanceError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // WorkflowRuntime
@@ -110,8 +122,16 @@ export class WorkflowRuntime {
       patch.completedAt = result.completedAt ?? null;
     }
 
-    // Persist state change
-    await updateInstanceState(instanceId, patch);
+    // Persist state change — OCC: only succeeds if currentState hasn't changed
+    const updated = await updateInstanceStateConditional(
+      instanceId,
+      instance.currentState,
+      patch,
+    );
+    if (!updated) {
+      // Another worker already advanced this instance — treat as a no-op.
+      throw new StaleInstanceError(instanceId, instance.currentState);
+    }
 
     const now = new Date();
 
@@ -174,13 +194,15 @@ export class WorkflowRuntime {
       receivedAt: now,
     });
 
-    // Transition to REPLY_RECEIVED
+    // Transition to REPLY_RECEIVED — OCC: only succeeds if state hasn't changed
     assertTransition(instance.currentState, "REPLY_RECEIVED");
-    await updateInstanceState(instanceId, {
+    const updatedForReply = await updateInstanceStateConditional(instanceId, instance.currentState, {
       currentState: "REPLY_RECEIVED",
-      // Keep currentNodeId pointing to reply_detection node
       currentNodeId: "node_reply_detection",
     });
+    if (!updatedForReply) {
+      throw new StaleInstanceError(instanceId, instance.currentState);
+    }
 
     // Write inbound reply event
     await appendEvent({
