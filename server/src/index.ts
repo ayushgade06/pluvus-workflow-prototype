@@ -3,6 +3,10 @@ import express from "express";
 import { prisma } from "./db/index.js";
 import queuesRouter from "./routes/queues.js";
 import webhooksRouter from "./routes/webhooks.js";
+import observabilityRouter from "./routes/observability.js";
+import campaignsRouter from "./routes/campaigns.js";
+import workflowsRouter from "./routes/workflows.js";
+import { listCreators } from "./db/creators.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
@@ -44,6 +48,39 @@ app.get("/health/db", async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.use("/queues", queuesRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 9 — Observability dashboard APIs (read-only)
+// ---------------------------------------------------------------------------
+
+app.use("/observability", observabilityRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 10 — Workflow Builder APIs
+// ---------------------------------------------------------------------------
+
+app.use("/campaigns", campaignsRouter);
+app.use("/workflows", workflowsRouter);
+
+/** List all creators — used by the enrollment UI. */
+app.get("/creators", async (_req, res) => {
+  try {
+    const creators = await listCreators();
+    res.json(
+      creators.map((c) => ({
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        handle: c.handle,
+        platform: c.platform,
+        niche: c.niche,
+      })),
+    );
+  } catch (err) {
+    console.error("[creators] list error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
 
 startWorkers();
 startScheduler();

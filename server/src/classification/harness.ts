@@ -75,6 +75,10 @@ class HarnessAgentProvider implements IAgentProvider {
   async negotiate(_round: number, _config: Record<string, unknown>): Promise<NegotiateResult> {
     return { outcome: "accept", message: "harness accepts" };
   }
+
+  async draftEmail(): Promise<null> {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

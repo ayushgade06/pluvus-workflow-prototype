@@ -47,7 +47,7 @@ export interface ClassifyResult {
 }
 
 // NegotiateResult — returned by MockAgentProvider.negotiate()
-export type NegotiateOutcome = "accept" | "counter" | "reject";
+export type NegotiateOutcome = "accept" | "counter" | "reject" | "escalate";
 
 export interface NegotiateResult {
   outcome: NegotiateOutcome;

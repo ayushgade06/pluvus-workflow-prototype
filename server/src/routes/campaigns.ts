@@ -1,0 +1,162 @@
+import { Router } from "express";
+import type { Request, Response } from "express";
+import {
+  listCampaigns,
+  createCampaign,
+  getCampaignWithWorkflows,
+  findCampaignById,
+} from "../db/campaigns.js";
+import {
+  createWorkflow,
+  updateWorkflow,
+} from "../db/workflows.js";
+import { getTemplate } from "../templates/index.js";
+
+const router = Router();
+
+// GET /campaigns — list all campaigns with workflow counts
+router.get("/", async (_req: Request, res: Response) => {
+  try {
+    const campaigns = await listCampaigns();
+    res.json(
+      campaigns.map((c) => ({
+        id: c.id,
+        name: c.name,
+        brand: c.brand,
+        objective: c.objective,
+        notes: c.notes,
+        createdAt: c.createdAt.toISOString(),
+        updatedAt: c.updatedAt.toISOString(),
+        workflowCount: c._count.workflows,
+      })),
+    );
+  } catch (err) {
+    console.error("[campaigns] list error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// POST /campaigns — create a campaign
+router.post("/", async (req: Request, res: Response) => {
+  const { name, brand, objective, notes } = req.body as {
+    name?: string;
+    brand?: string;
+    objective?: string;
+    notes?: string;
+  };
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (!brand || typeof brand !== "string" || !brand.trim()) {
+    res.status(400).json({ error: "brand is required" });
+    return;
+  }
+
+  try {
+    const campaign = await createCampaign({
+      name: name.trim(),
+      brand: brand.trim(),
+      objective: typeof objective === "string" ? objective.trim() || null : null,
+      notes: typeof notes === "string" ? notes.trim() || null : null,
+    });
+    res.status(201).json({
+      id: campaign.id,
+      name: campaign.name,
+      brand: campaign.brand,
+      objective: campaign.objective,
+      notes: campaign.notes,
+      createdAt: campaign.createdAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("[campaigns] create error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// GET /campaigns/:id — campaign detail with workflows
+router.get("/:id", async (req: Request, res: Response) => {
+  try {
+    const campaign = await getCampaignWithWorkflows(req.params["id"]!);
+    if (!campaign) {
+      res.status(404).json({ error: "campaign not found" });
+      return;
+    }
+    res.json({
+      id: campaign.id,
+      name: campaign.name,
+      brand: campaign.brand,
+      objective: campaign.objective,
+      notes: campaign.notes,
+      createdAt: campaign.createdAt.toISOString(),
+      updatedAt: campaign.updatedAt.toISOString(),
+      workflows: campaign.workflows.map((w) => ({
+        id: w.id,
+        name: w.name,
+        status: w.status,
+        versionCount: w._count.versions,
+        createdAt: w.createdAt.toISOString(),
+        updatedAt: w.updatedAt.toISOString(),
+      })),
+    });
+  } catch (err) {
+    console.error("[campaigns] get error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// POST /campaigns/:id/workflows — create a workflow under a campaign
+router.post("/:id/workflows", async (req: Request, res: Response) => {
+  const { name, templateKey } = req.body as {
+    name?: string;
+    templateKey?: string;
+  };
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (!templateKey || typeof templateKey !== "string") {
+    res.status(400).json({ error: "templateKey is required" });
+    return;
+  }
+
+  const template = getTemplate(templateKey);
+  if (!template) {
+    res.status(400).json({
+      error: `unknown templateKey '${templateKey}'. Valid keys: affiliate, hybrid, fixed_fee`,
+    });
+    return;
+  }
+
+  try {
+    const campaign = await findCampaignById(req.params["id"]!);
+    if (!campaign) {
+      res.status(404).json({ error: "campaign not found" });
+      return;
+    }
+
+    const workflow = await createWorkflow({
+      name: name.trim(),
+      status: "DRAFT",
+      draftNodes: JSON.parse(JSON.stringify(template.nodes)),
+      campaign: { connect: { id: campaign.id } },
+    });
+
+    res.status(201).json({
+      id: workflow.id,
+      name: workflow.name,
+      status: workflow.status,
+      campaignId: workflow.campaignId,
+      templateKey,
+      draftNodes: workflow.draftNodes,
+      createdAt: workflow.createdAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("[campaigns] create workflow error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+export default router;

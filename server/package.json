@@ -12,13 +12,16 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:demo": "tsx prisma/seed.demo.ts",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset",
     "harness": "cross-env NODE_ENV=production tsx --no-warnings src/engine/harness.ts",
     "harness:phase4": "cross-env NODE_ENV=production tsx --no-warnings src/workers/harness.ts",
     "harness:phase5": "cross-env NODE_ENV=production tsx --no-warnings src/scheduler/harness.ts",
     "harness:phase6": "cross-env NODE_ENV=production tsx --no-warnings src/webhooks/harness.ts",
-    "harness:phase7": "cross-env NODE_ENV=production tsx --no-warnings src/classification/harness.ts"
+    "harness:phase7": "cross-env NODE_ENV=production tsx --no-warnings src/classification/harness.ts",
+    "harness:phase8": "cross-env NODE_ENV=production tsx --no-warnings src/negotiation/harness.ts",
+    "harness:phase9": "cross-env NODE_ENV=production tsx --no-warnings src/observability/harness.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
