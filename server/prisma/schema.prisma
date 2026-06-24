@@ -103,6 +103,21 @@ enum WorkflowStatus {
 // Definition models
 // ---------------------------------------------------------------------------
 
+/// A brand campaign. The top-level container created by brands in the wizard.
+/// One Campaign can own multiple Workflows (e.g. different strategies for the same campaign).
+model Campaign {
+  id        String  @id @default(cuid())
+  name      String
+  brand     String
+  objective String?
+  notes     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workflows Workflow[]
+}
+
 /// A campaign definition. The logical container for a sequence of nodes.
 /// Editing a Workflow does not mutate existing WorkflowVersions.
 model Workflow {
@@ -111,9 +126,17 @@ model Workflow {
   description String?
   status      WorkflowStatus @default(DRAFT)
 
+  /// Nullable: existing seed workflows that predate Phase 10 have no campaign.
+  campaignId String?
+  /// Mutable draft: the in-progress node graph before publishing.
+  /// Shape: NodeSnapshot[] (same as WorkflowVersion.nodeGraph).
+  /// On publish this becomes an immutable WorkflowVersion row.
+  draftNodes Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  campaign Campaign?       @relation(fields: [campaignId], references: [id])
   versions WorkflowVersion[]
 }
 

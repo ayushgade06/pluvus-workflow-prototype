@@ -1,17 +1,12 @@
 // ---------------------------------------------------------------------------
-// App — Pluvus Workflow Observability Dashboard (Phase 9)
+// App — Pluvus Platform (Phase 10: Workflow Builder + Observability)
 // ---------------------------------------------------------------------------
-// Layout (Part: UX & Product Alignment):
+// Views:
+//   campaigns  — campaign list + creation wizard
+//   builder    — workflow builder (canvas, config, enroll, launch, monitor)
+//   observe    — observability dashboard (Phase 9)
 //
-//   ┌───────────────────────────────────────────────────────────────┐
-//   │ Topbar: workflow name · totals · live indicator                │
-//   ├──────────────────┬───────────────────────┬────────────────────┤
-//   │  Workflow Canvas │  Node Drilldown        │  Instance          │
-//   │  (React Flow)    │  (creators in state)   │  Inspector         │
-//   └──────────────────┴───────────────────────┴────────────────────┘
-//
-// The canvas is the navigation model: click a node → drilldown opens; click a
-// creator → inspector opens. Everything polls live.
+// Routing is state-based (no react-router dependency).
 
 import { useState } from "react";
 import { useWorkflowSummary, POLL_INTERVAL_MS } from "./api/client";
@@ -19,9 +14,116 @@ import type { InstanceState } from "./api/types";
 import { WorkflowCanvas } from "./components/WorkflowCanvas";
 import { NodeDrilldown } from "./components/NodeDrilldown";
 import { InstanceInspector } from "./components/InstanceInspector";
+import { CampaignList } from "./components/builder/CampaignList";
+import { WorkflowBuilder } from "./components/builder/WorkflowBuilder";
 import { colors, formatTimestamp } from "./theme";
 
+type View = "campaigns" | "builder" | "observe";
+
 export default function App() {
+  const [view, setView] = useState<View>("campaigns");
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+
+  function openWorkflow(id: string) {
+    setActiveWorkflowId(id);
+    setView("builder");
+  }
+
+  function backToCampaigns() {
+    setView("campaigns");
+    setActiveWorkflowId(null);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: colors.bg }}>
+      <AppTopbar view={view} onChangeView={setView} />
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {view === "campaigns" && (
+          <CampaignList onSelectWorkflow={openWorkflow} />
+        )}
+        {view === "builder" && activeWorkflowId && (
+          <WorkflowBuilder workflowId={activeWorkflowId} onBack={backToCampaigns} />
+        )}
+        {view === "builder" && !activeWorkflowId && (
+          <CampaignList onSelectWorkflow={openWorkflow} />
+        )}
+        {view === "observe" && (
+          <ObservabilityView />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App-level topbar with view switcher
+// ---------------------------------------------------------------------------
+
+function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View) => void }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0,
+        borderBottom: `1px solid ${colors.border}`,
+        background: colors.panel,
+        flexShrink: 0,
+        height: 44,
+      }}
+    >
+      <div
+        style={{
+          padding: "0 18px",
+          fontSize: 14,
+          fontWeight: 700,
+          color: colors.text,
+          borderRight: `1px solid ${colors.border}`,
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          letterSpacing: -0.2,
+        }}
+      >
+        Pluvus
+      </div>
+      {(
+        [
+          { key: "campaigns", label: "Builder" },
+          { key: "observe", label: "Observability" },
+        ] as { key: View; label: string }[]
+      ).map((tab) => (
+        <button
+          key={tab.key}
+          onClick={() => onChangeView(tab.key)}
+          style={{
+            height: "100%",
+            padding: "0 18px",
+            background: "none",
+            border: "none",
+            borderBottom: `2px solid ${view === tab.key || (tab.key === "campaigns" && view === "builder") ? colors.accent : "transparent"}`,
+            color:
+              view === tab.key || (tab.key === "campaigns" && view === "builder")
+                ? colors.accent
+                : colors.textMuted,
+            fontSize: 13,
+            fontWeight:
+              view === tab.key || (tab.key === "campaigns" && view === "builder") ? 600 : 400,
+            cursor: "pointer",
+          }}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Observability view (Phase 9 dashboard, unchanged)
+// ---------------------------------------------------------------------------
+
+function ObservabilityView() {
   const summary = useWorkflowSummary();
   const [selectedState, setSelectedState] = useState<InstanceState | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
@@ -31,12 +133,12 @@ export default function App() {
 
   function handleSelectState(state: string) {
     setSelectedState(state as InstanceState);
-    setSelectedInstanceId(null); // reset inspector when switching states
+    setSelectedInstanceId(null);
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: colors.bg }}>
-      <Topbar
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: colors.bg }}>
+      <ObserveTopbar
         name={wf?.name ?? "Workflow"}
         version={wf?.version ?? null}
         total={summary.data?.totalInstances ?? 0}
@@ -45,9 +147,7 @@ export default function App() {
         fetching={summary.isFetching}
         error={summary.isError ? (summary.error as Error)?.message : null}
       />
-
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        {/* Canvas */}
         <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
           {summary.isLoading ? (
             <Center>Loading workflow…</Center>
@@ -67,8 +167,6 @@ export default function App() {
           )}
           <CanvasHint visible={!selectedState && !summary.isLoading && !summary.isError} />
         </div>
-
-        {/* Drilldown */}
         {selectedState && (
           <div
             style={{
@@ -85,8 +183,6 @@ export default function App() {
             />
           </div>
         )}
-
-        {/* Inspector */}
         {selectedInstanceId && (
           <div
             style={{
@@ -108,10 +204,10 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Topbar
+// Observability topbar (sub-header inside the observe view)
 // ---------------------------------------------------------------------------
 
-function Topbar({
+function ObserveTopbar({
   name,
   version,
   total,
@@ -144,10 +240,7 @@ function Topbar({
         flexShrink: 0,
       }}
     >
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <span style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Pluvus</span>
-        <span style={{ fontSize: 12, color: colors.textMuted }}>Workflow Observability</span>
-      </div>
+      <div style={{ fontSize: 12, color: colors.textMuted, fontWeight: 600 }}>Observability</div>
 
       <div style={{ width: 1, height: 22, background: colors.border }} />
 

@@ -1,0 +1,184 @@
+// ---------------------------------------------------------------------------
+// Builder API client — Phase 10
+// ---------------------------------------------------------------------------
+// Mutations use plain fetch (not useQuery) since they're one-shot.
+// Queries use TanStack Query. Polling only on execution summary.
+
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { POLL_INTERVAL_MS } from "./client";
+import type {
+  CampaignListItem,
+  CampaignDetail,
+  WorkflowDetail,
+  WorkflowVersion,
+  WorkflowExecutionSummary,
+  CreatorItem,
+  DraftNode,
+  PublishResponse,
+  EnrollResponse,
+  LaunchResponse,
+  ValidationResponse,
+  TemplateKey,
+} from "./builderTypes";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const j = await res.json();
+      detail = j.error ?? JSON.stringify(j);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status} ${res.statusText}: ${detail}`.trim());
+  }
+  return res.json() as Promise<T>;
+}
+
+function postJson<T>(url: string, body: unknown): Promise<T> {
+  return apiFetch<T>(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function putJson<T>(url: string, body: unknown): Promise<T> {
+  return apiFetch<T>(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+export function useCampaigns() {
+  return useQuery({
+    queryKey: ["campaigns"],
+    queryFn: () => apiFetch<CampaignListItem[]>("/api/campaigns"),
+  });
+}
+
+export function useCampaign(id: string | null) {
+  return useQuery({
+    queryKey: ["campaign", id],
+    queryFn: () => apiFetch<CampaignDetail>(`/api/campaigns/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function createCampaign(data: {
+  name: string;
+  brand: string;
+  objective?: string;
+  notes?: string;
+}) {
+  return postJson<{ id: string; name: string }>("/api/campaigns", data);
+}
+
+// ---------------------------------------------------------------------------
+// Workflows
+// ---------------------------------------------------------------------------
+
+export function useWorkflow(id: string | null) {
+  return useQuery({
+    queryKey: ["workflow", id],
+    queryFn: () => apiFetch<WorkflowDetail>(`/api/workflows/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useWorkflowVersions(id: string | null) {
+  return useQuery({
+    queryKey: ["workflow-versions", id],
+    queryFn: () => apiFetch<WorkflowVersion[]>(`/api/workflows/${id}/versions`),
+    enabled: !!id,
+  });
+}
+
+export function useWorkflowExecution(id: string | null) {
+  return useQuery({
+    queryKey: ["workflow-execution", id],
+    queryFn: () => apiFetch<WorkflowExecutionSummary>(`/api/workflows/${id}/execution`),
+    enabled: !!id,
+    refetchInterval: POLL_INTERVAL_MS,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function createWorkflowForCampaign(
+  campaignId: string,
+  data: { name: string; templateKey: TemplateKey },
+) {
+  return postJson<{ id: string; name: string; draftNodes: DraftNode[] }>(
+    `/api/campaigns/${campaignId}/workflows`,
+    data,
+  );
+}
+
+export function saveDraft(workflowId: string, nodes: DraftNode[]) {
+  return putJson<{
+    id: string;
+    draftNodes: DraftNode[];
+    valid: boolean;
+    validationErrors: string[];
+    updatedAt: string;
+  }>(`/api/workflows/${workflowId}/draft`, { nodes });
+}
+
+export function validateWorkflow(workflowId: string) {
+  return postJson<ValidationResponse>(`/api/workflows/${workflowId}/validate`, {});
+}
+
+export function publishWorkflow(workflowId: string, notes?: string) {
+  return postJson<PublishResponse>(`/api/workflows/${workflowId}/publish`, {
+    notes: notes ?? null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Creators
+// ---------------------------------------------------------------------------
+
+export function useCreators() {
+  return useQuery({
+    queryKey: ["creators"],
+    queryFn: () => apiFetch<CreatorItem[]>("/api/creators"),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Enroll + Launch
+// ---------------------------------------------------------------------------
+
+export function enrollCreators(workflowId: string, creatorIds: string[]) {
+  return postJson<EnrollResponse>(`/api/workflows/${workflowId}/enroll`, { creatorIds });
+}
+
+export function launchWorkflow(workflowId: string) {
+  return postJson<LaunchResponse>(`/api/workflows/${workflowId}/launch`, {});
+}
+
+// ---------------------------------------------------------------------------
+// Query invalidation helpers
+// ---------------------------------------------------------------------------
+
+export function useBuilderInvalidator(workflowId: string | null) {
+  const qc = useQueryClient();
+  return {
+    invalidateWorkflow: () => qc.invalidateQueries({ queryKey: ["workflow", workflowId] }),
+    invalidateVersions: () =>
+      qc.invalidateQueries({ queryKey: ["workflow-versions", workflowId] }),
+    invalidateExecution: () =>
+      qc.invalidateQueries({ queryKey: ["workflow-execution", workflowId] }),
+    invalidateCampaigns: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+  };
+}
