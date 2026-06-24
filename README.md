@@ -165,7 +165,32 @@ curl -X POST http://localhost:3001/queues/inbound-email \
   -d '{"instanceId": "<id>", "mockIntent": "POSITIVE"}'
 ```
 
-### Infrastructure
+---
+
+## Phase 5 — Scheduler + Instance Locking
+
+Builds on Phase 4. Requires Postgres + Redis (same `npm run infra:up`).
+
+### What Phase 5 adds
+
+- **Optimistic concurrency control (OCC):** every state write uses a `WHERE currentState = expected` guard. If a concurrent worker already moved the instance, the update returns null and the job exits cleanly — no overwrite, no crash.
+- **Redis instance locks:** `SET instance:{id} NX PX 30000` acquired by each worker before execution and released in `finally`. Prevents two workers from processing the same instance simultaneously.
+- **Scheduler poller:** runs every 30 s, queries `dueAt <= now` for instances in `AWAITING_REPLY` or `FOLLOWED_UP`, and enqueues a node-execution job for each. Uses deterministic job IDs so overlapping polls never double-enqueue.
+- **Follow-up scheduling:** the follow-up executor now returns a `dueAt` (derived from node config `intervals` in days) when entering `AWAITING_REPLY`. The scheduler uses this to fire the next follow-up automatically.
+
+### Run the Phase 5 harness
+
+```bash
+cd server
+npm run harness:phase5
+# Scenario A — scheduler fires follow-ups automatically (NO_REPLY path)
+# Scenario B — inbound reply stops follow-ups; scheduler finds nothing to trigger
+# Scenario C — two concurrent jobs for the same instance: OCC + lock allow exactly one win
+```
+
+---
+
+## Infrastructure
 
 ```bash
 npm run infra:up    # start Postgres + Redis
@@ -187,10 +212,14 @@ pluvus-workflow-proto/
 │   └── src/
 │       ├── index.ts          # Entrypoint + health + /health/db
 │       ├── db/               # Prisma client singleton + repository layer
-│       ├── routes/           # HTTP routes (Phase 2+)
-│       ├── services/         # Business logic, no transitions (Phase 2+)
+│       ├── routes/           # HTTP routes
+│       │   └── queues.ts         # Queue health + diagnostics endpoints
 │       ├── engine/           # State machine + node executors (Phase 3)
-│       ├── workers/          # BullMQ queues + workers (Phase 4) ✓
+│       │   ├── runtime.ts        # WorkflowRuntime + StaleInstanceError
+│       │   ├── stateMachine.ts   # Transition table + guards
+│       │   ├── providers.ts      # IEmailProvider, IAgentProvider interfaces
+│       │   └── executors/        # One file per node type
+│       ├── workers/          # BullMQ queues + workers (Phase 4)
 │       │   ├── redis.ts          # Redis connection config
 │       │   ├── jobs.ts           # Job payload type definitions
 │       │   ├── queues.ts         # Queue singletons + enqueue helpers
@@ -198,9 +227,11 @@ pluvus-workflow-proto/
 │       │   ├── inboundEmailWorker.ts   # Processes inbound email reply
 │       │   ├── index.ts          # Worker startup + graceful shutdown
 │       │   └── harness.ts        # Phase 4 acceptance test harness
-│       ├── routes/           # HTTP routes (Phase 4+)
-│       │   └── queues.ts         # Queue health + diagnostics endpoints
-│       ├── scheduler/        # Delayed job management (Phase 5)
+│       ├── scheduler/        # Distributed scheduling + locking (Phase 5)
+│       │   ├── lock.ts           # Redis SET NX PX per-instance locks
+│       │   ├── poller.ts         # 30 s due-instance polling loop
+│       │   ├── scheduler.ts      # Facade: startScheduler / stopScheduler
+│       │   └── harness.ts        # Phase 5 acceptance test harness
 │       └── adapters/         # Email + agent adapters (Phases 3–7)
 ├── agent/            # Python LangGraph service (Phase 1, 7–8)
 │   └── app/
@@ -219,11 +250,11 @@ pluvus-workflow-proto/
 
 | Phase | Deliverable | Status |
 |-------|-------------|--------|
-| 1 | Repository foundation (this) | ✓ done |
+| 1 | Repository foundation | ✓ done |
 | 2 | Data models (Prisma schema, seed) | ✓ done |
-| 3 | Workflow runtime engine (stubs) | ✓ done |
+| 3 | Workflow runtime engine | ✓ done |
 | 4 | Event system (BullMQ queues + workers) | ✓ done |
-| 5 | Scheduler (follow-up timers) | pending |
+| 5 | Scheduler + instance locking (OCC + Redis locks) | ✓ done |
 | 6 | Nylas integration layer | pending |
 | 7 | Reply classification (LangGraph) | pending |
 | 8 | Negotiation agent | pending |
