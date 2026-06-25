@@ -26,29 +26,46 @@ export interface IEmailProvider {
 export class MockEmailProvider implements IEmailProvider {
   async draft(
     creator: Creator,
-    _template: string,
+    template: string,
     config: Record<string, unknown>,
   ): Promise<EmailDraft> {
     const senderName =
       typeof config["senderName"] === "string" ? config["senderName"] : "Pluvus Partnerships";
+    const brandName =
+      typeof config["brandName"] === "string" ? config["brandName"] : senderName;
     const platform =
       typeof creator.platform === "string" ? creator.platform : "social media";
 
-    const subject = `Collaboration opportunity — ${creator.name}`;
-    const body = [
-      `Hi ${creator.name},`,
-      ``,
-      `We've been following your ${platform} content and think you'd be a perfect fit for our upcoming campaign.`,
-      ``,
-      `${senderName} works with top creators in your space, and we believe this partnership could be mutually beneficial.`,
-      ``,
-      `Would you be open to a quick conversation about the details? We'd love to share what we have in mind and hear your thoughts.`,
-      ``,
-      `Looking forward to connecting!`,
-      ``,
-      `Best,`,
-      `${senderName}`,
-    ].join("\n");
+    const subjectTemplate =
+      typeof config["subjectTemplate"] === "string" ? config["subjectTemplate"] : "";
+
+    const resolve = (s: string) =>
+      s
+        .replace(/\{\{creatorName\}\}/g, creator.name)
+        .replace(/\{\{brandName\}\}/g, brandName)
+        .replace(/\{\{senderName\}\}/g, senderName)
+        .replace(/\{\{platform\}\}/g, platform)
+        .replace(/\{\{niche\}\}/g, creator.niche ?? "your niche");
+
+    // Use node config template when provided; fall back to generic body.
+    const body = template.trim()
+      ? resolve(template)
+      : [
+          `Hi ${creator.name},`,
+          ``,
+          `We've been following your ${platform} content and think you'd be a perfect fit for our upcoming campaign.`,
+          ``,
+          `${senderName} works with top creators in your space, and we believe this partnership could be mutually beneficial.`,
+          ``,
+          `Would you be open to a quick conversation about the details?`,
+          ``,
+          `Best,`,
+          `${senderName}`,
+        ].join("\n");
+
+    const subject = subjectTemplate.trim()
+      ? resolve(subjectTemplate)
+      : `Collaboration opportunity — ${creator.name}`;
 
     return { subject, body };
   }
@@ -70,7 +87,7 @@ export class MockEmailProvider implements IEmailProvider {
 
 export interface IAgentProvider {
   classify(body: string, intent?: string): Promise<ClassifyResult>;
-  negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult>;
+  negotiate(round: number, config: Record<string, unknown>, creatorReply?: string): Promise<NegotiateResult>;
   /**
    * Generate email copy via the draft agent.
    * Phase 8: executors call this instead of the raw template when
@@ -121,13 +138,13 @@ export class MockAgentProvider implements IAgentProvider {
     };
   }
 
-  async negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult> {
+  async negotiate(round: number, config: Record<string, unknown>, creatorReply = ""): Promise<NegotiateResult> {
     const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
     const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
     const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
 
     const resp = await this._negotiationProvider.negotiate({
-      creatorReply: "",
+      creatorReply,
       currentOffer: termFloor,
       round,
       maxRounds,

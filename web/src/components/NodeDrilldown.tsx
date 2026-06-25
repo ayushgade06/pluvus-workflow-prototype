@@ -8,8 +8,8 @@
 import { useMemo, useState } from "react";
 import type { InstanceState, InstanceListItem } from "../api/types";
 import { useInstances } from "../api/client";
-import { colors, stateColor, stateLabel, stateDescription, formatDuration, formatTimestamp } from "../theme";
-import { Empty, Spinner } from "./ui";
+import { colors, radii, font, stateColor, stateLabel, stateDescription, formatDuration, formatTimestamp } from "../theme";
+import { Input, Select, EmptyState, SkeletonRows } from "./ds";
 
 type SortKey = "waiting" | "name" | "round" | "due";
 
@@ -47,64 +47,56 @@ export function NodeDrilldown({ state, selectedInstanceId, onSelectInstance }: P
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {/* Header */}
-      <div style={{ padding: "14px 16px 10px", borderBottom: `1px solid ${colors.border}` }}>
+      <div style={{ padding: "14px 16px 12px", borderBottom: `1px solid ${colors.border}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ width: 9, height: 9, borderRadius: "50%", background: accent }} />
-          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: colors.text }}>
+          <h2 style={{ margin: 0, fontSize: font.size.lg, fontWeight: font.weight.bold, color: colors.text }}>
             {stateLabel[state]}
           </h2>
-          <span style={{ fontSize: 12, color: colors.textMuted }}>
+          <span style={{ fontSize: font.size.md, color: colors.textMuted }}>
             · {items.length} {items.length === 1 ? "creator" : "creators"}
           </span>
         </div>
-        <p style={{ margin: "6px 0 0", fontSize: 11.5, color: colors.textDim, lineHeight: 1.4 }}>
+        <p style={{ margin: "6px 0 0", fontSize: font.size.sm, color: colors.textDim, lineHeight: 1.4 }}>
           {stateDescription[state]}
         </p>
 
         {/* Controls */}
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          <input
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter by name / email / handle…"
-            style={{
-              flex: 1,
-              background: colors.bg,
-              border: `1px solid ${colors.border}`,
-              borderRadius: 6,
-              color: colors.text,
-              fontSize: 12,
-              padding: "6px 9px",
-              outline: "none",
-            }}
+            aria-label="Filter creators"
+            style={{ flex: 1, padding: "6px 9px", fontSize: font.size.sm }}
           />
-          <select
+          <Select
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
-            style={{
-              background: colors.bg,
-              border: `1px solid ${colors.border}`,
-              borderRadius: 6,
-              color: colors.text,
-              fontSize: 12,
-              padding: "6px 9px",
-              outline: "none",
-            }}
+            aria-label="Sort creators"
+            style={{ width: "auto", padding: "6px 9px", fontSize: font.size.sm }}
           >
-            <option value="waiting">Sort: longest waiting</option>
-            <option value="name">Sort: name</option>
-            <option value="round">Sort: negotiation round</option>
-            <option value="due">Sort: due soonest</option>
-          </select>
+            <option value="waiting">Longest waiting</option>
+            <option value="name">Name</option>
+            <option value="round">Negotiation round</option>
+            <option value="due">Due soonest</option>
+          </Select>
         </div>
       </div>
 
       {/* List */}
-      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "8px 10px" }}>
-        {isLoading && <Spinner label="Loading creators…" />}
-        {isError && <Empty>Failed to load: {(error as Error)?.message}</Empty>}
+      <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "10px" }}>
+        {isLoading && <SkeletonRows count={5} height={62} />}
+        {isError && (
+          <EmptyState compact icon="⚠" title="Failed to load" description={(error as Error)?.message} />
+        )}
         {!isLoading && !isError && items.length === 0 && (
-          <Empty>No creators in this state{search ? " matching your filter" : ""}.</Empty>
+          <EmptyState
+            compact
+            icon="✓"
+            title="Empty queue"
+            description={`No creators in this state${search ? " matching your filter" : ""}.`}
+          />
         )}
         {items.map((it) => (
           <CreatorRow
@@ -134,35 +126,30 @@ function CreatorRow({
   return (
     <button
       onClick={onClick}
+      aria-pressed={selected}
+      className="ds-focusable ds-row"
       style={{
         display: "block",
         width: "100%",
         textAlign: "left",
         background: selected ? colors.panelAlt : "transparent",
         border: `1px solid ${selected ? accent : "transparent"}`,
-        borderRadius: 7,
+        borderRadius: radii.sm,
         padding: "9px 10px",
         marginBottom: 4,
         color: colors.text,
-      }}
-      onMouseEnter={(e) => {
-        if (!selected) e.currentTarget.style.background = colors.panel;
-      }}
-      onMouseLeave={(e) => {
-        if (!selected) e.currentTarget.style.background = "transparent";
+        cursor: "pointer",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>{item.creatorName}</span>
-        {item.stuck && (
-          <span style={{ fontSize: 10, fontWeight: 700, color: colors.warning }}>⚠ stuck</span>
-        )}
+        <span style={{ fontSize: font.size.md, fontWeight: font.weight.semibold }}>{item.creatorName}</span>
+        {item.stuck && <span style={{ fontSize: font.size.xs, fontWeight: font.weight.bold, color: colors.warning }}>⚠ stuck</span>}
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+      <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 2 }}>
         {item.creatorHandle ?? item.creatorEmail}
         {item.platform ? ` · ${item.platform}` : ""}
       </div>
-      <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 10.5, color: colors.textDim, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: font.size.xs, color: colors.textDim, flexWrap: "wrap" }}>
         <span>waiting {formatDuration(item.waitingForSeconds)}</span>
         {item.negotiationRound > 0 && <span>round {item.negotiationRound}</span>}
         {item.followUpCount > 0 && <span>{item.followUpCount} follow-ups</span>}

@@ -1,6 +1,6 @@
 import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
-import { QUEUE_NODE_EXECUTION } from "./queues.js";
+import { QUEUE_NODE_EXECUTION, enqueueNodeExecution } from "./queues.js";
 import type { NodeExecutionJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
@@ -91,9 +91,41 @@ async function handleNodeExecution(
   }
 
   const updated = await findInstanceById(instanceId);
+  const newState = updated?.currentState ?? "unknown";
   console.log(
-    `[node-execution] done — ${instanceId}: ${expectedState} → ${updated?.currentState ?? "unknown"} (job ${job.id})`,
+    `[node-execution] done — ${instanceId}: ${expectedState} → ${newState} (job ${job.id})`,
   );
+
+  // Auto-chain states that require an immediate next step without waiting for
+  // an external trigger (scheduler tick or inbound webhook):
+  //
+  //   OUTREACH_SENT  — follow-up node must run to set dueAt → AWAITING_REPLY
+  //   FOLLOWED_UP    — follow-up node reschedules → AWAITING_REPLY
+  //   NEGOTIATING    — negotiation executor sends counter/accept immediately
+  //
+  // AWAITING_REPLY is intentionally excluded: it waits for a real reply or a
+  // scheduled follow-up, both of which arrive via their own queue paths.
+  if (newState === "OUTREACH_SENT" || newState === "FOLLOWED_UP") {
+    await enqueueNodeExecution({
+      instanceId,
+      expectedState: newState,
+      triggerRef: `auto-followup-${instanceId}-${newState}`,
+    });
+    console.log(
+      `[node-execution] auto-enqueued follow-up step for ${instanceId} (${newState})`,
+    );
+  } else if (newState === "NEGOTIATING") {
+    const instance = await findInstanceById(instanceId);
+    const round = instance?.negotiationRound ?? 0;
+    await enqueueNodeExecution({
+      instanceId,
+      expectedState: "NEGOTIATING",
+      triggerRef: `auto-negotiate-${instanceId}-r${round}`,
+    });
+    console.log(
+      `[node-execution] auto-enqueued negotiation step for ${instanceId} (round ${round})`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

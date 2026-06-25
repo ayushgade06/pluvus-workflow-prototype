@@ -227,11 +227,17 @@ export class WorkflowRuntime {
       receivedAt: now,
     });
 
+    // Resolve the REPLY_DETECTION node from the actual workflow version so
+    // loadContext can dispatch correctly regardless of what the node is named.
+    const version = await findVersionById(instance.workflowVersionId);
+    const nodeGraph = (version?.nodeGraph ?? []) as unknown as NodeSnapshot[];
+    const replyNode = nodeGraph.find((n) => n.type === "REPLY_DETECTION");
+
     // Transition to REPLY_RECEIVED — OCC: only succeeds if state hasn't changed
     assertTransition(instance.currentState, "REPLY_RECEIVED");
     const updatedForReply = await updateInstanceStateConditional(instanceId, instance.currentState, {
       currentState: "REPLY_RECEIVED",
-      currentNodeId: "node_reply_detection",
+      currentNodeId: replyNode?.id ?? "node-reply-detection",
     });
     if (!updatedForReply) {
       throw new StaleInstanceError(instanceId, instance.currentState);

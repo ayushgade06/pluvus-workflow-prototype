@@ -15,11 +15,45 @@ import {
   findInstanceByCreatorAndVersion,
 } from "../db/instances.js";
 import { listCreators } from "../db/creators.js";
+import { findCampaignById } from "../db/campaigns.js";
 import { prisma } from "../db/client.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { validateNodeGraph } from "../templates/index.js";
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// Re-stamp the campaign brand into node configs.
+// ---------------------------------------------------------------------------
+// brandName/senderName are stamped into every node config at workflow creation
+// (see POST /campaigns/:id/workflows) so {{brandName}} resolves and the
+// negotiation agent signs off as the brand rather than its "Pluvus
+// Partnerships" fallback. The builder's per-node config forms send a fresh
+// config object on save, which can drop those keys — so we re-inject them here
+// on every draft save. Existing non-empty values are preserved (a deliberate
+// per-node override is never clobbered); only missing/blank values are filled.
+function restampBrand(nodes: unknown, brand: string): unknown {
+  if (!Array.isArray(nodes)) return nodes;
+  return nodes.map((node) => {
+    if (!node || typeof node !== "object") return node;
+    const n = node as { config?: unknown; [k: string]: unknown };
+    const config = (n.config && typeof n.config === "object" ? n.config : {}) as Record<
+      string,
+      unknown
+    >;
+    const hasBrand = typeof config["brandName"] === "string" && config["brandName"] !== "";
+    const hasSender = typeof config["senderName"] === "string" && config["senderName"] !== "";
+    if (hasBrand && hasSender) return node;
+    return {
+      ...n,
+      config: {
+        ...config,
+        ...(hasBrand ? {} : { brandName: brand }),
+        ...(hasSender ? {} : { senderName: brand }),
+      },
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // GET /workflows/:id — workflow detail with draftNodes + latest version
@@ -121,8 +155,16 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
       return;
     }
 
+    // Re-inject the campaign brand into node configs so it survives builder
+    // edits (the per-node forms can drop brandName/senderName on save).
+    let nodesToSave: unknown = nodes;
+    if (wf.campaignId) {
+      const campaign = await findCampaignById(wf.campaignId);
+      if (campaign) nodesToSave = restampBrand(nodes, campaign.brand);
+    }
+
     const updated = await updateWorkflow(wf.id, {
-      draftNodes: nodes as Prisma.InputJsonValue,
+      draftNodes: nodesToSave as Prisma.InputJsonValue,
     });
 
     res.json({

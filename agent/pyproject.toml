@@ -11,10 +11,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local dev (Ollama)
 ai = [
     "langgraph>=0.1.0",
-    "langchain-openai>=0.1.0",
+    "langchain-ollama>=0.2.0",
 ]
+# Prod (OpenAI) — install with: pip install langchain-openai
+# ai-prod = [
+#     "langgraph>=0.1.0",
+#     "langchain-openai>=0.1.0",
+# ]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

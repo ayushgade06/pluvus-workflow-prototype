@@ -1,4 +1,4 @@
-import { createMessage } from "../../db/index.js";
+import { createMessage, listMessagesByInstance } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 
@@ -36,7 +36,11 @@ export async function executeNegotiation(
     };
   }
 
-  const { outcome, message } = await agent.negotiate(instance.negotiationRound, config);
+  const messages = await listMessagesByInstance(instance.id);
+  const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
+  const creatorReply = latestInbound?.body ?? "";
+
+  const { outcome, message } = await agent.negotiate(instance.negotiationRound, config, creatorReply);
 
   switch (outcome) {
     case "accept": {
@@ -126,7 +130,7 @@ export async function executeNegotiation(
       });
 
       return {
-        nextState: "NEGOTIATING",
+        nextState: "AWAITING_REPLY",
         nextNodeId: node.id,
         negotiationRound: newRound,
         eventType: "NEGOTIATION_TURN",

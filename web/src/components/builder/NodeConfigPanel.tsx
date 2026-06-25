@@ -1,5 +1,17 @@
-import { useState, useEffect } from "react";
-import { colors } from "../../theme";
+import { useState, useEffect, useId } from "react";
+import { colors, radii, font } from "../../theme";
+import {
+  Button,
+  Input,
+  Textarea,
+  Select,
+  Toggle,
+  Slider,
+  FormField,
+  IconButton,
+  ConfirmDialog,
+} from "../ds";
+import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "./nodeMeta";
 import type {
   DraftNode,
   InitialOutreachConfig,
@@ -16,6 +28,9 @@ interface Props {
   onMoveDown: (nodeId: string) => void;
   isFirst: boolean;
   isLast: boolean;
+  saving?: boolean;
+  saveError?: string | null;
+  savedAt?: string | null;
 }
 
 export function NodeConfigPanel({
@@ -26,7 +41,13 @@ export function NodeConfigPanel({
   onMoveDown,
   isFirst,
   isLast,
+  saving = false,
+  saveError = null,
+  savedAt = null,
 }: Props) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const color = nodeColor(node.type);
+
   return (
     <div
       style={{
@@ -46,26 +67,78 @@ export function NodeConfigPanel({
       >
         <div
           style={{
-            fontSize: 12,
-            color: colors.textMuted,
+            fontSize: font.size.xs,
+            color: colors.textDim,
             textTransform: "uppercase",
             letterSpacing: 0.5,
-            marginBottom: 4,
+            marginBottom: 8,
           }}
         >
-          Node Configuration
+          Step Configuration
         </div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>
-          {NODE_LABELS[node.type] ?? node.type}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span
+            aria-hidden
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: radii.sm,
+              background: `${color}1f`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 16,
+              flexShrink: 0,
+            }}
+          >
+            {nodeIcon(node.type)}
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text }}>
+              {nodeLabel(node.type)}
+            </div>
+            <div className="mono" style={{ fontSize: 10.5, color: colors.textDim }}>
+              {node.id}
+            </div>
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 2, fontFamily: "monospace" }}>
-          {node.id}
-        </div>
+        {nodeDescription(node.type) && (
+          <div style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.5, marginTop: 10 }}>
+            {nodeDescription(node.type)}
+          </div>
+        )}
       </div>
 
       {/* Config form */}
-      <div style={{ flex: 1, overflow: "auto", padding: "16px 18px" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "18px" }}>
         <NodeForm node={node} onUpdate={onUpdate} />
+      </div>
+
+      {/* Sticky save status */}
+      <div
+        style={{
+          padding: "7px 18px",
+          borderTop: `1px solid ${colors.border}`,
+          flexShrink: 0,
+          fontSize: font.size.sm,
+          minHeight: 30,
+          display: "flex",
+          alignItems: "center",
+          background: colors.panelAlt,
+        }}
+        aria-live="polite"
+      >
+        {saveError ? (
+          <span style={{ color: colors.danger }}>● Save failed — {saveError}</span>
+        ) : saving ? (
+          <span style={{ color: colors.textDim }}>Saving changes…</span>
+        ) : savedAt ? (
+          <span style={{ color: colors.textDim }}>
+            <span style={{ color: colors.success }}>✓</span> All changes saved
+          </span>
+        ) : (
+          <span style={{ color: colors.textDim }}>Changes save automatically</span>
+        )}
       </div>
 
       {/* Actions */}
@@ -74,71 +147,53 @@ export function NodeConfigPanel({
           padding: "12px 18px",
           borderTop: `1px solid ${colors.border}`,
           display: "flex",
+          alignItems: "center",
           gap: 8,
           flexShrink: 0,
         }}
       >
-        <button
+        <IconButton
+          label="Move step up"
+          icon="↑"
           disabled={isFirst}
           onClick={() => onMoveUp(node.id)}
-          style={arrowBtnStyle(isFirst)}
-          title="Move up"
-        >
-          ↑ Up
-        </button>
-        <button
+          style={{ border: `1px solid ${isFirst ? colors.border : colors.borderStrong}` }}
+        />
+        <IconButton
+          label="Move step down"
+          icon="↓"
           disabled={isLast}
           onClick={() => onMoveDown(node.id)}
-          style={arrowBtnStyle(isLast)}
-          title="Move down"
-        >
-          ↓ Down
-        </button>
+          style={{ border: `1px solid ${isLast ? colors.border : colors.borderStrong}` }}
+        />
         <div style={{ flex: 1 }} />
         {node.type !== "END" && (
-          <button
-            onClick={() => {
-              if (window.confirm(`Delete "${NODE_LABELS[node.type] ?? node.type}" node?`)) {
-                onDelete(node.id);
-              }
-            }}
-            style={{
-              padding: "6px 12px",
-              background: "none",
-              color: colors.danger,
-              border: `1px solid ${colors.danger}`,
-              borderRadius: 5,
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            Delete
-          </button>
+          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+            Delete step
+          </Button>
         )}
       </div>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete step?"
+          message={
+            <>
+              Delete the <strong>{nodeLabel(node.type)}</strong> step? This removes it from the draft
+              workflow. You can re-publish afterwards.
+            </>
+          }
+          confirmLabel="Delete step"
+          destructive
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            onDelete(node.id);
+          }}
+        />
+      )}
     </div>
   );
-}
-
-const NODE_LABELS: Record<string, string> = {
-  INITIAL_OUTREACH: "Initial Outreach",
-  FOLLOW_UP: "Follow-Up",
-  REPLY_DETECTION: "Reply Detection",
-  NEGOTIATION: "Negotiation",
-  END: "End",
-  IMPORT_CREATOR_LIST: "Import Creators",
-};
-
-function arrowBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    padding: "6px 10px",
-    background: "none",
-    color: disabled ? colors.textDim : colors.textMuted,
-    border: `1px solid ${disabled ? colors.border : colors.borderStrong}`,
-    borderRadius: 5,
-    fontSize: 12,
-    cursor: disabled ? "not-allowed" : "pointer",
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,11 +218,7 @@ function NodeForm({
       );
     case "FOLLOW_UP":
       return (
-        <FollowUpForm
-          nodeId={node.id}
-          config={node.config as FollowUpConfig}
-          onUpdate={onUpdate}
-        />
+        <FollowUpForm nodeId={node.id} config={node.config as FollowUpConfig} onUpdate={onUpdate} />
       );
     case "REPLY_DETECTION":
       return (
@@ -189,8 +240,8 @@ function NodeForm({
       return <EndNodeInfo />;
     default:
       return (
-        <div style={{ fontSize: 12, color: colors.textMuted }}>
-          No configuration available for this node type.
+        <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
+          No configuration available for this step type.
         </div>
       );
   }
@@ -211,12 +262,15 @@ function InitialOutreachForm({
 }) {
   const [subject, setSubject] = useState(config.subjectTemplate ?? "");
   const [body, setBody] = useState(config.bodyTemplate ?? "");
+  const subjectId = useId();
+  const bodyId = useId();
 
   useEffect(() => {
     setSubject(config.subjectTemplate ?? "");
     setBody(config.bodyTemplate ?? "");
   }, [nodeId, config.subjectTemplate, config.bodyTemplate]);
 
+  // Identical payload to before: spread config, override subject/body.
   function flush() {
     onUpdate(nodeId, {
       ...config,
@@ -226,31 +280,35 @@ function InitialOutreachForm({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <FormStack>
       <InfoBox>
         The first email sent to each creator. Supports template variables:{" "}
-        <code>{"{{creatorName}}"}</code>, <code>{"{{brandName}}"}</code>.
+        <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>.
       </InfoBox>
-      <Field label="Subject Line">
-        <input
-          value={subject}
-          onChange={(e) => setSubject(e.target.value)}
-          onBlur={flush}
-          style={inputStyle}
-          placeholder="e.g. Partnership opportunity with {{brandName}}"
-        />
-      </Field>
-      <Field label="Email Body">
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onBlur={flush}
-          rows={10}
-          style={{ ...inputStyle, resize: "vertical" }}
-          placeholder="Write your outreach email here…"
-        />
-      </Field>
-    </div>
+      <Section title="Message">
+        <FormField label="Subject Line" htmlFor={subjectId}>
+          <Input
+            id={subjectId}
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            onBlur={flush}
+            invalid={!subject.trim()}
+            placeholder="e.g. Partnership opportunity with {{brandName}}"
+          />
+        </FormField>
+        <FormField label="Email Body" htmlFor={bodyId} hint="Plain text. Template variables are supported.">
+          <Textarea
+            id={bodyId}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onBlur={flush}
+            rows={10}
+            invalid={!body.trim()}
+            placeholder="Write your outreach email here…"
+          />
+        </FormField>
+      </Section>
+    </FormStack>
   );
 }
 
@@ -272,6 +330,9 @@ function FollowUpForm({
   const [maxCount, setMaxCount] = useState(config.maxCount ?? 2);
   const [body, setBody] = useState(config.bodyTemplate ?? "");
   const [stopOnReply, setStopOnReply] = useState(config.stopOnReply ?? true);
+  const maxId = useId();
+  const unitId = useId();
+  const bodyId = useId();
 
   useEffect(() => {
     setIntervals(config.intervals ?? [3]);
@@ -281,117 +342,127 @@ function FollowUpForm({
     setStopOnReply(config.stopOnReply ?? true);
   }, [nodeId]);
 
-  function flush() {
+  // Same payload shape; `over` lets us flush with values that haven't yet
+  // round-tripped through state (replaces the prior setTimeout(flush, 0) hack).
+  function flush(over?: Partial<FollowUpConfig>) {
     onUpdate(nodeId, {
       intervals,
       intervalUnit: unit,
       maxCount,
       bodyTemplate: body,
       stopOnReply,
+      ...over,
     });
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <FormStack>
       <InfoBox>
         Sends follow-up emails at configured intervals. Stops when the creator replies (if enabled).
       </InfoBox>
-      <Field label="Max Follow-Ups">
-        <input
-          type="number"
-          min={1}
-          max={5}
-          value={maxCount}
-          onChange={(e) => setMaxCount(Number(e.target.value))}
-          onBlur={flush}
-          style={{ ...inputStyle, width: 80 }}
-        />
-      </Field>
-      <Field label="Intervals">
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {intervals.map((v, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <input
-                type="number"
-                min={1}
-                value={v}
-                onChange={(e) => {
-                  const next = [...intervals];
-                  next[i] = Number(e.target.value);
-                  setIntervals(next);
-                }}
-                onBlur={flush}
-                style={{ ...inputStyle, width: 60 }}
-              />
-              {i < intervals.length - 1 && (
-                <button
-                  onClick={() => {
-                    setIntervals(intervals.filter((_, j) => j !== i));
-                    setTimeout(flush, 0);
+
+      <Section title="Cadence">
+        <FormField label="Max Follow-Ups" htmlFor={maxId}>
+          <Input
+            id={maxId}
+            type="number"
+            min={1}
+            max={5}
+            value={maxCount}
+            onChange={(e) => setMaxCount(Number(e.target.value))}
+            onBlur={() => flush()}
+            style={{ width: 90 }}
+          />
+        </FormField>
+
+        <FormField label="Intervals" hint="How long to wait before each follow-up.">
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {intervals.map((v, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <Input
+                  type="number"
+                  min={1}
+                  value={v}
+                  aria-label={`Interval ${i + 1}`}
+                  onChange={(e) => {
+                    const next = [...intervals];
+                    next[i] = Number(e.target.value);
+                    setIntervals(next);
                   }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: colors.danger,
-                    cursor: "pointer",
-                    fontSize: 14,
-                    padding: "0 2px",
-                  }}
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
-          <button
-            onClick={() => {
-              setIntervals([...intervals, 3]);
-              setTimeout(flush, 0);
-            }}
-            style={{
-              padding: "4px 8px",
-              background: "none",
-              border: `1px solid ${colors.border}`,
-              color: colors.textMuted,
-              borderRadius: 4,
-              fontSize: 11,
-              cursor: "pointer",
+                  onBlur={() => flush()}
+                  style={{ width: 64 }}
+                />
+                {intervals.length > 1 && (
+                  <IconButton
+                    label={`Remove interval ${i + 1}`}
+                    icon="×"
+                    size={22}
+                    style={{ color: colors.danger }}
+                    onClick={() => {
+                      const next = intervals.filter((_, j) => j !== i);
+                      setIntervals(next);
+                      flush({ intervals: next });
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                const next = [...intervals, 3];
+                setIntervals(next);
+                flush({ intervals: next });
+              }}
+            >
+              + Add
+            </Button>
+          </div>
+        </FormField>
+
+        <FormField label="Interval Unit" htmlFor={unitId}>
+          <Select
+            id={unitId}
+            value={unit}
+            onChange={(e) => {
+              const next = e.target.value as "days" | "hours" | "seconds";
+              setUnit(next);
+              flush({ intervalUnit: next });
             }}
           >
-            + Add
-          </button>
-        </div>
-      </Field>
-      <Field label="Interval Unit">
-        <select value={unit} onChange={(e) => { setUnit(e.target.value as "days" | "hours" | "seconds"); flush(); }} style={inputStyle}>
-          <option value="seconds">Seconds</option>
-          <option value="hours">Hours</option>
-          <option value="days">Days</option>
-        </select>
-      </Field>
-      <Field label="Stop on Reply">
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
+            <option value="seconds">Seconds</option>
+            <option value="hours">Hours</option>
+            <option value="days">Days</option>
+          </Select>
+        </FormField>
+
+        <FormField label="Stop on Reply">
+          <Toggle
             checked={stopOnReply}
-            onChange={(e) => { setStopOnReply(e.target.checked); setTimeout(flush, 0); }}
+            onChange={(checked) => {
+              setStopOnReply(checked);
+              flush({ stopOnReply: checked });
+            }}
+            label="Cancel scheduled follow-ups once a reply is received"
           />
-          <span style={{ fontSize: 12, color: colors.textMuted }}>
-            Cancel scheduled follow-ups once a reply is received
-          </span>
-        </label>
-      </Field>
-      <Field label="Follow-Up Body">
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onBlur={flush}
-          rows={8}
-          style={{ ...inputStyle, resize: "vertical" }}
-          placeholder="Just following up on my previous message…"
-        />
-      </Field>
-    </div>
+        </FormField>
+      </Section>
+
+      <Section title="Message">
+        <FormField label="Follow-Up Body" htmlFor={bodyId} hint="Sent for every follow-up in the cadence.">
+          <Textarea
+            id={bodyId}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onBlur={() => flush()}
+            rows={8}
+            invalid={!body.trim()}
+            placeholder="Just following up on my previous message…"
+          />
+        </FormField>
+      </Section>
+    </FormStack>
   );
 }
 
@@ -416,56 +487,48 @@ function ReplyDetectionForm({
     setManualReview(config.manualReviewOnLowConfidence ?? true);
   }, [nodeId]);
 
-  function flush() {
+  function flush(over?: Partial<ReplyDetectionConfig>) {
     onUpdate(nodeId, {
       lowConfidenceThreshold: threshold,
       manualReviewOnLowConfidence: manualReview,
+      ...over,
     });
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <FormStack>
       <InfoBox>
-        AI classifies each reply as: Positive, Negative, Question, Opt-Out, or Unknown.
-        Replies below the confidence threshold are sent to Manual Review.
+        AI classifies each reply as Positive, Negative, Question, Opt-Out, or Unknown. Replies below
+        the confidence threshold are sent to Manual Review.
       </InfoBox>
-      <Field label={`Confidence Threshold: ${Math.round(threshold * 100)}%`}>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={Math.round(threshold * 100)}
-          onChange={(e) => setThreshold(Number(e.target.value) / 100)}
-          onMouseUp={flush}
-          onTouchEnd={flush}
-          style={{ width: "100%", accentColor: colors.accent }}
-        />
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            fontSize: 10.5,
-            color: colors.textDim,
-            marginTop: 2,
-          }}
-        >
-          <span>0% (accept anything)</span>
-          <span>100% (very strict)</span>
-        </div>
-      </Field>
-      <Field label="Low-Confidence Behavior">
-        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={manualReview}
-            onChange={(e) => { setManualReview(e.target.checked); setTimeout(flush, 0); }}
+
+      <Section title="Classification">
+        <FormField label={`Confidence Threshold · ${Math.round(threshold * 100)}%`}>
+          <Slider
+            min={0}
+            max={100}
+            value={Math.round(threshold * 100)}
+            aria-label="Confidence threshold percent"
+            onChange={(e) => setThreshold(Number(e.target.value) / 100)}
+            onMouseUp={() => flush()}
+            onTouchEnd={() => flush()}
+            minLabel="0% · accept anything"
+            maxLabel="100% · very strict"
           />
-          <span style={{ fontSize: 12, color: colors.textMuted }}>
-            Send to Manual Review when confidence is below threshold
-          </span>
-        </label>
-      </Field>
-    </div>
+        </FormField>
+
+        <FormField label="Low-Confidence Behavior">
+          <Toggle
+            checked={manualReview}
+            onChange={(checked) => {
+              setManualReview(checked);
+              flush({ manualReviewOnLowConfidence: checked });
+            }}
+            label="Send to Manual Review when confidence is below threshold"
+          />
+        </FormField>
+      </Section>
+    </FormStack>
   );
 }
 
@@ -487,6 +550,11 @@ function NegotiationForm({
   const [maxRounds, setMaxRounds] = useState(config.maxRounds ?? 3);
   const [approvalMode, setApprovalMode] = useState<"auto" | "manual">(config.approvalMode ?? "auto");
   const [commissionRate, setCommissionRate] = useState(config.commissionRate ?? 0);
+  const minId = useId();
+  const maxId = useId();
+  const roundsId = useId();
+  const modeId = useId();
+  const commissionId = useId();
 
   useEffect(() => {
     setMinBudget(config.minBudget ?? 0);
@@ -496,77 +564,107 @@ function NegotiationForm({
     setCommissionRate(config.commissionRate ?? 0);
   }, [nodeId]);
 
-  function flush() {
-    onUpdate(nodeId, {
+  // Identical payload: commissionRate only included when > 0.
+  function flush(over?: Partial<NegotiationConfig>) {
+    const next = {
       minBudget,
       maxBudget,
       maxRounds,
       approvalMode,
-      ...(commissionRate > 0 ? { commissionRate } : {}),
+      commissionRate,
+      ...over,
+    };
+    const { commissionRate: rate, ...rest } = next;
+    onUpdate(nodeId, {
+      ...rest,
+      ...(rate > 0 ? { commissionRate: rate } : {}),
     });
   }
 
+  const budgetInvalid = maxBudget < minBudget;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <FormStack>
       <InfoBox>
-        The AI agent negotiates terms within the budget range. Escalates to Manual Review
-        after the max rounds limit is reached.
+        The AI agent negotiates terms within the budget range. Escalates to Manual Review after the
+        max rounds limit is reached.
       </InfoBox>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Min Budget ($)">
-          <input
-            type="number"
-            min={0}
-            value={minBudget}
-            onChange={(e) => setMinBudget(Number(e.target.value))}
-            onBlur={flush}
-            style={inputStyle}
-          />
-        </Field>
-        <Field label="Max Budget ($)">
-          <input
-            type="number"
-            min={0}
-            value={maxBudget}
-            onChange={(e) => setMaxBudget(Number(e.target.value))}
-            onBlur={flush}
-            style={inputStyle}
-          />
-        </Field>
-      </div>
-      <Field label="Max Negotiation Rounds">
-        <input
-          type="number"
-          min={1}
-          max={10}
-          value={maxRounds}
-          onChange={(e) => setMaxRounds(Number(e.target.value))}
-          onBlur={flush}
-          style={{ ...inputStyle, width: 80 }}
-        />
-      </Field>
-      <Field label="Approval Mode">
-        <select
-          value={approvalMode}
-          onChange={(e) => { setApprovalMode(e.target.value as "auto" | "manual"); flush(); }}
-          style={inputStyle}
+
+      <Section title="Budget">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <FormField label="Min Budget ($)" htmlFor={minId}>
+            <Input
+              id={minId}
+              type="number"
+              min={0}
+              value={minBudget}
+              onChange={(e) => setMinBudget(Number(e.target.value))}
+              onBlur={() => flush()}
+            />
+          </FormField>
+          <FormField
+            label="Max Budget ($)"
+            htmlFor={maxId}
+            error={budgetInvalid ? "Must be ≥ min budget" : undefined}
+          >
+            <Input
+              id={maxId}
+              type="number"
+              min={0}
+              value={maxBudget}
+              invalid={budgetInvalid}
+              onChange={(e) => setMaxBudget(Number(e.target.value))}
+              onBlur={() => flush()}
+            />
+          </FormField>
+        </div>
+        <FormField
+          label="Commission Rate (%)"
+          htmlFor={commissionId}
+          hint="Set to 0 for fixed-fee deals."
         >
-          <option value="auto">Auto — AI accepts/rejects within budget</option>
-          <option value="manual">Manual — human approves final terms</option>
-        </select>
-      </Field>
-      <Field label="Commission Rate (%) — 0 for fixed-fee">
-        <input
-          type="number"
-          min={0}
-          max={100}
-          value={commissionRate}
-          onChange={(e) => setCommissionRate(Number(e.target.value))}
-          onBlur={flush}
-          style={{ ...inputStyle, width: 80 }}
-        />
-      </Field>
-    </div>
+          <Input
+            id={commissionId}
+            type="number"
+            min={0}
+            max={100}
+            value={commissionRate}
+            onChange={(e) => setCommissionRate(Number(e.target.value))}
+            onBlur={() => flush()}
+            style={{ width: 90 }}
+          />
+        </FormField>
+      </Section>
+
+      <Section title="Approval">
+        <FormField label="Max Negotiation Rounds" htmlFor={roundsId}>
+          <Input
+            id={roundsId}
+            type="number"
+            min={1}
+            max={10}
+            value={maxRounds}
+            onChange={(e) => setMaxRounds(Number(e.target.value))}
+            onBlur={() => flush()}
+            style={{ width: 90 }}
+          />
+        </FormField>
+        <FormField label="Approval Mode" htmlFor={modeId}>
+          <Select
+            id={modeId}
+            value={approvalMode}
+            onChange={(e) => {
+              const next = e.target.value as "auto" | "manual";
+              setApprovalMode(next);
+              flush({ approvalMode: next });
+            }}
+          >
+            <option value="auto">Auto — AI accepts/rejects within budget</option>
+            <option value="manual">Manual — human approves final terms</option>
+          </Select>
+        </FormField>
+      </Section>
+    </FormStack>
   );
 }
 
@@ -576,35 +674,39 @@ function NegotiationForm({
 
 function EndNodeInfo() {
   return (
-    <div>
+    <FormStack>
       <InfoBox>
-        Terminal node. Marks a creator as completed and closes the execution instance.
-        No configuration needed.
+        Terminal node. Marks a creator as completed and closes the execution instance. No
+        configuration needed.
       </InfoBox>
-    </div>
+    </FormStack>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Shared UI atoms
+// Shared UI atoms (Phase C)
 // ---------------------------------------------------------------------------
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function FormStack({ children }: { children: React.ReactNode }) {
+  return <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>{children}</div>;
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div
         style={{
-          display: "block",
-          fontSize: 11,
-          fontWeight: 600,
-          color: colors.textMuted,
+          fontSize: font.size.sm,
+          fontWeight: font.weight.bold,
           textTransform: "uppercase",
-          letterSpacing: 0.5,
-          marginBottom: 5,
+          letterSpacing: 0.6,
+          color: colors.textMuted,
+          paddingBottom: 8,
+          borderBottom: `1px solid ${colors.border}`,
         }}
       >
-        {label}
-      </label>
+        {title}
+      </div>
       {children}
     </div>
   );
@@ -614,13 +716,13 @@ function InfoBox({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        padding: "8px 12px",
+        padding: "10px 12px",
         background: colors.bg,
         border: `1px solid ${colors.border}`,
-        borderRadius: 6,
-        fontSize: 11.5,
+        borderRadius: radii.md,
+        fontSize: font.size.sm,
         color: colors.textMuted,
-        lineHeight: 1.5,
+        lineHeight: 1.55,
       }}
     >
       {children}
@@ -628,14 +730,20 @@ function InfoBox({ children }: { children: React.ReactNode }) {
   );
 }
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "7px 10px",
-  background: colors.bg,
-  border: `1px solid ${colors.border}`,
-  borderRadius: 5,
-  color: colors.text,
-  fontSize: 12.5,
-  outline: "none",
-  boxSizing: "border-box",
-};
+function Code({ children }: { children: React.ReactNode }) {
+  return (
+    <code
+      className="mono"
+      style={{
+        fontSize: 10.5,
+        background: colors.panelAlt,
+        border: `1px solid ${colors.border}`,
+        borderRadius: 4,
+        padding: "1px 4px",
+        color: colors.text,
+      }}
+    >
+      {children}
+    </code>
+  );
+}

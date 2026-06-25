@@ -23,6 +23,92 @@ export const colors = {
   success: "#3fb950",
 };
 
+// ---------------------------------------------------------------------------
+// Design-system scales (Phase A — additive, presentational only)
+// ---------------------------------------------------------------------------
+// One source of truth for spacing / radii / shadows / typography / z-index, so
+// primitives and screens stop hard-coding magic numbers. Nothing here changes
+// data flow — it's pure visual vocabulary.
+
+// 4px base spacing scale. Use `space[3]` instead of literal `12`.
+export const space = {
+  0: 0,
+  1: 4,
+  2: 8,
+  3: 12,
+  4: 16,
+  5: 20,
+  6: 24,
+  8: 32,
+  10: 40,
+  12: 48,
+} as const;
+
+export const radii = {
+  sm: 5,
+  md: 8,
+  lg: 12,
+  pill: 999,
+} as const;
+
+export const shadow = {
+  sm: "0 1px 2px rgba(0,0,0,0.30)",
+  md: "0 4px 12px rgba(0,0,0,0.35)",
+  lg: "0 8px 28px rgba(0,0,0,0.45)",
+  focus: `0 0 0 3px ${colors.accent}33`,
+} as const;
+
+export const font = {
+  size: {
+    xs: 10.5,
+    sm: 11.5,
+    md: 13,
+    lg: 15,
+    xl: 18,
+    xxl: 24,
+  },
+  weight: {
+    regular: 400,
+    medium: 500,
+    semibold: 600,
+    bold: 700,
+  },
+} as const;
+
+export const z = {
+  canvas: 0,
+  panel: 10,
+  sticky: 20,
+  overlay: 900,
+  modal: 1000,
+  toast: 1100,
+} as const;
+
+// Semantic status colour keyed by the workflow/version status strings the API
+// already returns. Centralises the ad-hoc ternaries scattered across screens.
+export type StatusKey = "draft" | "published" | "archived" | "invalid";
+
+export const statusColor: Record<StatusKey, string> = {
+  draft: colors.warning,
+  published: colors.success,
+  archived: colors.textDim,
+  invalid: colors.danger,
+};
+
+// Map an API status string (e.g. "PUBLISHED", "DRAFT") to a StatusKey.
+export function statusKey(status: string): StatusKey {
+  switch (status.toUpperCase()) {
+    case "PUBLISHED":
+      return "published";
+    case "ARCHIVED":
+      return "archived";
+    case "INVALID":
+      return "invalid";
+    default:
+      return "draft";
+  }
+}
+
 // Semantic colour per workflow state. Active states are blue-ish, positive
 // terminals green, negative terminals red/grey, review amber.
 export const stateColor: Record<InstanceState, string> = {
