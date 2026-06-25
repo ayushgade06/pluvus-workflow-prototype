@@ -4,9 +4,13 @@ uvicorn[standard]>=0.30.0
 httpx>=0.27.0
 python-dotenv>=1.0.1
 
-# AI — local dev (Ollama)
+# AI — LangGraph (provider-agnostic orchestration)
 langgraph>=0.1.0
+
+# AI — local dev (Ollama / Qwen). Used when LLM_PROVIDER=ollama (default).
 langchain-ollama>=0.2.0
 
-# AI — prod (OpenAI) — uncomment when OPENAI_API_KEY is available
+# AI — prod (OpenAI). Used when LLM_PROVIDER=openai.
+# Lazy-imported in app/llm.py, so it's only required once you flip to OpenAI.
+# Install when the key arrives:  pip install langchain-openai
 # langchain-openai>=0.1.0

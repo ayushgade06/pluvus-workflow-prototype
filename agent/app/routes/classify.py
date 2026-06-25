@@ -1,9 +1,8 @@
 """
 POST /classify — reply intent classification
 
-LLM backend (swap by commenting/uncommenting):
-  - Ollama (local, default for dev)
-  - OpenAI (prod — set OPENAI_API_KEY and flip the import below)
+LLM backend is chosen by the LLM_PROVIDER env var (ollama | openai) via
+app.llm.get_llm — see app/llm.py. No code edits to swap providers.
 
 Input:  { "message": "I'd love to collaborate." }
 Output: { "intent": "POSITIVE", "confidence": 0.94, "reasoning": "..." }
@@ -11,15 +10,17 @@ Output: { "intent": "POSITIVE", "confidence": 0.94, "reasoning": "..." }
 
 from __future__ import annotations
 
-import os
-import re
-import json
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from app.llm import get_llm
+from app.structured import StructuredOutputError, invoke_structured
 
 router = APIRouter()
+logger = logging.getLogger("agent.classify")
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -40,26 +41,26 @@ class ClassifyResponse(BaseModel):
     reasoning: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# LLM backend — swap here when moving to prod
-# ---------------------------------------------------------------------------
+class _ClassifyLLMOutput(BaseModel):
+    """Schema the model output is validated against AS PRODUCED (FIX-6).
 
-def _get_llm():
-    # ── Ollama (local dev) ──────────────────────────────────────────────────
-    from langchain_ollama import ChatOllama  # type: ignore[import]
-    return ChatOllama(
-        model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        temperature=0,
-    )
+    `intent` must be one of the enum values — an invalid intent fails validation
+    and forces a model retry instead of a regex guess. `confidence` is coerced
+    to a float and clamped to [0, 1].
+    """
 
-    # ── OpenAI (prod) ───────────────────────────────────────────────────────
-    # from langchain_openai import ChatOpenAI  # type: ignore[import]
-    # return ChatOpenAI(
-    #     model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-    #     api_key=os.getenv("OPENAI_API_KEY"),
-    #     temperature=0,
-    # )
+    intent: ReplyIntent
+    confidence: float = 0.5
+    reasoning: str | None = None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, v: object) -> float:
+        try:
+            f = float(v)  # tolerate "0.94" strings
+        except (TypeError, ValueError):
+            return 0.5
+        return max(0.0, min(1.0, f))
 
 
 # ---------------------------------------------------------------------------
@@ -83,47 +84,32 @@ Reply to classify:
 {message}
 """
 
-_INTENT_RE = re.compile(r'"intent"\s*:\s*"(POSITIVE|NEGATIVE|QUESTION|OPT_OUT|UNKNOWN)"')
-_CONF_RE   = re.compile(r'"confidence"\s*:\s*([0-9.]+)')
-_REASON_RE = re.compile(r'"reasoning"\s*:\s*"([^"]+)"')
-
-
-def _parse_classify(raw: str) -> ClassifyResponse:
-    raw = raw.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        parsed = json.loads(m.group()) if m else {}
-
-    intent = parsed.get("intent", "UNKNOWN")
-    confidence = float(parsed.get("confidence", 0.5))
-    reasoning = parsed.get("reasoning")
-
-    if intent not in {"POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN"}:
-        # Fallback: regex scrape
-        im = _INTENT_RE.search(raw)
-        cm = _CONF_RE.search(raw)
-        rm = _REASON_RE.search(raw)
-        intent = im.group(1) if im else "UNKNOWN"
-        confidence = float(cm.group(1)) if cm else 0.5
-        reasoning = rm.group(1) if rm else None
-
-    confidence = max(0.0, min(1.0, confidence))
-    return ClassifyResponse(intent=intent, confidence=confidence, reasoning=reasoning)  # type: ignore[arg-type]
-
-
 def _langgraph_classify(message: str) -> ClassifyResponse:
     from langgraph.graph import StateGraph, END  # type: ignore[import]
 
-    llm = _get_llm()
+    llm = get_llm(temperature=0)
 
     def classify_node(state: dict) -> dict:
         prompt = _CLASSIFY_PROMPT.format(message=state["message"])
-        return {"raw": llm.invoke(prompt).content}
+        # FIX-6: validate the model output against _ClassifyLLMOutput AS PRODUCED,
+        # retrying the model on invalid output instead of regex-scraping a guess.
+        # On total failure, fail SAFE to UNKNOWN/low-confidence so the existing
+        # low-confidence gate routes the reply to MANUAL_REVIEW.
+        try:
+            parsed = invoke_structured(llm, prompt, _ClassifyLLMOutput, retries=2)
+            out = ClassifyResponse(
+                intent=parsed.intent,
+                confidence=parsed.confidence,
+                reasoning=parsed.reasoning,
+            )
+        except StructuredOutputError as exc:
+            logger.warning("classify structured-output failed, routing to UNKNOWN: %s", exc)
+            out = ClassifyResponse(
+                intent="UNKNOWN",
+                confidence=0.0,
+                reasoning="classifier output invalid after retries",
+            )
+        return {"result": out}
 
     graph = StateGraph(dict)
     graph.add_node("classify", classify_node)
@@ -131,7 +117,7 @@ def _langgraph_classify(message: str) -> ClassifyResponse:
     graph.add_edge("classify", END)
 
     result = graph.compile().invoke({"message": message})
-    return _parse_classify(result.get("raw", ""))
+    return result["result"]
 
 
 # ---------------------------------------------------------------------------

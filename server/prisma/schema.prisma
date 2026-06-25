@@ -248,6 +248,12 @@ model Message {
   body                String
   threadId            String?
   externalMessageId   String?          @unique
+  /// Deterministic pre-send key for OUTBOUND AI messages (Phase: remediation
+  /// FIX-11). Computed BEFORE email.send() from stable inputs
+  /// (instanceId + purpose + round), so a crash between send and the row write
+  /// can be detected on retry and the send is not duplicated. NULL for inbound
+  /// messages and for outbound messages that predate this field.
+  idempotencyKey      String?          @unique
   replyIntent         ReplyIntent?
   classifyConfidence  Float?
   sentAt              DateTime?

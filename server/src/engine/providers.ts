@@ -1,7 +1,13 @@
 import type { Creator, ReplyIntent } from "@prisma/client";
-import type { EmailDraft, ClassifyResult, NegotiateResult, NegotiateOutcome } from "./types.js";
+import type {
+  EmailDraft,
+  ClassifyResult,
+  NegotiateResult,
+  NegotiateOutcome,
+  PriorNegotiationContext,
+} from "./types.js";
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
-import type { NegotiationTerm } from "../adapters/negotiation/types.js";
+import type { NegotiationTerm, NegotiationHistoryEntry } from "../adapters/negotiation/types.js";
 
 // ---------------------------------------------------------------------------
 // IEmailProvider
@@ -87,7 +93,12 @@ export class MockEmailProvider implements IEmailProvider {
 
 export interface IAgentProvider {
   classify(body: string, intent?: string): Promise<ClassifyResult>;
-  negotiate(round: number, config: Record<string, unknown>, creatorReply?: string): Promise<NegotiateResult>;
+  negotiate(
+    round: number,
+    config: Record<string, unknown>,
+    creatorReply?: string,
+    priorContext?: PriorNegotiationContext,
+  ): Promise<NegotiateResult>;
   /**
    * Generate email copy via the draft agent.
    * Phase 8: executors call this instead of the raw template when
@@ -138,36 +149,16 @@ export class MockAgentProvider implements IAgentProvider {
     };
   }
 
-  async negotiate(round: number, config: Record<string, unknown>, creatorReply = ""): Promise<NegotiateResult> {
-    const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
-    const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
-    const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
-
-    const resp = await this._negotiationProvider.negotiate({
-      creatorReply,
-      currentOffer: termFloor,
-      round,
-      maxRounds,
-      negotiationHistory: [],
-      campaignConstraints: { termFloor, termCeiling },
-    });
-
-    // Map NegotiationAction → legacy NegotiateOutcome for backwards compat.
-    // ESCALATE is treated as reject in the legacy path (new executors use the
-    // NegotiationProvider directly and handle ESCALATE → MANUAL_REVIEW).
-    switch (resp.action) {
-      case "ACCEPT":
-        return { outcome: "accept", message: resp.responseDraft ?? "Partnership confirmed." };
-      case "COUNTER":
-        return {
-          outcome: "counter",
-          message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
-        };
-      case "REJECT":
-        return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
-      case "ESCALATE":
-        return { outcome: "escalate", message: resp.reasoning ?? "Escalated for human review." };
-    }
+  async negotiate(
+    round: number,
+    config: Record<string, unknown>,
+    creatorReply = "",
+    priorContext?: PriorNegotiationContext,
+  ): Promise<NegotiateResult> {
+    const resp = await this._negotiationProvider.negotiate(
+      buildNegotiationRequest(round, config, creatorReply, priorContext),
+    );
+    return mapNegotiationResponse(resp, round);
   }
 
   async draftEmail(
@@ -177,5 +168,93 @@ export class MockAgentProvider implements IAgentProvider {
   ): Promise<EmailDraft | null> {
     // Mock returns null — executors fall back to IEmailProvider.draft() template.
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared negotiation request/response mapping
+// ---------------------------------------------------------------------------
+// Both the mock bridge above and the AgentProviderAdapter (providerFactory.ts)
+// translate the engine's (round, config, creatorReply, priorContext) call into a
+// NegotiationRequest and map the NegotiationResponse back to a NegotiateResult.
+// Centralising it here keeps history threading (FIX-1) and current-offer
+// tracking (FIX-2) wired identically on both paths.
+
+/**
+ * Build a NegotiationRequest from the engine call.
+ * `priorContext` is assembled by the executor (the state authority): its
+ * `history` becomes `negotiationHistory` and its `currentOffer` becomes the
+ * `currentOffer.rate`. When absent (legacy callers), history is empty and the
+ * current offer falls back to the floor — preserving prior behavior.
+ */
+export function buildNegotiationRequest(
+  round: number,
+  config: Record<string, unknown>,
+  creatorReply: string,
+  priorContext?: PriorNegotiationContext,
+) {
+  const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
+  const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
+  const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
+  const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
+
+  // FIX-2: thread the last offer we actually proposed; fall back to the floor
+  // only when there is no prior offer (round 0 / no history).
+  const currentOffer: NegotiationTerm =
+    priorContext?.currentOffer !== undefined
+      ? { ...termFloor, rate: priorContext.currentOffer }
+      : termFloor;
+
+  // FIX-1: thread real prior turns instead of a hardcoded empty array.
+  const negotiationHistory: NegotiationHistoryEntry[] = (priorContext?.history ?? []).map((h) => ({
+    round: h.round,
+    action: h.action,
+    ...(h.rate !== undefined ? { terms: { rate: h.rate } } : {}),
+    ...(h.message !== undefined ? { message: h.message } : {}),
+  }));
+
+  return {
+    creatorReply,
+    currentOffer,
+    round,
+    maxRounds,
+    negotiationHistory,
+    campaignConstraints: { termFloor, termCeiling, ...(senderName ? { senderName } : {}) },
+  };
+}
+
+/**
+ * Map a NegotiationResponse to the engine's legacy NegotiateResult, surfacing
+ * the proposed rate (FIX-2) so the executor can persist it and thread it back
+ * next turn. ESCALATE maps to the "escalate" outcome (executor owns the
+ * MANUAL_REVIEW transition).
+ */
+export function mapNegotiationResponse(
+  resp: { action: NegotiateOutcome | string; proposedTerms?: NegotiationTerm; responseDraft?: string; reasoning?: string },
+  round: number,
+): NegotiateResult {
+  const proposedRate =
+    typeof resp.proposedTerms?.["rate"] === "number" ? (resp.proposedTerms["rate"] as number) : undefined;
+
+  switch (resp.action) {
+    case "ACCEPT":
+      return {
+        outcome: "accept",
+        message: resp.responseDraft ?? "Partnership confirmed.",
+        ...(proposedRate !== undefined ? { proposedRate } : {}),
+      };
+    case "COUNTER":
+      return {
+        outcome: "counter",
+        message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
+        ...(proposedRate !== undefined ? { proposedRate } : {}),
+      };
+    case "REJECT":
+      return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
+    case "ESCALATE":
+      return { outcome: "escalate", message: resp.reasoning ?? "Escalated for human review." };
+    default:
+      // Defensive: an unknown action escalates to a human rather than guessing.
+      return { outcome: "escalate", message: resp.reasoning ?? "Unrecognized negotiation action." };
   }
 }

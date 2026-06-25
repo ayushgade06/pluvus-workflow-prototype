@@ -2,6 +2,8 @@ import type { Creator } from "@prisma/client";
 import {
   MockEmailProvider,
   MockAgentProvider,
+  buildNegotiationRequest,
+  mapNegotiationResponse,
   type IEmailProvider,
   type IAgentProvider,
   type MockAgentOptions,
@@ -14,7 +16,7 @@ import { LangGraphNegotiationProvider } from "../adapters/negotiation/LangGraphN
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
 import type { NegotiationProvider } from "../adapters/negotiation/NegotiationProvider.js";
 import type { NegotiationTerm } from "../adapters/negotiation/types.js";
-import type { ClassifyResult, NegotiateResult, EmailDraft } from "./types.js";
+import type { ClassifyResult, NegotiateResult, EmailDraft, PriorNegotiationContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Email provider factory
@@ -99,35 +101,18 @@ class AgentProviderAdapter implements IAgentProvider {
     return { intent: result.intent as ClassifyResult["intent"], confidence: result.confidence };
   }
 
-  async negotiate(round: number, config: Record<string, unknown>, creatorReply = ""): Promise<NegotiateResult> {
-    const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
-    const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
-    const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
-
-    const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
-
-    const resp = await this.negotiator.negotiate({
-      creatorReply,
-      currentOffer: termFloor,
-      round,
-      maxRounds,
-      negotiationHistory: [],
-      campaignConstraints: { termFloor, termCeiling, ...(senderName ? { senderName } : {}) },
-    });
-
-    switch (resp.action) {
-      case "ACCEPT":
-        return { outcome: "accept", message: resp.responseDraft ?? "Partnership confirmed." };
-      case "COUNTER":
-        return {
-          outcome: "counter",
-          message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
-        };
-      case "REJECT":
-        return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
-      case "ESCALATE":
-        return { outcome: "escalate", message: resp.reasoning ?? "Escalated for human review." };
-    }
+  async negotiate(
+    round: number,
+    config: Record<string, unknown>,
+    creatorReply = "",
+    priorContext?: PriorNegotiationContext,
+  ): Promise<NegotiateResult> {
+    // FIX-1 history threading + FIX-2 current-offer tracking: the request is
+    // built from the executor-assembled priorContext (not hardcoded []/floor).
+    const resp = await this.negotiator.negotiate(
+      buildNegotiationRequest(round, config, creatorReply, priorContext),
+    );
+    return mapNegotiationResponse(resp, round);
   }
 
   async draftEmail(

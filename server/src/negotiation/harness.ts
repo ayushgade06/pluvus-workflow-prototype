@@ -22,13 +22,23 @@ import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
 
 import { WorkflowRuntime } from "../engine/runtime.js";
-import { MockEmailProvider, MockAgentProvider } from "../engine/providers.js";
+import {
+  MockEmailProvider,
+  MockAgentProvider,
+  buildNegotiationRequest,
+  mapNegotiationResponse,
+} from "../engine/providers.js";
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
 import { MockClassificationProvider } from "../adapters/classification/MockClassificationProvider.js";
 import type { ClassificationProvider } from "../adapters/classification/ClassificationProvider.js";
 import type { NegotiationProvider } from "../adapters/negotiation/NegotiationProvider.js";
 import type { IAgentProvider, IEmailProvider } from "../engine/providers.js";
-import type { ClassifyResult, NegotiateResult, EmailDraft } from "../engine/types.js";
+import type {
+  ClassifyResult,
+  NegotiateResult,
+  EmailDraft,
+  PriorNegotiationContext,
+} from "../engine/types.js";
 import type { Creator } from "@prisma/client";
 import type { NegotiationTerm } from "../adapters/negotiation/types.js";
 import {
@@ -74,28 +84,16 @@ class HarnessAgentProvider implements IAgentProvider {
     return { intent: r.intent as ClassifyResult["intent"], confidence: r.confidence };
   }
 
-  async negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult> {
-    const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
-    const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
-    const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
-    const resp = await this.negotiator.negotiate({
-      creatorReply: "",
-      currentOffer: termFloor,
-      round,
-      maxRounds,
-      negotiationHistory: [],
-      campaignConstraints: { termFloor, termCeiling },
-    });
-    switch (resp.action) {
-      case "ACCEPT":
-        return { outcome: "accept", message: resp.responseDraft ?? "Accepted." };
-      case "COUNTER":
-        return { outcome: "counter", message: resp.responseDraft ?? `Counter round ${round + 1}.` };
-      case "REJECT":
-        return { outcome: "reject", message: resp.responseDraft ?? "Rejected." };
-      case "ESCALATE":
-        return { outcome: "escalate", message: resp.reasoning ?? "Escalated." };
-    }
+  async negotiate(
+    round: number,
+    config: Record<string, unknown>,
+    creatorReply = "",
+    priorContext?: PriorNegotiationContext,
+  ): Promise<NegotiateResult> {
+    const resp = await this.negotiator.negotiate(
+      buildNegotiationRequest(round, config, creatorReply, priorContext),
+    );
+    return mapNegotiationResponse(resp, round);
   }
 
   async draftEmail(
@@ -231,17 +229,32 @@ async function scenarioB(instanceId: string): Promise<void> {
   log(`state:            ${after!.currentState}`);
   log(`new outbound msgs: ${messages.length - msgsBefore}`);
 
-  if (after!.currentState !== "NEGOTIATING") fail(`Expected NEGOTIATING, got ${after!.currentState}`);
+  // After sending a counter-offer the executor awaits the creator's reply, so
+  // the instance returns to AWAITING_REPLY (not NEGOTIATING). The negotiation
+  // loop resumes only when the next inbound reply arrives.
+  if (after!.currentState !== "AWAITING_REPLY") fail(`Expected AWAITING_REPLY, got ${after!.currentState}`);
   if (after!.negotiationRound <= roundBefore) fail("negotiationRound should have incremented");
   if (messages.length <= msgsBefore) fail("Expected a counter-offer outbound email");
-  pass("COUNTER → NEGOTIATING + negotiationRound incremented + counter-offer email sent");
+  pass("COUNTER → AWAITING_REPLY + negotiationRound incremented + counter-offer email sent");
 
-  // Verify the loop terminates: next step accepts.
-  await runtime.stepInstance(instanceId);
+  // Verify the loop terminates: the creator replies again, we re-enter
+  // NEGOTIATING, and this round accepts. This also exercises multi-round history
+  // threading (FIX-1): round 2's request carries round 1's counter turn.
+  await runtime.injectReply(instanceId, {
+    subject: "Re: Collaboration",
+    body: "Yes, that works for me — let's do it!",
+    externalMessageId: `harness-b-reply2-${instanceId}-${Date.now()}`,
+  });
+  await runtime.runUntilWaiting(instanceId); // REPLY_RECEIVED → classify → NEGOTIATING
+
+  const acceptNegotiator = new MockNegotiationProvider({ forceAction: "ACCEPT" });
+  const runtime2 = makeRuntime(acceptNegotiator);
+  await runtime2.stepInstance(instanceId); // NEGOTIATING → ACCEPTED
+
   const finalState = await getState(instanceId);
-  log(`after second step: ${finalState}`);
-  if (finalState !== "ACCEPTED") fail(`Expected ACCEPTED after counter+accept, got ${finalState}`);
-  pass("Second negotiation step → ACCEPTED");
+  log(`after second round: ${finalState}`);
+  if (finalState !== "ACCEPTED") fail(`Expected ACCEPTED after counter+reply+accept, got ${finalState}`);
+  pass("Second negotiation round → ACCEPTED");
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +420,132 @@ async function scenarioF(instanceId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario G — Output guard blocks a draft that leaks the ceiling (FIX-4)
+// ---------------------------------------------------------------------------
+
+// A deliberately misbehaving provider: it ACCEPTs but its draft copy leaks the
+// internal ceiling ($2000) — exactly what a prompt slip / injection could do.
+class LeakingNegotiationProvider implements NegotiationProvider {
+  async negotiate(): Promise<import("../adapters/negotiation/types.js").NegotiationResponse> {
+    return {
+      action: "ACCEPT",
+      proposedTerms: { rate: 500 },
+      responseDraft: "We're delighted to confirm.",
+      reasoning: "Terms acceptable",
+    };
+  }
+  async draft(): Promise<import("../adapters/negotiation/types.js").DraftResponse> {
+    // Leaks the ceiling rate (2000) that must never reach the creator.
+    return {
+      subject: "You're in!",
+      body: "Hi there — great news, we can actually go all the way up to $2,000 for this. Best, Pluvus",
+    };
+  }
+}
+
+async function scenarioG(instanceId: string): Promise<void> {
+  section("Scenario G: Output guard blocks ceiling-leaking draft → MANUAL_REVIEW");
+
+  const runtime = makeRuntime(new LeakingNegotiationProvider());
+  await driveToNegotiating(instanceId, runtime);
+
+  const msgsBefore = (await listMessagesByInstance(instanceId)).length;
+  await runtime.stepInstance(instanceId);
+
+  const state = await getState(instanceId);
+  const msgsAfter = (await listMessagesByInstance(instanceId)).length;
+  const events = await listEventsByInstance(instanceId);
+  const blockEvent = events.find(
+    (e) =>
+      e.type === "NEGOTIATION_TURN" &&
+      (e.payload as Record<string, unknown>)?.["reason"] === "output_guard_blocked",
+  );
+
+  log(`final state:       ${state}`);
+  log(`new outbound msgs: ${msgsAfter - msgsBefore} (should be 0 — send blocked)`);
+  log(`guard event:       ${blockEvent ? JSON.stringify(blockEvent.payload) : "none"}`);
+
+  if (state !== "MANUAL_REVIEW") fail(`Expected MANUAL_REVIEW after guard block, got ${state}`);
+  if (msgsAfter > msgsBefore) fail("Leaking draft must NOT be sent (no new outbound message)");
+  if (!blockEvent) fail("Expected NEGOTIATION_TURN event with output_guard_blocked reason");
+  const leaks = (blockEvent.payload as Record<string, unknown>)?.["leaks"];
+  if (!Array.isArray(leaks) || !leaks.some((l) => String(l).startsWith("ceiling"))) {
+    fail(`Expected a ceiling leak recorded, got ${JSON.stringify(leaks)}`);
+  }
+  pass("Ceiling-leaking draft blocked → MANUAL_REVIEW, no email sent, leak recorded");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario H — Outbound send idempotency: a retry must not double-send (FIX-11)
+// ---------------------------------------------------------------------------
+
+// Wraps MockEmailProvider and counts send() calls so the test can prove a retry
+// after a "crash" does not send a second email to the creator.
+class CountingEmailProvider implements IEmailProvider {
+  public sendCount = 0;
+  private readonly inner = new MockEmailProvider();
+
+  draft(creator: Creator, template: string, config: Record<string, unknown>) {
+    return this.inner.draft(creator, template, config);
+  }
+  async send(draft: EmailDraft, creator: Creator) {
+    this.sendCount++;
+    return this.inner.send(draft, creator);
+  }
+}
+
+async function scenarioH(instanceId: string): Promise<void> {
+  section("Scenario H: Outbound send idempotency — retry does not double-send (FIX-11)");
+
+  const email = new CountingEmailProvider();
+  const negotiator = new MockNegotiationProvider({ forceAction: "ACCEPT" });
+  const runtime = makeRuntime(negotiator, email);
+  await driveToNegotiating(instanceId, runtime);
+
+  // Reset the counter so we measure ONLY the negotiation send (driveToNegotiating
+  // already sent the initial outreach).
+  email.sendCount = 0;
+  const outboundBefore = (await listMessagesByInstance(instanceId)).filter(
+    (m) => m.direction === "OUTBOUND",
+  ).length;
+
+  // First negotiation step → ACCEPT → one email sent + one reserved/finalized row.
+  await runtime.stepInstance(instanceId);
+  const sendsAfterFirst = email.sendCount;
+  const outboundAfterFirst = (await listMessagesByInstance(instanceId)).filter(
+    (m) => m.direction === "OUTBOUND",
+  ).length;
+
+  log(`sends during first step:        ${sendsAfterFirst} (expect 1)`);
+  log(`new outbound msgs after first:  ${outboundAfterFirst - outboundBefore} (expect 1)`);
+  if (sendsAfterFirst !== 1) fail(`Expected exactly 1 send, got ${sendsAfterFirst}`);
+
+  // Simulate a crash-and-retry: the email + reserved message row are committed,
+  // but the state transition is "lost". We force the instance back to
+  // NEGOTIATING at the SAME round and re-run the step — exactly what a BullMQ
+  // retry would do. The idempotency key must short-circuit the send.
+  await updateInstanceState(instanceId, {
+    currentState: "NEGOTIATING",
+    currentNodeId: "node_negotiation",
+    completedAt: null,
+  });
+
+  await runtime.stepInstance(instanceId);
+
+  const sendsAfterRetry = email.sendCount;
+  const newOutboundAfterRetry =
+    (await listMessagesByInstance(instanceId)).filter((m) => m.direction === "OUTBOUND").length -
+    outboundBefore;
+
+  log(`sends after retry:         ${sendsAfterRetry} (expect still 1)`);
+  log(`new outbound msgs after retry: ${newOutboundAfterRetry} (expect still 1)`);
+
+  if (sendsAfterRetry !== 1) fail(`Retry double-sent: expected 1 send total, got ${sendsAfterRetry}`);
+  if (newOutboundAfterRetry !== 1) fail(`Retry duplicated outbound message: got ${newOutboundAfterRetry}`);
+  pass("Retry did not double-send (1 send, 1 outbound message) — idempotency holds");
+}
+
+// ---------------------------------------------------------------------------
 // Regression check: Phase 7 harness still runs cleanly
 // ---------------------------------------------------------------------------
 
@@ -469,6 +608,11 @@ async function main(): Promise<void> {
     (typeof instances)[number],
     (typeof instances)[number],
   ];
+  // Scenarios G/H reuse the spare 8th instance when available, else an earlier
+  // one. Every scenario fully resets its instance and they run sequentially, so
+  // reuse is safe and isolated.
+  const iG = instances[7] ?? iA;
+  const iH = instances[7] ?? iB;
 
   let passed = 0;
   let failed = 0;
@@ -492,6 +636,8 @@ async function main(): Promise<void> {
   await run("scenarioD", () => scenarioD(iD.id));
   await run("scenarioE", () => scenarioE(iE.id));
   await run("scenarioF", () => scenarioF(iF.id));
+  await run("scenarioG", () => scenarioG(iG.id));
+  await run("scenarioH", () => scenarioH(iH.id));
   await run("regressionPhase7", () => regressionPhase7(iReg.id));
 
   console.log(`\n${"─".repeat(62)}`);
