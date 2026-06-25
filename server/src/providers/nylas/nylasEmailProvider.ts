@@ -54,13 +54,47 @@ export class NylasEmailProvider implements IEmailProvider {
       },
     });
 
-    const { id, threadId } = response.data;
-    return {
-      messageId: id,
-      // Nylas may omit threadId on the immediate send response for a brand-new
-      // thread; fall back to the message id so the Message row still carries a
-      // stable, unique correlation key.
-      threadId: threadId ?? id,
-    };
+    const { id } = response.data;
+    const threadId = await this.resolveThreadId(id, response.data.threadId);
+
+    return { messageId: id, threadId };
+  }
+
+  /**
+   * Resolve the real Nylas thread id for a just-sent message.
+   *
+   * Nylas frequently omits threadId on the immediate send response for a
+   * brand-new thread. If we persisted `threadId = messageId` (the old fallback),
+   * the creator's reply — which Nylas tags with the thread's *real* id — would
+   * never match findMessagesByThreadId, so the inbound webhook would drop it as
+   * "thread not found". We fetch the message back to read its authoritative
+   * threadId so correlation works from the very first reply.
+   *
+   * If the send response already carried a threadId, we trust it and skip the
+   * extra round-trip. If the follow-up fetch fails or still yields no threadId,
+   * we fall back to the message id — no worse than before, and outbound still
+   * succeeds.
+   */
+  private async resolveThreadId(
+    messageId: string,
+    threadIdFromSend: string | undefined,
+  ): Promise<string> {
+    if (threadIdFromSend) return threadIdFromSend;
+
+    try {
+      const fetched = await this.client.messages.find({
+        identifier: this.grantId,
+        messageId,
+      });
+      if (fetched.data.threadId) return fetched.data.threadId;
+    } catch (err) {
+      console.warn(
+        `[nylas] could not resolve threadId for message ${messageId}; falling back to messageId. ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    return messageId;
   }
 }

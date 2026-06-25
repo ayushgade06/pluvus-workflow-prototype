@@ -36,6 +36,15 @@ export interface NylasClientLike {
         body?: string;
       };
     }): Promise<{ data: { id: string; threadId?: string } }>;
+    /**
+     * Fetch a single message by id. Used to resolve the real threadId when the
+     * send response omits it (common for a brand-new thread) — the persisted
+     * message resource always carries its threadId.
+     */
+    find(params: {
+      identifier: string;
+      messageId: string;
+    }): Promise<{ data: { id: string; threadId?: string } }>;
   };
 }
 
