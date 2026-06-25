@@ -15,16 +15,27 @@ Pure functions, no LLM, no network — deterministic and CI-safe.
 
 import pytest
 
-from app.routes.negotiate import NegotiationDecision, _coerce_rate, _decide_action
+from app.routes.negotiate import (
+    NegotiationDecision,
+    NegotiationHistoryEntry,
+    NegotiationTerm,
+    _coerce_rate,
+    _decide_action,
+    _last_offered_rate,
+)
 
 # Standard band used across the table: floor 100, ceiling 500, recommended 300.
 RECOMMENDED = 300.0
 CEILING = 500.0
 
 
-def decide(intent, rate):
+def decide(intent, rate, prior_offer=None):
     return _decide_action(
-        intent, rate, recommended_offer=RECOMMENDED, ceiling_rate=CEILING
+        intent,
+        rate,
+        recommended_offer=RECOMMENDED,
+        ceiling_rate=CEILING,
+        prior_offer=prior_offer,
     )
 
 
@@ -128,15 +139,47 @@ def test_rate_proposal_with_null_rate_escalates():
 
 
 def test_acceptance_uses_creator_rate_when_present():
+    """Creator named a concrete number in their acceptance -> ACCEPT at it."""
     decision = decide("ACCEPTANCE", 250)
     assert decision.action == "ACCEPT"
     assert decision.proposed_rate == 250.0
 
 
-def test_acceptance_falls_back_to_recommended_when_no_rate():
-    decision = decide("ACCEPTANCE", None)
+def test_acceptance_above_ceiling_escalates():
+    """An 'acceptance' at a number above the ceiling is not a real deal -> human."""
+    decision = decide("ACCEPTANCE", 600)
+    assert decision.action == "ESCALATE"
+    assert decision.proposed_rate is None
+
+
+def test_acceptance_of_prior_offer_accepts_at_that_offer():
+    """No new number, but WE already offered one and they're saying yes to it.
+
+    This is the genuine 'they accepted our offer' case -> ACCEPT at our offer.
+    """
+    decision = decide("ACCEPTANCE", None, prior_offer=320.0)
     assert decision.action == "ACCEPT"
+    assert decision.proposed_rate == 320.0
+
+
+def test_acceptance_with_no_rate_and_no_prior_offer_counters():
+    """The reported bug: 'Yes, I'm interested' with no number ever discussed.
+
+    Before the fix this auto-ACCEPTed at the fabricated midpoint, silently
+    inventing an agreed rate the creator never saw. Now there is no number on
+    the table, so we COUNTER to actually present the recommended offer instead
+    of closing a deal that was never made.
+    """
+    decision = decide("ACCEPTANCE", None)
+    assert decision.action == "COUNTER"
     assert decision.proposed_rate == RECOMMENDED
+
+
+def test_acceptance_with_creator_rate_takes_priority_over_prior_offer():
+    """If they name a number AND we had a prior offer, honor THEIR number."""
+    decision = decide("ACCEPTANCE", 280, prior_offer=320.0)
+    assert decision.action == "ACCEPT"
+    assert decision.proposed_rate == 280.0
 
 
 def test_rejection():
@@ -172,3 +215,38 @@ def test_no_ceiling_still_counters_above_recommended():
 
 def test_decision_is_a_model():
     assert isinstance(decide("REJECTION", None), NegotiationDecision)
+
+
+# ---------------------------------------------------------------------------
+# _last_offered_rate — derives the rate WE last put on the table from history
+# ---------------------------------------------------------------------------
+
+
+def _turn(action, rate=None):
+    terms = NegotiationTerm(rate=rate) if rate is not None else None
+    return NegotiationHistoryEntry(round=0, action=action, terms=terms)
+
+
+def test_last_offered_rate_empty_history_is_none():
+    assert _last_offered_rate([]) is None
+
+
+def test_last_offered_rate_returns_most_recent_offer():
+    history = [_turn("COUNTER", 350), _turn("COUNTER", 300)]
+    assert _last_offered_rate(history) == 300.0
+
+
+def test_last_offered_rate_ignores_reject_and_escalate():
+    """REJECT/ESCALATE turns carry no offer and must be skipped."""
+    history = [_turn("COUNTER", 300), _turn("ESCALATE"), _turn("REJECT")]
+    assert _last_offered_rate(history) == 300.0
+
+
+def test_last_offered_rate_ignores_turns_without_a_rate():
+    history = [_turn("COUNTER", 300), _turn("COUNTER", None)]
+    assert _last_offered_rate(history) == 300.0
+
+
+def test_last_offered_rate_none_when_only_non_offer_turns():
+    history = [_turn("ESCALATE"), _turn("REJECT")]
+    assert _last_offered_rate(history) is None

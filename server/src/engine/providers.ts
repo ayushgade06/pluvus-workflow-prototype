@@ -8,6 +8,7 @@ import type {
 } from "./types.js";
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
 import type { NegotiationTerm, NegotiationHistoryEntry } from "../adapters/negotiation/types.js";
+import { resolveBand } from "./band.js";
 
 // ---------------------------------------------------------------------------
 // IEmailProvider
@@ -106,10 +107,15 @@ export interface IAgentProvider {
    * Returns null to signal "use the template fallback" (so old harnesses work).
    */
   draftEmail(
-    purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance",
+    purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding",
     creator: Creator,
     config: Record<string, unknown>,
-    extra?: { round?: number; proposedTerms?: NegotiationTerm },
+    extra?: {
+      round?: number;
+      proposedTerms?: NegotiationTerm;
+      creatorReply?: string;
+      creatorRequestedRate?: number;
+    },
   ): Promise<EmailDraft | null>;
 }
 
@@ -162,7 +168,7 @@ export class MockAgentProvider implements IAgentProvider {
   }
 
   async draftEmail(
-    _purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance",
+    _purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding",
     _creator: Creator,
     _config: Record<string, unknown>,
   ): Promise<EmailDraft | null> {
@@ -194,8 +200,11 @@ export function buildNegotiationRequest(
   priorContext?: PriorNegotiationContext,
 ) {
   const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
-  const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
-  const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
+  // Resolve the band from EITHER termFloor/termCeiling (seed snapshots) or
+  // minBudget/maxBudget (Workflow Builder UI + templates). Without this, a
+  // UI-built workflow sent an empty band → floor 0 / ceiling +inf → the
+  // accept/counter/escalate logic was inert (see resolveBand).
+  const { termFloor, termCeiling } = resolveBand(config);
   const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
 
   // FIX-2: thread the last offer we actually proposed; fall back to the floor

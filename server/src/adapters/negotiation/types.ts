@@ -44,7 +44,7 @@ export interface NegotiationResponse {
 // ---------------------------------------------------------------------------
 
 export interface DraftRequest {
-  purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance";
+  purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding";
   creatorName: string;
   creatorPlatform?: string | undefined;
   creatorNiche?: string | undefined;
@@ -52,6 +52,12 @@ export interface DraftRequest {
   round?: number | undefined;
   proposedTerms?: NegotiationTerm | undefined;
   campaignContext?: Record<string, unknown> | undefined;
+  /** The creator's most recent message — lets the copy continue the
+   *  conversation instead of reading like a cold first contact. */
+  creatorReply?: string | undefined;
+  /** The rate the creator asked for this turn, if any — lets a counter
+   *  acknowledge it explicitly ("we considered your request of $480 …"). */
+  creatorRequestedRate?: number | undefined;
 }
 
 export interface DraftResponse {

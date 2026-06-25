@@ -1,5 +1,6 @@
 import type { ClassificationProvider } from "./ClassificationProvider.js";
 import type { ClassificationRequest, ClassificationResponse, ReplyIntentValue } from "./types.js";
+import { agentBaseUrl, agentPostJson } from "../agentServiceClient.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph classification provider
@@ -7,7 +8,7 @@ import type { ClassificationRequest, ClassificationResponse, ReplyIntentValue } 
 // Calls POST /classify on the Python agent service (FastAPI + LangGraph).
 // Throws on any failure — no silent mock fallback in prod.
 //
-//   AGENT_SERVICE_URL — base URL of the agent service (default: http://localhost:8000)
+// Base URL, auth header (FIX-12), and timeout are handled by agentPostJson.
 
 const VALID_INTENTS = new Set<ReplyIntentValue>([
   "POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN",
@@ -21,28 +22,12 @@ export class LangGraphClassificationProvider implements ClassificationProvider {
   private readonly baseUrl: string;
 
   constructor(baseUrl?: string) {
-    this.baseUrl = (baseUrl ?? process.env["AGENT_SERVICE_URL"] ?? "http://localhost:8000").replace(
-      /\/$/,
-      "",
-    );
+    this.baseUrl = agentBaseUrl(baseUrl);
   }
 
   async classify(req: ClassificationRequest): Promise<ClassificationResponse> {
-    const res = await fetch(`${this.baseUrl}/classify`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: req.message }),
-      signal: AbortSignal.timeout(120_000),
-    });
+    const data = await agentPostJson(this.baseUrl, "/classify", { message: req.message });
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `[LangGraphClassificationProvider] agent service returned ${res.status}: ${body}`,
-      );
-    }
-
-    const data = (await res.json()) as Record<string, unknown>;
     const intent = data["intent"];
     const confidence = data["confidence"];
 

@@ -18,12 +18,36 @@ both the Ollama and OpenAI backends behind app.llm.get_llm.
 from __future__ import annotations
 
 import json
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
+
+# FIX-9: a single shared worker so a hung llm.invoke can be bounded by a
+# wall-clock timeout. The TS caller already aborts the HTTP request after
+# AGENT_TIMEOUT_MS, but without this the Python side keeps generating and holds
+# the FastAPI worker (audit Reliability Review: "a hung Ollama call holds the
+# Python worker"). With it, the awaited future times out and the request returns
+# promptly, freeing the worker. The orphaned generation cannot be force-killed
+# (Python threads aren't interruptible), but it no longer blocks the caller.
+_LLM_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-invoke")
+
+# Per-call wall-clock budget for a single llm.invoke. Provider-agnostic (works
+# for Ollama and OpenAI alike since it wraps the call, not the SDK). 0/unset
+# disables the bound. Default 60s — comfortably under the TS 30s? No: this is a
+# backstop for the case where the SDK has no timeout of its own, so keep it a
+# little above the interactive budget; tune via env.
+def _invoke_timeout_seconds() -> float:
+    raw = os.getenv("LLM_INVOKE_TIMEOUT_SECONDS", "60")
+    try:
+        v = float(raw)
+    except ValueError:
+        return 60.0
+    return v if v > 0 else 0.0
 
 
 class StructuredOutputError(ValueError):
@@ -33,6 +57,35 @@ class StructuredOutputError(ValueError):
     def __init__(self, message: str, *, raw: str | None = None) -> None:
         super().__init__(message)
         self.raw = raw
+
+
+class LLMTimeoutError(StructuredOutputError):
+    """Raised when a single llm.invoke exceeds LLM_INVOKE_TIMEOUT_SECONDS.
+
+    A subclass of StructuredOutputError so existing callers that catch the
+    latter (classify → fail safe to UNKNOWN; negotiate route → 500/escalate)
+    keep working unchanged, while callers that care can distinguish a timeout.
+    """
+
+
+def _invoke_with_timeout(llm, ask: str) -> str:
+    """Call ``llm.invoke(ask)`` with a wall-clock bound, returning ``.content``.
+
+    Raises LLMTimeoutError if the call does not finish within the budget. When
+    the budget is 0/disabled the call runs inline (no executor overhead).
+    """
+    timeout = _invoke_timeout_seconds()
+    if timeout <= 0:
+        return llm.invoke(ask).content
+    future = _LLM_EXECUTOR.submit(lambda: llm.invoke(ask).content)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError as exc:
+        # Don't wait on the orphaned generation; let it finish in the background.
+        future.cancel()
+        raise LLMTimeoutError(
+            f"llm.invoke exceeded {timeout:.0f}s budget", raw=None
+        ) from exc
 
 
 def extract_json_object(raw: str) -> dict:
@@ -83,7 +136,10 @@ def invoke_structured(
 
     for attempt in range(attempts):
         ask = prompt if attempt == 0 else prompt + _REPAIR_SUFFIX.format(error=last_error)
-        raw = llm.invoke(ask).content
+        # FIX-9: bound each invoke so a hung generation can't pin the worker. A
+        # timeout is a transport failure, not malformed output — let it propagate
+        # (don't burn a retry re-asking a model that isn't responding).
+        raw = _invoke_with_timeout(llm, ask)
         last_raw = raw if isinstance(raw, str) else str(raw)
         try:
             obj = extract_json_object(last_raw)

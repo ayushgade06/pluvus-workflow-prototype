@@ -209,6 +209,32 @@ export class MockNegotiationProvider implements NegotiationProvider {
             `${brand} Partnerships Team`,
           ].join("\n"),
         };
+
+      case "onboarding": {
+        // Sent only after the deal is closed at an agreed rate. Confirms that
+        // specific rate and lays out next steps — and references ONLY the agreed
+        // rate, never the budget range (mirrors the real onboarding email).
+        const agreedRate = req.proposedTerms?.["rate"];
+        const rateLine = agreedRate !== undefined ? `$${agreedRate}` : `the agreed rate`;
+        return {
+          subject: `Welcome aboard! Next steps for your ${brand} partnership`,
+          body: [
+            `Hi ${name},`,
+            ``,
+            `Congratulations — we're delighted to officially welcome you to the ${brand} partnership at a confirmed rate of ${rateLine}!`,
+            ``,
+            `Here's what happens next to get you started:`,
+            `• Agreement: we'll send a short partnership agreement for you to review and sign.`,
+            `• Deliverables & timeline: we'll finalize the content and posting schedule together so it fits your workflow.`,
+            `• Payment: ${rateLine} will be processed per the agreement once your deliverables are approved.`,
+            ``,
+            `Reply to this email with any questions — we're here to help and excited to create something great together.`,
+            ``,
+            `Best,`,
+            `${sender}`,
+          ].join("\n"),
+        };
+      }
     }
   }
 }

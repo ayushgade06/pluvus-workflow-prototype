@@ -6,6 +6,7 @@ import type {
   DraftRequest,
   DraftResponse,
 } from "./types.js";
+import { agentBaseUrl, agentPostJson } from "../agentServiceClient.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph negotiation provider
@@ -13,7 +14,7 @@ import type {
 // Calls POST /negotiate and POST /draft on the Python agent service.
 // Throws on any failure — no silent mock fallback in prod.
 //
-//   AGENT_SERVICE_URL — base URL of the agent service (default: http://localhost:8000)
+// Base URL, auth header (FIX-12), and timeout are handled by agentPostJson.
 
 const VALID_ACTIONS = new Set<NegotiationAction>(["ACCEPT", "COUNTER", "REJECT", "ESCALATE"]);
 
@@ -25,28 +26,12 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
   private readonly baseUrl: string;
 
   constructor(baseUrl?: string) {
-    this.baseUrl = (baseUrl ?? process.env["AGENT_SERVICE_URL"] ?? "http://localhost:8000").replace(
-      /\/$/,
-      "",
-    );
+    this.baseUrl = agentBaseUrl(baseUrl);
   }
 
   async negotiate(req: NegotiationRequest): Promise<NegotiationResponse> {
-    const res = await fetch(`${this.baseUrl}/negotiate`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(req),
-      signal: AbortSignal.timeout(120_000),
-    });
+    const data = await agentPostJson(this.baseUrl, "/negotiate", req);
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `[LangGraphNegotiationProvider] /negotiate returned ${res.status}: ${body}`,
-      );
-    }
-
-    const data = (await res.json()) as Record<string, unknown>;
     if (!isValidAction(data["action"])) {
       throw new Error(
         `[LangGraphNegotiationProvider] malformed negotiate response: ${JSON.stringify(data)}`,
@@ -67,21 +52,8 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
   }
 
   async draft(req: DraftRequest): Promise<DraftResponse> {
-    const res = await fetch(`${this.baseUrl}/draft`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(req),
-      signal: AbortSignal.timeout(120_000),
-    });
+    const data = await agentPostJson(this.baseUrl, "/draft", req);
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(
-        `[LangGraphNegotiationProvider] /draft returned ${res.status}: ${body}`,
-      );
-    }
-
-    const data = (await res.json()) as Record<string, unknown>;
     if (typeof data["subject"] !== "string" || typeof data["body"] !== "string") {
       throw new Error(
         `[LangGraphNegotiationProvider] malformed draft response: ${JSON.stringify(data)}`,

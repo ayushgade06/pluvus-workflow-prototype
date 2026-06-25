@@ -1,6 +1,6 @@
-import { createMessage } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
+import { sendOnce } from "./idempotentSend.js";
 
 function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: number): number {
   const intervals = Array.isArray(config["intervals"]) ? config["intervals"] as number[] : [3, 5, 7];
@@ -63,17 +63,17 @@ export async function executeFollowUp(
     const followUpRound = instance.followUpCount + 1;
     const aiDraft = await agent.draftEmail("follow_up", creator, config, { round: followUpRound });
     const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
-    const { messageId, threadId } = await email.send(draft, creator);
 
-    await createMessage({
-      instance: { connect: { id: instance.id } },
-      direction: "OUTBOUND",
-      subject: draft.subject,
-      body: draft.body,
-      threadId,
-      externalMessageId: messageId,
-      sentAt: new Date(),
-    });
+    // FIX-11: reserve-before-send keyed on (instance, follow-up round) so a
+    // crash between send and the row write can't double-send this follow-up on
+    // a BullMQ retry.
+    const { messageId, threadId } = await sendOnce(
+      email,
+      instance.id,
+      creator,
+      draft,
+      `followup:${instance.id}:${followUpRound}`,
+    );
 
     const newFollowUpCount = instance.followUpCount + 1;
 

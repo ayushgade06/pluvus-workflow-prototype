@@ -1,76 +1,17 @@
 import {
-  createMessage,
   listMessagesByInstance,
   listEventsByInstance,
-  updateMessageSent,
 } from "../../db/index.js";
-import type { Creator } from "@prisma/client";
-import type { ExecutionContext, NodeResult, EmailDraft } from "../types.js";
+import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
+import { sendOnce } from "./idempotentSend.js";
 
-// FIX-11: send an outbound AI email at most once per (instance, purpose, round).
-//
-// The risk being closed: a crash *between* email.send() and the message-row
-// write would, on BullMQ retry, re-run the executor and send a SECOND email to
-// the creator. To prevent that we RESERVE a deterministic idempotency key
-// BEFORE sending, using the row's unique constraint as the lock:
-//
-//   1. Insert the message row with idempotencyKey (no provider id yet).
-//      - If this throws a unique-violation, a prior attempt already reserved
-//        (and almost certainly sent) this exact turn → skip the send.
-//   2. Send the email.
-//   3. Update the reserved row with the provider's messageId/threadId.
-//
-// This means the send is guarded by a committed DB reservation, so a crash
-// after step 1 leaves a detectable reserved-but-unsent row (a missed send, which
-// is safe) rather than causing a duplicate send.
-async function sendOnce(
-  email: IEmailProvider,
-  instanceId: string,
-  creator: Creator,
-  draft: EmailDraft,
-  body: string,
-  purpose: "acceptance" | "counter_offer",
-  round: number,
-): Promise<void> {
-  const idempotencyKey = `negotiation:${purpose}:${instanceId}:${round}`;
-
-  // Step 1 — reserve. createMessage relies on the unique constraint on
-  // idempotencyKey to reject a concurrent/retry attempt.
-  let reserved;
-  try {
-    reserved = await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "OUTBOUND",
-      subject: draft.subject,
-      body,
-      idempotencyKey,
-    });
-  } catch (err) {
-    if (isUniqueViolation(err)) {
-      // Already reserved/sent on a prior attempt — do not send again.
-      return;
-    }
-    throw err;
-  }
-
-  // Step 2 — send (now guarded by the committed reservation).
-  const { messageId, threadId } = await email.send(draft, creator);
-
-  // Step 3 — finalize the reserved row with the provider's identifiers.
-  await updateMessageSent(reserved.id, { externalMessageId: messageId, threadId });
-}
-
-// Prisma unique-constraint violation is error code P2002.
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === "P2002"
-  );
-}
+// FIX-11: outbound AI sends use the shared reserve-before-send helper
+// (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
+// so a crash between email.send() and the row write cannot double-send a turn on
+// a BullMQ retry.
 
 // Build the MANUAL_REVIEW NodeResult emitted when the output guard blocks a
 // draft. The email is NOT sent — a human reviews before anything reaches the
@@ -89,6 +30,22 @@ function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
       leaks: hits.map((h) => `${h.kind}:${h.value}`),
     },
   };
+}
+
+// Best-effort extraction of a dollar amount the creator named in their reply
+// (e.g. "I charge $480" / "480 dollars" / "my rate is 480"). Used purely to let
+// the counter copy ACKNOWLEDGE their ask — never to make the money decision
+// (that stays deterministic in the agent). Returns undefined when no clear
+// amount is present.
+export function extractRequestedRate(text: string | undefined): number | undefined {
+  if (!text) return undefined;
+  // Prefer an explicit "$" amount; fall back to a number near "dollars"/"rate".
+  const dollar = text.match(/\$\s*(\d[\d,]*(?:\.\d+)?)/);
+  const worded = text.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:dollars|usd)\b/i);
+  const raw = dollar?.[1] ?? worded?.[1];
+  if (!raw) return undefined;
+  const n = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export async function executeNegotiation(
@@ -144,8 +101,21 @@ export async function executeNegotiation(
 
   switch (outcome) {
     case "accept": {
-      // Try AI-generated acceptance copy; fall back to agent-provided message.
-      const aiDraft = await agent.draftEmail("acceptance", creator, config);
+      // An ACCEPT now always carries a real agreed rate (the agent only
+      // returns accept when a concrete number is on the table — a bare "I'm
+      // interested" with no number counters instead). On a genuine, money-
+      // confirmed acceptance we send the ONBOARDING email — it confirms the
+      // agreed rate and lays out next steps (contract, deliverables, timeline,
+      // payment) — rather than a generic "we accept" note. proposedTerms.rate
+      // gives the onboarding copy the exact agreed figure.
+      // Defensive fallback: if (somehow) no rate is present, fall back to the
+      // plain acceptance copy so we never send onboarding with a blank rate.
+      const purpose = proposedRate !== undefined ? "onboarding" : "acceptance";
+      const extra = {
+        ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
+        ...(creatorReply ? { creatorReply } : {}),
+      };
+      const aiDraft = await agent.draftEmail(purpose, creator, config, extra);
       const body = aiDraft?.body ?? message;
 
       const draft = aiDraft ?? await email.draft(creator, body, config);
@@ -158,7 +128,13 @@ export async function executeNegotiation(
       }
 
       // FIX-11: idempotent send keyed on (instance, acceptance, round).
-      await sendOnce(email, instance.id, creator, draft, body, "acceptance", instance.negotiationRound);
+      await sendOnce(
+        email,
+        instance.id,
+        creator,
+        draft,
+        `negotiation:acceptance:${instance.id}:${instance.negotiationRound}`,
+      );
 
       return {
         nextState: "ACCEPTED",
@@ -219,7 +195,20 @@ export async function executeNegotiation(
       }
 
       // Try AI-generated counter copy; fall back to agent-provided message.
-      const aiDraft = await agent.draftEmail("counter_offer", creator, config, { round: newRound });
+      // Pass the concrete rate we're countering with so the draft anchors on
+      // THAT number ($350) instead of reaching for the budget range — which the
+      // output guard would (correctly) block as a floor/ceiling leak. Also
+      // thread the creator's reply + the rate they asked for so the counter
+      // acknowledges their request ("we considered your $480 …") and reads like
+      // an ongoing conversation rather than a cold first contact.
+      const creatorRequestedRate = extractRequestedRate(creatorReply);
+      const counterExtra = {
+        round: newRound,
+        ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
+        ...(creatorReply ? { creatorReply } : {}),
+        ...(creatorRequestedRate !== undefined ? { creatorRequestedRate } : {}),
+      };
+      const aiDraft = await agent.draftEmail("counter_offer", creator, config, counterExtra);
       const body = aiDraft?.body ?? message;
 
       const draft = aiDraft ?? await email.draft(creator, body, config);
@@ -232,7 +221,13 @@ export async function executeNegotiation(
       }
 
       // FIX-11: idempotent send keyed on (instance, counter_offer, newRound).
-      await sendOnce(email, instance.id, creator, draft, body, "counter_offer", newRound);
+      await sendOnce(
+        email,
+        instance.id,
+        creator,
+        draft,
+        `negotiation:counter_offer:${instance.id}:${newRound}`,
+      );
 
       return {
         nextState: "AWAITING_REPLY",

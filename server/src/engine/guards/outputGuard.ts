@@ -10,6 +10,8 @@
 //
 // Pure function — no IO — so it is fully unit-testable without a DB or network.
 
+import { resolveBand } from "../band.js";
+
 export interface GuardDraft {
   subject?: string | null;
   body: string;
@@ -93,15 +95,18 @@ export function scanOutboundDraft(draft: GuardDraft, constraints: GuardConstrain
 }
 
 /**
- * Pull guard constraints out of a node config's term floor/ceiling, with an
- * optional allowlisted rate and extra internal terms.
+ * Pull guard constraints out of a node config's price band (termFloor/termCeiling
+ * or minBudget/maxBudget), with an optional allowlisted rate and extra internal
+ * terms.
  */
 export function guardConstraintsFromConfig(
   config: Record<string, unknown>,
   allowedRate?: number,
 ): GuardConstraints {
-  const floor = rateOf(config["termFloor"]);
-  const ceiling = rateOf(config["termCeiling"]);
+  // Resolve floor/ceiling from EITHER termFloor/termCeiling or minBudget/
+  // maxBudget so a UI-built workflow's bounds are still scanned for leaks (the
+  // guard previously saw no band for UI configs — see resolveBand).
+  const { floor, ceiling } = resolveBand(config);
   const internalTerms = Array.isArray(config["internalTerms"])
     ? (config["internalTerms"] as unknown[]).filter((x): x is string => typeof x === "string")
     : undefined;
@@ -112,12 +117,4 @@ export function guardConstraintsFromConfig(
     ...(allowedRate !== undefined ? { allowedRate } : {}),
     ...(internalTerms ? { internalTerms } : {}),
   };
-}
-
-function rateOf(term: unknown): number | undefined {
-  if (term && typeof term === "object") {
-    const r = (term as Record<string, unknown>)["rate"];
-    if (typeof r === "number" && Number.isFinite(r)) return r;
-  }
-  return undefined;
 }
