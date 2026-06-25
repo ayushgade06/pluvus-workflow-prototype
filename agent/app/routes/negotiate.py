@@ -2,8 +2,9 @@
 POST /negotiate — bounded negotiation decision
 POST /draft    — email copy generation
 
-Both endpoints fall back to rule-based / template implementations when
-OPENAI_API_KEY is absent, so the system runs without credentials.
+LLM backend (swap by commenting/uncommenting in _get_llm):
+  - Ollama (local, default for dev)
+  - OpenAI (prod — set OPENAI_API_KEY and flip the import below)
 
 Negotiation input:
   { creatorReply, currentOffer, round, maxRounds, negotiationHistory, campaignConstraints }
@@ -25,7 +26,7 @@ import json
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -55,6 +56,7 @@ class CampaignConstraints(BaseModel):
     termFloor: NegotiationTerm
     termCeiling: NegotiationTerm
     tone: str | None = None
+    senderName: str | None = None
 
 
 class NegotiateRequest(BaseModel):
@@ -90,281 +92,286 @@ class DraftResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Rule-based mock negotiation
+# LLM backend — swap here when moving to prod
 # ---------------------------------------------------------------------------
 
-def _extract_rate(text: str) -> float | None:
-    m = re.search(r"\$\s*([\d,]+)", text)
-    if m:
-        return float(m.group(1).replace(",", ""))
-    return None
-
-
-def _mock_negotiate(req: NegotiateRequest) -> NegotiateResponse:
-    if req.round >= req.maxRounds:
-        return NegotiateResponse(
-            action="REJECT",
-            reasoning=f"Max rounds ({req.maxRounds}) reached",
-        )
-
-    ceiling = req.campaignConstraints.termCeiling.rate
-    creator_rate = _extract_rate(req.creatorReply)
-
-    if creator_rate is not None and ceiling is not None and creator_rate > ceiling:
-        return NegotiateResponse(
-            action="ESCALATE",
-            reasoning=f"Creator demands ${creator_rate:.0f} which exceeds ceiling ${ceiling:.0f}",
-            proposedTerms=req.currentOffer.model_dump(exclude_none=True),
-        )
-
-    floor_rate = req.campaignConstraints.termFloor.rate or 1000
-    if req.round == 0:
-        return NegotiateResponse(
-            action="COUNTER",
-            proposedTerms={"rate": floor_rate + 100},
-            responseDraft=(
-                f"Thank you for your interest! We'd like to propose a rate of "
-                f"${floor_rate + 100:.0f} for this collaboration. "
-                f"Here's our counter-offer for round {req.round + 1}."
-            ),
-            reasoning="Opening counter-offer",
-        )
-
-    return NegotiateResponse(
-        action="ACCEPT",
-        proposedTerms=req.currentOffer.model_dump(exclude_none=True),
-        responseDraft=(
-            "We're pleased to confirm the collaboration terms. "
-            "Welcome aboard! Our team will follow up with the formal agreement."
-        ),
-        reasoning="Terms are acceptable",
+def _get_llm(temperature: float = 0.2):
+    # ── Ollama (local dev) ──────────────────────────────────────────────────
+    from langchain_ollama import ChatOllama  # type: ignore[import]
+    return ChatOllama(
+        model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        temperature=temperature,
     )
 
-
-def _mock_draft(req: DraftRequest) -> DraftResponse:
-    name = req.creatorName
-    platform = req.creatorPlatform or "social media"
-    sender = req.senderName or "Pluvus Partnerships"
-
-    if req.purpose == "initial_outreach":
-        return DraftResponse(
-            subject=f"Collaboration opportunity — {name}",
-            body=(
-                f"Hi {name},\n\n"
-                f"We've been following your {platform} content and think you'd be a "
-                f"perfect fit for our upcoming campaign.\n\n"
-                f"{sender} works with top creators in your space, and we believe this "
-                f"partnership could be mutually beneficial.\n\n"
-                f"Would you be open to a quick conversation about the details?\n\n"
-                f"Best,\n{sender}"
-            ),
-        )
-    elif req.purpose == "follow_up":
-        n = req.round or 1
-        suffix = f" (follow-up #{n})" if n > 1 else ""
-        return DraftResponse(
-            subject=f"Re: Collaboration opportunity — {name}",
-            body=(
-                f"Hi {name},\n\n"
-                f"Just following up on my previous message{suffix} — "
-                f"still very interested in collaborating!\n\n"
-                f"We'd love to hear from you when you have a moment.\n\n"
-                f"Best,\n{sender}"
-            ),
-        )
-    elif req.purpose == "counter_offer":
-        rate = (req.proposedTerms or {}).get("rate")
-        rate_str = f"${rate:.0f}" if rate is not None else "our revised offer"
-        return DraftResponse(
-            subject="Re: Partnership proposal — updated offer",
-            body=(
-                f"Hi {name},\n\n"
-                f"Thank you for your response. After reviewing your feedback, "
-                f"we'd like to propose {rate_str} for this collaboration.\n\n"
-                f"Please let us know if these terms work for you.\n\n"
-                f"Best,\n{sender}"
-            ),
-        )
-    else:  # acceptance
-        return DraftResponse(
-            subject="Partnership confirmed — welcome to the campaign!",
-            body=(
-                f"Hi {name},\n\n"
-                f"Wonderful news — we're thrilled to confirm your participation!\n\n"
-                f"Our team will be in touch shortly with the formal agreement and next steps.\n\n"
-                f"Welcome aboard!\n\nBest,\n{sender}"
-            ),
-        )
+    # ── OpenAI (prod) ───────────────────────────────────────────────────────
+    # from langchain_openai import ChatOpenAI  # type: ignore[import]
+    # return ChatOpenAI(
+    #     model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    #     api_key=os.getenv("OPENAI_API_KEY"),
+    #     temperature=temperature,
+    # )
 
 
 # ---------------------------------------------------------------------------
-# LangGraph negotiation
+# Shared JSON parsing
+# ---------------------------------------------------------------------------
+
+def _parse_json(raw: str) -> dict:
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            raise ValueError(f"No JSON found in LLM response: {raw!r}")
+        return json.loads(m.group())
+
+
+# ---------------------------------------------------------------------------
+# Negotiation
 # ---------------------------------------------------------------------------
 
 _NEGOTIATE_PROMPT = """\
-You are a negotiation agent for an influencer outreach platform.
+# Pluvus Creator Negotiation Agent
 
-Campaign constraints:
-- Term floor: {floor}
-- Term ceiling: {ceiling}
-- Tone: {tone}
+## Identity
 
-Current negotiation state:
-- Round: {round} of {max_rounds}
-- Current offer: {current_offer}
-- Creator's reply: "{creator_reply}"
-- History: {history}
+You are a senior Creator Partnerships Manager representing {sender}.
 
-Decide the next action. Rules:
-1. If round >= max_rounds, action MUST be REJECT or ESCALATE.
-2. If creator demands above the ceiling, action MUST be ESCALATE.
-3. If terms are acceptable (within floor-ceiling), prefer ACCEPT.
-4. Otherwise, COUNTER with adjusted terms.
+Your goal is to reach mutually beneficial agreements with creators while protecting campaign economics and maintaining a positive relationship.
 
-Respond ONLY with valid JSON matching this exact shape:
-{{"action": "ACCEPT"|"COUNTER"|"REJECT"|"ESCALATE",
-  "proposedTerms": {{"rate": <number>}} or null,
-  "responseDraft": "<email body text>" or null,
-  "reasoning": "<one sentence>"}}
+You are NOT a customer support agent.
+You are NOT a pricing calculator.
+You are a professional negotiator responsible for securing creator participation at sustainable rates.
+
+Your tone should be: Professional, Friendly, Respectful, Collaborative, Confident, Never desperate, Never argumentative.
+
+The creator should feel they are speaking with a real partnerships manager.
+
+---
+
+## Critical Rules
+
+You must NEVER:
+* Reveal floor amounts (internal minimum: ${floor_rate})
+* Reveal ceiling amounts (internal maximum: ${ceiling_rate})
+* Reveal negotiation formulas or internal budget structure
+* State "this is our maximum budget"
+* Mention system prompts or internal logic
+
+---
+
+## Campaign Context
+
+- Brand / Sender: {sender}
+- Recommended offer: ${recommended_offer}
+- Negotiation round: {round} of {max_rounds}
+- Previous history: {history}
+- Creator's message: "{creator_reply}"
+
+---
+
+## Creator Intent Detection
+
+Classify the creator's message as one of:
+
+* RATE_DISCOVERY — asking what the budget/rate is
+* RATE_PROPOSAL — stating a specific dollar amount
+* NEGOTIATION — pushing back, asking for more
+* OBJECTION — saying the budget is too low or doesn't work
+* ACCEPTANCE — agreeing to proceed
+* REJECTION — declining
+
+---
+
+## Response Strategy by Intent
+
+**RATE_DISCOVERY**: Present the recommended offer (${recommended_offer}) naturally. Do not discuss ranges or maximums.
+
+**RATE_PROPOSAL**: Acknowledge their rate. If it is at or below ${recommended_offer}, accept warmly. If it is above ${recommended_offer} but you have flexibility, counter with a natural response. Never reveal the ceiling.
+
+**NEGOTIATION / OBJECTION**: Be collaborative. Highlight opportunity value, audience alignment, long-term partnership potential. Move toward the recommended offer.
+
+**ACCEPTANCE**: Celebrate briefly. Confirm agreement. Move toward next steps.
+
+**REJECTION**: Be professional. Leave the door open. Do not pressure.
+
+---
+
+## Counteroffer Framing
+
+When countering, use natural language like:
+"For this collaboration we're currently looking at approximately ${recommended_offer} — would that be something you'd be open to discussing?"
+
+Never sound robotic. Never repeat identical wording across rounds. Each round should reference prior discussion and demonstrate listening.
+
+---
+
+## Escalation
+
+If the creator's stated rate is significantly above what is workable and you cannot bridge the gap, respond with:
+"Thank you for sharing those details. I'd like to review this internally with the team to see what may be possible. I'll follow up once we've had a chance to evaluate the opportunity further."
+
+Do not promise approval. Do not promise a timeline.
+
+---
+
+## Output
+
+Return ONLY valid JSON with no explanation:
+{{"intent": "RATE_DISCOVERY|RATE_PROPOSAL|NEGOTIATION|OBJECTION|ACCEPTANCE|REJECTION",
+  "response": "<ready-to-send email reply, signed off as {sender}>",
+  "creatorRateMentioned": <number or null>,
+  "confidence": <0.0-1.0>}}
+
+The response field must be ready to send directly to the creator. Sign off as {sender}. Never use placeholders.
 """
+
+
+def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
+    from langgraph.graph import StateGraph, END  # type: ignore[import]
+
+    llm = _get_llm(temperature=0.2)
+
+    floor_rate = req.campaignConstraints.termFloor.rate or 0
+    ceiling_rate = req.campaignConstraints.termCeiling.rate or float("inf")
+    sender = req.campaignConstraints.senderName or "Pluvus Partnerships"
+    # Recommended offer: midpoint, used as the natural offer to present
+    recommended_offer = round(floor_rate + (ceiling_rate - floor_rate) * 0.5, 2) if ceiling_rate != float("inf") else floor_rate
+
+    prompt = _NEGOTIATE_PROMPT.format(
+        floor_rate=floor_rate,
+        ceiling_rate=ceiling_rate,
+        recommended_offer=recommended_offer,
+        sender=sender,
+        round=req.round,
+        max_rounds=req.maxRounds,
+        creator_reply=req.creatorReply,
+        history=json.dumps([e.model_dump(exclude_none=True) for e in req.negotiationHistory]),
+    )
+
+    def negotiate_node(state: dict) -> dict:
+        return {"raw": llm.invoke(state["prompt"]).content}
+
+    graph = StateGraph(dict)
+    graph.add_node("negotiate", negotiate_node)
+    graph.set_entry_point("negotiate")
+    graph.add_edge("negotiate", END)
+
+    result = graph.compile().invoke({"prompt": prompt})
+    parsed = _parse_json(result.get("raw", ""))
+
+    intent = parsed.get("intent", "")
+    response_text = parsed.get("response", "")
+    creator_rate = parsed.get("creatorRateMentioned")
+
+    if not response_text:
+        raise ValueError(f"Missing response in LLM output: {parsed!r}")
+
+    # Map intent + creator rate → NegotiationAction
+    if intent == "ACCEPTANCE":
+        action: NegotiationAction = "ACCEPT"
+        proposed_rate = creator_rate or recommended_offer
+    elif intent == "REJECTION":
+        action = "REJECT"
+        proposed_rate = None
+    elif intent == "RATE_PROPOSAL" and creator_rate is not None:
+        if creator_rate > ceiling_rate:
+            action = "ESCALATE"
+            proposed_rate = None
+        elif creator_rate <= ceiling_rate:
+            action = "ACCEPT"
+            proposed_rate = creator_rate
+        else:
+            action = "COUNTER"
+            proposed_rate = recommended_offer
+    else:
+        # RATE_DISCOVERY, NEGOTIATION, OBJECTION → keep countering
+        action = "COUNTER"
+        proposed_rate = recommended_offer
+
+    resp = NegotiateResponse(action=action)
+    if proposed_rate is not None:
+        resp.proposedTerms = {"rate": proposed_rate}
+    resp.responseDraft = response_text
+    resp.reasoning = intent
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Draft
+# ---------------------------------------------------------------------------
 
 _DRAFT_PROMPT = """\
-You are an email copywriter for an influencer outreach platform.
+You are an email copywriter for an influencer outreach platform called Pluvus.
 
-Write a {purpose} email for creator {name} ({platform}, {niche}).
-Sender: {sender}
+Write a {purpose} email for creator {name} on {platform} ({niche}).
+The email is sent by: {sender}
 {extra}
 
-Requirements:
-- Warm, professional tone
-- Concise (under 150 words)
-- No placeholders — fill all details
+Rules (strictly enforced):
+- Warm, professional tone, under 150 words
+- The sender's name is "{sender}" — use this exact name everywhere in the email
+- NEVER write [Your Name], [Name], [Brand], <Name>, or any placeholder in square or angle brackets
+- Do not refer to yourself as "I" without identifying who you are — use "{sender}" instead
+- Sign off as: "Best,\n{sender}"
 
-Respond ONLY with valid JSON:
-{{"subject": "<subject line>", "body": "<email body>"}}
+Respond ONLY with valid JSON and nothing else:
+{{"subject": "<subject line>", "body": "<full email body>"}}
 """
 
 
-def _try_langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse | None:
-    try:
-        from langchain_openai import ChatOpenAI  # type: ignore[import]
-        from langgraph.graph import StateGraph, END  # type: ignore[import]
-    except ImportError:
-        return None
+def _langgraph_draft(req: DraftRequest) -> DraftResponse:
+    from langgraph.graph import StateGraph, END  # type: ignore[import]
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
+    llm = _get_llm(temperature=0.7)
 
-    try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2, api_key=api_key)
+    extra_parts = []
+    if req.round:
+        extra_parts.append(f"Follow-up number: {req.round}")
+    if req.proposedTerms:
+        extra_parts.append(f"Proposed terms: {json.dumps(req.proposedTerms)}")
+    ctx = req.campaignContext or {}
+    if ctx.get("minBudget") and ctx.get("maxBudget"):
+        extra_parts.append(f"Budget range: ${ctx['minBudget']}–${ctx['maxBudget']}")
+    if ctx.get("brandName"):
+        extra_parts.append(f"Brand: {ctx['brandName']}")
 
-        prompt = _NEGOTIATE_PROMPT.format(
-            floor=json.dumps(req.campaignConstraints.termFloor.model_dump(exclude_none=True)),
-            ceiling=json.dumps(req.campaignConstraints.termCeiling.model_dump(exclude_none=True)),
-            tone=req.campaignConstraints.tone or "professional",
-            round=req.round,
-            max_rounds=req.maxRounds,
-            current_offer=json.dumps(req.currentOffer.model_dump(exclude_none=True)),
-            creator_reply=req.creatorReply,
-            history=json.dumps([e.model_dump(exclude_none=True) for e in req.negotiationHistory]),
-        )
+    prompt = _DRAFT_PROMPT.format(
+        purpose=req.purpose.replace("_", " "),
+        name=req.creatorName,
+        platform=req.creatorPlatform or "social media",
+        niche=req.creatorNiche or "content creation",
+        sender=req.senderName or ctx.get("brandName") or "Pluvus Partnerships",
+        extra="\n".join(extra_parts),
+    )
 
-        def negotiate_node(state: dict) -> dict:
-            return {"raw": llm.invoke(state["prompt"]).content}
+    def draft_node(state: dict) -> dict:
+        return {"raw": llm.invoke(state["prompt"]).content}
 
-        graph = StateGraph(dict)
-        graph.add_node("negotiate", negotiate_node)
-        graph.set_entry_point("negotiate")
-        graph.add_edge("negotiate", END)
-        compiled = graph.compile()
+    graph = StateGraph(dict)
+    graph.add_node("draft", draft_node)
+    graph.set_entry_point("draft")
+    graph.add_edge("draft", END)
 
-        result = compiled.invoke({"prompt": prompt})
-        raw: str = result.get("raw", "")
+    result = graph.compile().invoke({"prompt": prompt})
+    parsed = _parse_json(result.get("raw", ""))
 
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            m = re.search(r"\{.*\}", raw, re.DOTALL)
-            if not m:
-                return None
-            parsed = json.loads(m.group())
+    if "subject" not in parsed or "body" not in parsed:
+        raise ValueError(f"Missing subject/body in draft response: {parsed}")
 
-        action = parsed.get("action", "")
-        if action not in ("ACCEPT", "COUNTER", "REJECT", "ESCALATE"):
-            return None
+    sender_name = req.senderName or (req.campaignContext or {}).get("brandName") or "Pluvus Partnerships"
+    body = parsed["body"]
+    # Replace any leftover placeholders the model didn't fill in
+    body = re.sub(r'\[Your Name\]', sender_name, body, flags=re.IGNORECASE)
+    body = re.sub(r'\[Name\]', sender_name, body, flags=re.IGNORECASE)
+    body = re.sub(r'\[Brand\]', sender_name, body, flags=re.IGNORECASE)
+    body = re.sub(r'<Your Name>', sender_name, body, flags=re.IGNORECASE)
 
-        resp = NegotiateResponse(action=action)  # type: ignore[arg-type]
-        if parsed.get("proposedTerms"):
-            resp.proposedTerms = parsed["proposedTerms"]
-        if parsed.get("responseDraft"):
-            resp.responseDraft = parsed["responseDraft"]
-        if parsed.get("reasoning"):
-            resp.reasoning = parsed["reasoning"]
-        return resp
-
-    except Exception as exc:  # noqa: BLE001
-        print(f"[negotiate] LangGraph error: {exc} — falling back to mock")
-        return None
-
-
-def _try_langgraph_draft(req: DraftRequest) -> DraftResponse | None:
-    try:
-        from langchain_openai import ChatOpenAI  # type: ignore[import]
-        from langgraph.graph import StateGraph, END  # type: ignore[import]
-    except ImportError:
-        return None
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    try:
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=api_key)
-
-        extra_parts = []
-        if req.round:
-            extra_parts.append(f"Follow-up number: {req.round}")
-        if req.proposedTerms:
-            extra_parts.append(f"Proposed terms: {json.dumps(req.proposedTerms)}")
-
-        prompt = _DRAFT_PROMPT.format(
-            purpose=req.purpose.replace("_", " "),
-            name=req.creatorName,
-            platform=req.creatorPlatform or "social media",
-            niche=req.creatorNiche or "content creation",
-            sender=req.senderName or "Pluvus Partnerships",
-            extra="\n".join(extra_parts),
-        )
-
-        def draft_node(state: dict) -> dict:
-            return {"raw": llm.invoke(state["prompt"]).content}
-
-        graph = StateGraph(dict)
-        graph.add_node("draft", draft_node)
-        graph.set_entry_point("draft")
-        graph.add_edge("draft", END)
-        compiled = graph.compile()
-
-        result = compiled.invoke({"prompt": prompt})
-        raw: str = result.get("raw", "")
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            m = re.search(r"\{.*\}", raw, re.DOTALL)
-            if not m:
-                return None
-            parsed = json.loads(m.group())
-
-        if "subject" not in parsed or "body" not in parsed:
-            return None
-
-        return DraftResponse(subject=parsed["subject"], body=parsed["body"])
-
-    except Exception as exc:  # noqa: BLE001
-        print(f"[draft] LangGraph error: {exc} — falling back to mock")
-        return None
+    return DraftResponse(subject=parsed["subject"], body=body)
 
 
 # ---------------------------------------------------------------------------
@@ -373,22 +380,20 @@ def _try_langgraph_draft(req: DraftRequest) -> DraftResponse | None:
 
 @router.post("/negotiate", response_model=NegotiateResponse)
 def negotiate(req: NegotiateRequest) -> NegotiateResponse:
-    # Hard stop — enforce maxRounds at the service boundary.
     if req.round >= req.maxRounds:
         return NegotiateResponse(
             action="REJECT",
             reasoning=f"Max rounds ({req.maxRounds}) reached",
         )
-
-    result = _try_langgraph_negotiate(req)
-    if result is None:
-        result = _mock_negotiate(req)
-    return result
+    try:
+        return _langgraph_negotiate(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Negotiation failed: {exc}") from exc
 
 
 @router.post("/draft", response_model=DraftResponse)
 def draft(req: DraftRequest) -> DraftResponse:
-    result = _try_langgraph_draft(req)
-    if result is None:
-        result = _mock_draft(req)
-    return result
+    try:
+        return _langgraph_draft(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Draft generation failed: {exc}") from exc

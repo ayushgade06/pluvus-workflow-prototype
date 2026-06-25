@@ -8,8 +8,9 @@
 
 import { useState } from "react";
 import { useInstanceDetail, useTimeline, useLogs } from "../api/client";
-import { colors, formatTimestamp, relativeTime, formatDuration } from "../theme";
+import { colors, font, formatTimestamp, relativeTime, formatDuration } from "../theme";
 import { StateBadge, SourceBadge, Field, SectionTitle, Empty, Spinner } from "./ui";
+import { IconButton } from "./ds";
 import { Timeline } from "./Timeline";
 import { MessageThread } from "./MessageThread";
 import { AgentDecisions } from "./AgentDecisions";
@@ -45,21 +46,12 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
               {d?.creator.niche ? ` · ${d.creator.niche}` : ""}
             </div>
           </div>
-          <button
+          <IconButton
+            label="Close inspector"
+            icon="✕"
             onClick={onClose}
-            style={{
-              background: "transparent",
-              border: `1px solid ${colors.border}`,
-              borderRadius: 6,
-              color: colors.textMuted,
-              fontSize: 14,
-              lineHeight: 1,
-              padding: "4px 8px",
-            }}
-            title="Close inspector"
-          >
-            ✕
-          </button>
+            style={{ border: `1px solid ${colors.border}` }}
+          />
         </div>
 
         {d && (
@@ -104,7 +96,7 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}`, padding: "0 8px" }}>
+      <div role="tablist" style={{ display: "flex", borderBottom: `1px solid ${colors.border}`, padding: "0 8px" }}>
         <TabButton label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} count={timeline.data?.entries.length} />
         <TabButton label="Messages" active={tab === "messages"} onClick={() => setTab("messages")} count={d?.messages.length} />
         <TabButton label="AI Decisions" active={tab === "decisions"} onClick={() => setTab("decisions")} count={d?.agentDecisions.length} />
@@ -166,19 +158,23 @@ function TabButton({
   return (
     <button
       onClick={onClick}
+      role="tab"
+      aria-selected={active}
+      className="ds-focusable"
       style={{
         background: "transparent",
         border: "none",
         borderBottom: `2px solid ${active ? colors.accent : "transparent"}`,
         color: active ? colors.text : colors.textMuted,
-        fontSize: 12,
-        fontWeight: active ? 600 : 500,
+        fontSize: font.size.sm,
+        fontWeight: active ? font.weight.semibold : font.weight.medium,
         padding: "10px 12px",
+        cursor: "pointer",
       }}
     >
       {label}
       {count !== undefined && count > 0 && (
-        <span style={{ marginLeft: 6, fontSize: 10, color: colors.textDim }}>{count}</span>
+        <span style={{ marginLeft: 6, fontSize: font.size.xs, color: colors.textDim }}>{count}</span>
       )}
     </button>
   );

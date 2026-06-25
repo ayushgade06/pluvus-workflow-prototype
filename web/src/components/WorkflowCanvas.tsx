@@ -127,7 +127,7 @@ export function WorkflowCanvas({ nodes, selectedState, onSelectState }: Props) {
       fitViewOptions={{ padding: 0.15 }}
       minZoom={0.4}
       maxZoom={1.5}
-      proOptions={{ hideAttribution: false }}
+      proOptions={{ hideAttribution: true }}
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable={false}

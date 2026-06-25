@@ -1,0 +1,24 @@
+// Design-system barrel — single import surface for all primitives.
+//   import { Button, Card, Toast, useToast } from "../ds";
+export { Button } from "./Button";
+export type { ButtonVariant, ButtonSize } from "./Button";
+export { IconButton } from "./IconButton";
+export { Input, Textarea, Select } from "./Input";
+export { FormField } from "./FormField";
+export { Toggle } from "./Toggle";
+export { Slider } from "./Slider";
+export { Card } from "./Card";
+export { Badge, Chip, StatusBadge } from "./Badge";
+export { StatTile } from "./StatTile";
+export { SectionHeader } from "./SectionHeader";
+export { Skeleton, SkeletonLines, SkeletonRows } from "./Skeleton";
+export { EmptyState } from "./EmptyState";
+export { Tooltip } from "./Tooltip";
+export { Breadcrumbs } from "./Breadcrumbs";
+export type { Crumb } from "./Breadcrumbs";
+export { Tabs } from "./Tabs";
+export type { TabItem } from "./Tabs";
+export { Modal } from "./Modal";
+export { ConfirmDialog } from "./ConfirmDialog";
+export { ToastProvider, useToast } from "./Toast";
+export { useMediaQuery, bp } from "./useMediaQuery";

@@ -41,8 +41,7 @@ export function emailProvider(): IEmailProvider {
 // Classification provider factory
 // ---------------------------------------------------------------------------
 //   AGENT_PROVIDER=mock       (default) → MockClassificationProvider (keyword-based)
-//   AGENT_PROVIDER=langgraph            → LangGraphClassificationProvider (HTTP)
-//     Falls back to mock automatically if the agent service is unreachable.
+//   AGENT_PROVIDER=langgraph            → LangGraphClassificationProvider (HTTP to agent service)
 
 export function classificationProvider(): ClassificationProvider {
   const choice = (process.env["AGENT_PROVIDER"] ?? "mock").toLowerCase();
@@ -63,8 +62,7 @@ export function classificationProvider(): ClassificationProvider {
 // Negotiation provider factory
 // ---------------------------------------------------------------------------
 //   NEGOTIATION_PROVIDER=mock       (default) → MockNegotiationProvider
-//   NEGOTIATION_PROVIDER=langgraph            → LangGraphNegotiationProvider (HTTP)
-//     Falls back to mock automatically if the agent service is unreachable.
+//   NEGOTIATION_PROVIDER=langgraph            → LangGraphNegotiationProvider (HTTP to agent service)
 
 export function negotiationProvider(): NegotiationProvider {
   const choice = (process.env["NEGOTIATION_PROVIDER"] ?? "mock").toLowerCase();
@@ -101,18 +99,20 @@ class AgentProviderAdapter implements IAgentProvider {
     return { intent: result.intent as ClassifyResult["intent"], confidence: result.confidence };
   }
 
-  async negotiate(round: number, config: Record<string, unknown>): Promise<NegotiateResult> {
+  async negotiate(round: number, config: Record<string, unknown>, creatorReply = ""): Promise<NegotiateResult> {
     const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
     const termFloor = (config["termFloor"] ?? {}) as NegotiationTerm;
     const termCeiling = (config["termCeiling"] ?? {}) as NegotiationTerm;
 
+    const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
+
     const resp = await this.negotiator.negotiate({
-      creatorReply: "",
+      creatorReply,
       currentOffer: termFloor,
       round,
       maxRounds,
       negotiationHistory: [],
-      campaignConstraints: { termFloor, termCeiling },
+      campaignConstraints: { termFloor, termCeiling, ...(senderName ? { senderName } : {}) },
     });
 
     switch (resp.action) {

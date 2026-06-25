@@ -1,6 +1,17 @@
 import { useState } from "react";
-import { useCampaigns } from "../../api/builderClient";
-import { colors, formatTimestamp } from "../../theme";
+import { useCampaigns, useCampaign, deleteCampaign } from "../../api/builderClient";
+import { colors, radii, font, formatTimestamp } from "../../theme";
+import {
+  Button,
+  Card,
+  StatusBadge,
+  Badge,
+  EmptyState,
+  SkeletonRows,
+  ConfirmDialog,
+  IconButton,
+  useToast,
+} from "../ds";
 import { CampaignWizard } from "./CampaignWizard";
 import type { CampaignListItem } from "../../api/builderTypes";
 
@@ -19,14 +30,8 @@ export function CampaignList({ onSelectWorkflow }: Props) {
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        background: colors.bg,
-      }}
-    >
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: colors.bg }}>
+      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -39,44 +44,61 @@ export function CampaignList({ onSelectWorkflow }: Props) {
         }}
       >
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: colors.text }}>Campaigns</div>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-            Create and manage creator campaigns
+          <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: colors.text }}>
+            Campaigns
+          </div>
+          <div style={{ fontSize: font.size.md, color: colors.textMuted, marginTop: 2 }}>
+            Create and manage creator outreach campaigns
           </div>
         </div>
-        <button
-          onClick={() => setShowWizard(true)}
-          style={{
-            padding: "8px 16px",
-            background: colors.accent,
-            color: "#fff",
-            border: "none",
-            borderRadius: 6,
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          + New Campaign
-        </button>
+        <Button variant="primary" onClick={() => setShowWizard(true)} leftIcon="+">
+          New Campaign
+        </Button>
       </div>
 
+      {/* Body */}
       <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
-        {isLoading && (
-          <div style={{ color: colors.textMuted, fontSize: 13 }}>Loading campaigns…</div>
-        )}
+        {isLoading && <SkeletonRows count={4} height={76} />}
         {isError && (
-          <div style={{ color: colors.danger, fontSize: 13 }}>
-            Failed to load campaigns. Is the server running?
-          </div>
+          <EmptyState
+            icon="⚠"
+            title="Couldn't load campaigns"
+            description="The server may be unreachable. Check that it's running, then retry."
+            action={
+              <Button variant="secondary" onClick={() => void refetch()}>
+                Retry
+              </Button>
+            }
+          />
         )}
         {!isLoading && !isError && (!campaigns || campaigns.length === 0) && (
-          <EmptyState onNew={() => setShowWizard(true)} />
+          <EmptyState
+            icon="📋"
+            title="No campaigns yet"
+            description="Create your first campaign to start building outreach workflows for creators."
+            action={
+              <Button variant="primary" onClick={() => setShowWizard(true)}>
+                Create campaign
+              </Button>
+            }
+          />
         )}
         {campaigns && campaigns.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
+              gap: 16,
+              alignItems: "start",
+            }}
+          >
             {campaigns.map((c) => (
-              <CampaignCard key={c.id} campaign={c} onSelectWorkflow={onSelectWorkflow} />
+              <CampaignCard
+                key={c.id}
+                campaign={c}
+                onSelectWorkflow={onSelectWorkflow}
+                onDeleted={() => void refetch()}
+              />
             ))}
           </div>
         )}
@@ -92,198 +114,199 @@ export function CampaignList({ onSelectWorkflow }: Props) {
 function CampaignCard({
   campaign,
   onSelectWorkflow,
+  onDeleted,
 }: {
   campaign: CampaignListItem;
   onSelectWorkflow: (id: string) => void;
+  onDeleted: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { data: detail } = useCampaigns();
-  // We use the list data + detail lazy-load on expand
-  const [detailData, setDetailData] = useState<import("../../api/builderTypes").CampaignDetail | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const toast = useToast();
 
-  async function handleExpand() {
-    if (!expanded && !detailData) {
-      try {
-        const res = await fetch(`/api/campaigns/${campaign.id}`);
-        if (res.ok) {
-          const d = await res.json();
-          setDetailData(d);
-        }
-      } catch {
-        /* ignore */
-      }
+  // Lazy-load detail via the existing hook (cached by React Query) once expanded.
+  const detail = useCampaign(expanded ? campaign.id : null);
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await deleteCampaign(campaign.id);
+      toast.success(`Deleted “${campaign.name}”.`);
+      onDeleted();
+    } catch {
+      toast.error("Failed to delete campaign.");
+      setDeleting(false);
+      setConfirmDelete(false);
     }
-    setExpanded((e) => !e);
   }
 
+  const publishedCount =
+    detail.data?.workflows.filter((w) => w.status === "PUBLISHED").length ?? null;
+
   return (
-    <div
-      style={{
-        background: colors.panel,
-        border: `1px solid ${colors.border}`,
-        borderRadius: 8,
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          padding: "14px 18px",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          cursor: "pointer",
-        }}
-        onClick={() => void handleExpand()}
-      >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              marginBottom: 4,
-            }}
-          >
-            <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>
-              {campaign.name}
-            </span>
-            <span
+    <Card style={{ overflow: "hidden", opacity: deleting ? 0.5 : 1 }}>
+      {/* Card head */}
+      <div style={{ padding: "16px 18px" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text }}>
+                {campaign.name}
+              </span>
+              <Badge color={colors.textMuted} small>
+                {campaign.brand}
+              </Badge>
+            </div>
+            <div
               style={{
-                fontSize: 10.5,
+                fontSize: font.size.md,
                 color: colors.textMuted,
-                background: colors.panelAlt,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 4,
-                padding: "1px 6px",
+                marginTop: 6,
+                lineHeight: 1.45,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
               }}
             >
-              {campaign.brand}
-            </span>
+              {campaign.objective || "No objective set"}
+            </div>
           </div>
-          <div style={{ fontSize: 12, color: colors.textMuted }}>
-            {campaign.objective || "No objective set"}
-          </div>
+          <IconButton
+            label="Delete campaign"
+            icon="🗑"
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting}
+            style={{ color: colors.danger, flexShrink: 0 }}
+          />
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.accent }}>
-              {campaign.workflowCount}
+
+        {/* Stat row (derived from data we already have) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 14 }}>
+          <MiniMetric label="Workflows" value={campaign.workflowCount} accent={colors.accent} />
+          <MiniMetric
+            label="Published"
+            value={publishedCount ?? "—"}
+            accent={publishedCount && publishedCount > 0 ? colors.success : colors.textMuted}
+          />
+          <div style={{ marginLeft: "auto", textAlign: "right" }}>
+            <div style={{ fontSize: 10, color: colors.textDim, textTransform: "uppercase", letterSpacing: 0.4 }}>
+              Created
             </div>
-            <div style={{ fontSize: 10, color: colors.textDim, textTransform: "uppercase" }}>
-              workflows
+            <div style={{ fontSize: font.size.sm, color: colors.textMuted }}>
+              {formatTimestamp(campaign.createdAt)}
             </div>
-          </div>
-          <div style={{ fontSize: 11.5, color: colors.textDim }}>
-            {formatTimestamp(campaign.createdAt)}
-          </div>
-          <div style={{ fontSize: 12, color: colors.textMuted }}>
-            {expanded ? "▲" : "▼"}
           </div>
         </div>
       </div>
 
+      {/* Expand toggle */}
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="ds-focusable ds-row"
+        style={{
+          width: "100%",
+          padding: "8px 18px",
+          background: "transparent",
+          border: "none",
+          borderTop: `1px solid ${colors.border}`,
+          color: colors.textMuted,
+          fontSize: font.size.sm,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <span>{expanded ? "Hide workflows" : "View workflows"}</span>
+        <span aria-hidden style={{ transition: "transform 0.15s", transform: expanded ? "rotate(180deg)" : "none" }}>
+          ▾
+        </span>
+      </button>
+
+      {/* Expanded workflow list */}
       {expanded && (
-        <div
-          style={{
-            borderTop: `1px solid ${colors.border}`,
-            padding: "12px 18px",
-            background: colors.bg,
-          }}
-        >
-          {!detailData ? (
-            <div style={{ fontSize: 12, color: colors.textMuted }}>Loading workflows…</div>
-          ) : detailData.workflows.length === 0 ? (
-            <div style={{ fontSize: 12, color: colors.textMuted }}>No workflows yet.</div>
+        <div style={{ borderTop: `1px solid ${colors.border}`, padding: "12px 18px", background: colors.bg }}>
+          {detail.isLoading ? (
+            <div style={{ fontSize: font.size.md, color: colors.textMuted }}>Loading workflows…</div>
+          ) : detail.isError ? (
+            <div style={{ fontSize: font.size.md, color: colors.danger }}>Failed to load workflows.</div>
+          ) : !detail.data || detail.data.workflows.length === 0 ? (
+            <div style={{ fontSize: font.size.md, color: colors.textMuted }}>No workflows yet.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {detailData.workflows.map((wf) => (
-                <div
+              {detail.data.workflows.map((wf) => (
+                <button
                   key={wf.id}
+                  onClick={() => onSelectWorkflow(wf.id)}
+                  className="ds-focusable ds-card-interactive"
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    padding: "8px 12px",
+                    padding: "9px 12px",
                     background: colors.panel,
                     border: `1px solid ${colors.border}`,
-                    borderRadius: 6,
+                    borderRadius: radii.sm,
                     cursor: "pointer",
+                    textAlign: "left",
                   }}
-                  onClick={() => onSelectWorkflow(wf.id)}
                 >
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 13, color: colors.text }}>{wf.name}</span>
-                    <span
-                      style={{
-                        marginLeft: 8,
-                        fontSize: 10.5,
-                        color: wf.status === "PUBLISHED" ? colors.success : colors.textMuted,
-                        textTransform: "uppercase",
-                        letterSpacing: 0.4,
-                      }}
-                    >
-                      {wf.status}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: font.size.md, color: colors.text }}>
+                    {wf.name}
+                  </span>
+                  <StatusBadge status={wf.status} small />
+                  <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
                     {wf.versionCount} version{wf.versionCount !== 1 ? "s" : ""}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: colors.accent,
-                      fontWeight: 600,
-                    }}
-                  >
+                  </span>
+                  <span style={{ fontSize: font.size.md, color: colors.accent, fontWeight: font.weight.semibold }}>
                     Open →
-                  </div>
-                </div>
+                  </span>
+                </button>
               ))}
             </div>
           )}
         </div>
       )}
-    </div>
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete campaign?"
+          message={
+            <>
+              Delete <strong>{campaign.name}</strong> and all of its workflows? This cannot be undone.
+            </>
+          }
+          confirmLabel="Delete campaign"
+          destructive
+          busy={deleting}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
+    </Card>
   );
 }
 
-function EmptyState({ onNew }: { onNew: () => void }) {
+function MiniMetric({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: number | string;
+  accent: string;
+}) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 80,
-        gap: 20,
-        textAlign: "center",
-      }}
-    >
-      <div style={{ fontSize: 40 }}>📋</div>
-      <div>
-        <div style={{ fontSize: 16, fontWeight: 600, color: colors.text, marginBottom: 8 }}>
-          No campaigns yet
-        </div>
-        <div style={{ fontSize: 13, color: colors.textMuted, maxWidth: 300 }}>
-          Create your first campaign to start building outreach workflows for creators.
-        </div>
+    <div>
+      <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: accent, lineHeight: 1 }}>
+        {value}
       </div>
-      <button
-        onClick={onNew}
-        style={{
-          padding: "10px 22px",
-          background: colors.accent,
-          color: "#fff",
-          border: "none",
-          borderRadius: 6,
-          fontSize: 13,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        Create Campaign
-      </button>
+      <div style={{ fontSize: 10, color: colors.textDim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>
+        {label}
+      </div>
     </div>
   );
 }

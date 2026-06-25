@@ -5,6 +5,7 @@ import {
   createCampaign,
   getCampaignWithWorkflows,
   findCampaignById,
+  deleteCampaign,
 } from "../db/campaigns.js";
 import {
   createWorkflow,
@@ -137,10 +138,19 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
       return;
     }
 
+    // Stamp brandName/senderName into every node's config so {{brandName}}
+    // resolves correctly when draft() is called at send time.
+    const nodes = (JSON.parse(JSON.stringify(template.nodes)) as typeof template.nodes).map(
+      (node) => ({
+        ...node,
+        config: { brandName: campaign.brand, senderName: campaign.brand, ...node.config },
+      }),
+    );
+
     const workflow = await createWorkflow({
       name: name.trim(),
       status: "DRAFT",
-      draftNodes: JSON.parse(JSON.stringify(template.nodes)),
+      draftNodes: nodes,
       campaign: { connect: { id: campaign.id } },
     });
 
@@ -155,6 +165,22 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[campaigns] create workflow error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// DELETE /campaigns/:id — delete a campaign and all its workflows/instances
+router.delete("/:id", async (req: Request, res: Response) => {
+  try {
+    const campaign = await findCampaignById(req.params["id"]!);
+    if (!campaign) {
+      res.status(404).json({ error: "campaign not found" });
+      return;
+    }
+    await deleteCampaign(req.params["id"]!);
+    res.status(204).send();
+  } catch (err) {
+    console.error("[campaigns] delete error:", err);
     res.status(500).json({ error: "internal server error" });
   }
 });

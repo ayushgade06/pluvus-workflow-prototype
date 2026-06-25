@@ -6,14 +6,28 @@ import {
   publishWorkflow,
   validateWorkflow,
   useBuilderInvalidator,
+  useWorkflowExecution,
 } from "../../api/builderClient";
-import { colors, formatTimestamp } from "../../theme";
+import { colors, radii, font, formatTimestamp } from "../../theme";
 import { BuilderCanvas } from "./BuilderCanvas";
+import { BuilderLeftSidebar } from "./BuilderLeftSidebar";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EnrollTab } from "./EnrollTab";
 import { LaunchTab } from "./LaunchTab";
 import { MonitorTab } from "./MonitorTab";
-import { useWorkflowExecution } from "../../api/builderClient";
+import {
+  Button,
+  IconButton,
+  Breadcrumbs,
+  Tabs,
+  StatusBadge,
+  EmptyState,
+  Tooltip,
+  useToast,
+  useMediaQuery,
+  bp,
+  type Crumb,
+} from "../ds";
 import type { DraftNode } from "../../api/builderTypes";
 
 type Tab = "build" | "enroll" | "launch" | "monitor";
@@ -28,18 +42,21 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
   const versionsQuery = useWorkflowVersions(workflowId);
   const execution = useWorkflowExecution(workflowId);
   const inv = useBuilderInvalidator(workflowId);
+  const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>("build");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [localNodes, setLocalNodes] = useState<DraftNode[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [showVersions, setShowVersions] = useState(false);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const compact = useMediaQuery(bp.laptop);
 
   const wf = wfQuery.data;
   // localNodes takes priority over server data (optimistic local editing)
@@ -61,10 +78,13 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
     setSaving(true);
     setSaveError(null);
     try {
-      await saveDraft(workflowId, nodesToSave);
+      const res = await saveDraft(workflowId, nodesToSave);
       await inv.invalidateWorkflow();
+      setSavedAt(res.updatedAt);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Save failed");
+      const msg = err instanceof Error ? err.message : "Save failed";
+      setSaveError(msg);
+      toast.error(`Couldn't save draft: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -79,9 +99,7 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
   }
 
   function handleDeleteNode(nodeId: string) {
-    const updated = nodes
-      .filter((n) => n.id !== nodeId)
-      .map((n, i) => ({ ...n, order: i }));
+    const updated = nodes.filter((n) => n.id !== nodeId).map((n, i) => ({ ...n, order: i }));
     setLocalNodes(updated);
     setSelectedNodeId(null);
     scheduleSave(updated);
@@ -132,13 +150,17 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
       if (!validation.valid) {
         setValidationErrors(validation.errors);
         setPublishing(false);
+        toast.error("Validation failed — fix the highlighted issues before publishing.");
         return;
       }
-      await publishWorkflow(workflowId);
+      const res = await publishWorkflow(workflowId);
       await Promise.all([inv.invalidateWorkflow(), inv.invalidateVersions()]);
       setLocalNodes(null);
+      toast.success(`Published version v${res.version}.`);
     } catch (err) {
-      setPublishError(err instanceof Error ? err.message : "Publish failed");
+      const msg = err instanceof Error ? err.message : "Publish failed";
+      setPublishError(msg);
+      toast.error(`Publish failed: ${msg}`);
     } finally {
       setPublishing(false);
     }
@@ -146,55 +168,37 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
 
   const executionCounts = execution.data?.stateCounts;
 
+  // -- loading / error states --------------------------------------------
   if (wfQuery.isLoading) {
     return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          color: colors.textMuted,
-          fontSize: 13,
-        }}
-      >
-        Loading workflow…
+      <div style={centerStyle}>
+        <span style={{ color: colors.textMuted, fontSize: font.size.md }}>Loading workflow…</span>
       </div>
     );
   }
 
   if (wfQuery.isError || !wf) {
     return (
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          color: colors.danger,
-          fontSize: 13,
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        <div>Failed to load workflow.</div>
-        <button
-          onClick={onBack}
-          style={{
-            background: "none",
-            border: `1px solid ${colors.border}`,
-            color: colors.textMuted,
-            padding: "6px 14px",
-            borderRadius: 5,
-            cursor: "pointer",
-            fontSize: 12,
-          }}
-        >
-          ← Back
-        </button>
-      </div>
+      <EmptyState
+        icon="⚠"
+        title="Failed to load workflow"
+        description="The workflow could not be loaded. It may have been deleted, or the server is unreachable."
+        action={
+          <Button variant="secondary" onClick={onBack} leftIcon="←">
+            Back to campaigns
+          </Button>
+        }
+      />
     );
   }
+
+  const isPublished = wf.status === "PUBLISHED";
+
+  const crumbs: Crumb[] = [
+    { label: "Campaigns", onClick: onBack },
+    ...(wf.campaign ? [{ label: wf.campaign.name }] : []),
+    { label: wf.name },
+  ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: colors.bg }}>
@@ -203,118 +207,78 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 14,
-          padding: "10px 18px",
+          gap: 12,
+          padding: "10px 16px",
           borderBottom: `1px solid ${colors.border}`,
           background: colors.panel,
           flexShrink: 0,
         }}
       >
-        <button
-          onClick={onBack}
-          style={{
-            background: "none",
-            border: "none",
-            color: colors.textMuted,
-            fontSize: 13,
-            cursor: "pointer",
-            padding: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          ← Back
-        </button>
+        <IconButton label="Back to campaigns" icon="←" onClick={onBack} />
         <div style={{ width: 1, height: 18, background: colors.border }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>
-            {wf.name}
-          </div>
-          {wf.campaign && (
-            <div style={{ fontSize: 11.5, color: colors.textDim }}>
-              {wf.campaign.brand} · {wf.campaign.name}
-            </div>
-          )}
+          <Breadcrumbs items={crumbs} />
         </div>
         <StatusBadge status={wf.status} />
         {wf.latestVersion && (
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setShowVersions((v) => !v)}
-            style={{
-              background: "none",
-              border: `1px solid ${colors.border}`,
-              borderRadius: 4,
-              color: colors.textMuted,
-              fontSize: 11.5,
-              padding: "3px 8px",
-              cursor: "pointer",
-            }}
+            aria-expanded={showVersions}
           >
             v{wf.latestVersion.version}
-          </button>
+          </Button>
         )}
-        {saving && (
-          <span style={{ fontSize: 11.5, color: colors.textDim }}>Saving…</span>
-        )}
-        {saveError && (
-          <span style={{ fontSize: 11.5, color: colors.danger }}>{saveError}</span>
-        )}
+        <SaveStatus saving={saving} error={saveError} savedAt={savedAt} />
       </div>
 
       {/* Tab bar */}
-      <div
-        style={{
-          display: "flex",
-          borderBottom: `1px solid ${colors.border}`,
-          background: colors.panel,
-          flexShrink: 0,
-        }}
-      >
-        {(["build", "enroll", "launch", "monitor"] as Tab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: "8px 18px",
-              background: "none",
-              border: "none",
-              borderBottom: `2px solid ${activeTab === tab ? colors.accent : "transparent"}`,
-              color: activeTab === tab ? colors.accent : colors.textMuted,
-              fontSize: 13,
-              fontWeight: activeTab === tab ? 600 : 400,
-              cursor: "pointer",
-              textTransform: "capitalize",
-            }}
-          >
-            {tab}
-          </button>
-        ))}
+      <div style={{ flexShrink: 0 }}>
+        <Tabs<Tab>
+          active={activeTab}
+          onChange={setActiveTab}
+          items={[
+            { key: "build", label: "Build" },
+            { key: "enroll", label: "Enroll" },
+            { key: "launch", label: "Launch" },
+            { key: "monitor", label: "Monitor" },
+          ]}
+        />
       </div>
 
       {/* Versions drawer */}
       {showVersions && (
         <div
           style={{
-            padding: "10px 18px",
+            padding: "10px 16px",
             borderBottom: `1px solid ${colors.border}`,
             background: colors.panelAlt,
             flexShrink: 0,
-            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
           }}
         >
-          <span style={{ color: colors.textMuted, marginRight: 12 }}>Version History:</span>
-          {versionsQuery.data?.map((v) => (
-            <span
-              key={v.id}
-              style={{
-                marginRight: 12,
-                color: v.version === wf.latestVersion?.version ? colors.accent : colors.textDim,
-              }}
-            >
-              v{v.version} ({v.instanceCount} instances) · {formatTimestamp(v.publishedAt)}
-            </span>
-          ))}
+          <span style={{ color: colors.textMuted, fontSize: font.size.sm, fontWeight: font.weight.semibold }}>
+            Version history
+          </span>
+          {versionsQuery.data?.length
+            ? versionsQuery.data.map((v) => (
+                <span
+                  key={v.id}
+                  style={{
+                    fontSize: font.size.sm,
+                    color: v.version === wf.latestVersion?.version ? colors.accent : colors.textDim,
+                  }}
+                >
+                  v{v.version} · {v.instanceCount} instances · {formatTimestamp(v.publishedAt)}
+                </span>
+              ))
+            : (
+              <span style={{ fontSize: font.size.sm, color: colors.textDim }}>No published versions yet.</span>
+            )}
         </div>
       )}
 
@@ -322,17 +286,17 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
       {validationErrors.length > 0 && (
         <div
           style={{
-            padding: "8px 18px",
+            padding: "9px 16px",
             background: "rgba(248,81,73,0.08)",
             borderBottom: `1px solid ${colors.danger}`,
             flexShrink: 0,
           }}
         >
-          <div style={{ fontSize: 12, color: colors.danger, fontWeight: 600, marginBottom: 4 }}>
+          <div style={{ fontSize: font.size.md, color: colors.danger, fontWeight: font.weight.semibold, marginBottom: 4 }}>
             Validation errors — fix before publishing:
           </div>
           {validationErrors.map((e, i) => (
-            <div key={i} style={{ fontSize: 11.5, color: colors.danger }}>
+            <div key={i} style={{ fontSize: font.size.sm, color: colors.danger }}>
               · {e}
             </div>
           ))}
@@ -343,6 +307,20 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {activeTab === "build" ? (
           <>
+            {/* Left sidebar */}
+            {!compact && (
+              <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${colors.border}` }}>
+                <BuilderLeftSidebar
+                  workflow={wf}
+                  nodes={nodes}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  execution={execution.data}
+                  versionCount={versionsQuery.data?.length ?? 0}
+                />
+              </div>
+            )}
+
             {/* Canvas */}
             <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
               <BuilderCanvas
@@ -350,57 +328,48 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 executionCounts={executionCounts}
+                published={isPublished}
               />
 
               {/* Publish bar */}
               <div
                 style={{
                   position: "absolute",
-                  bottom: 16,
+                  bottom: 18,
                   left: "50%",
                   transform: "translateX(-50%)",
                   display: "flex",
-                  gap: 10,
+                  alignItems: "center",
+                  gap: 12,
                   background: colors.panel,
                   border: `1px solid ${colors.border}`,
-                  borderRadius: 8,
-                  padding: "8px 14px",
-                  boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+                  borderRadius: radii.lg,
+                  padding: "8px 10px 8px 16px",
+                  boxShadow: "0 8px 28px rgba(0,0,0,0.45)",
                 }}
               >
-                <button
-                  onClick={() => void handlePublish()}
-                  disabled={publishing}
-                  style={{
-                    padding: "7px 18px",
-                    background: publishing ? colors.border : colors.accent,
-                    color: publishing ? colors.textDim : "#fff",
-                    border: "none",
-                    borderRadius: 6,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: publishing ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {publishing ? "Publishing…" : "Publish Version"}
-                </button>
+                <span style={{ fontSize: font.size.sm, color: colors.textMuted }}>
+                  {isPublished ? "Re-publish to apply draft changes" : "Ready to go live?"}
+                </span>
+                <Button variant="primary" onClick={() => void handlePublish()} disabled={publishing}>
+                  {publishing ? "Publishing…" : "Publish version"}
+                </Button>
                 {publishError && (
-                  <span style={{ fontSize: 12, color: colors.danger, alignSelf: "center" }}>
-                    {publishError}
-                  </span>
+                  <span style={{ fontSize: font.size.sm, color: colors.danger }}>{publishError}</span>
                 )}
               </div>
             </div>
 
-            {/* Config panel */}
-            {selectedNode && (
-              <div
-                style={{
-                  width: 340,
-                  flexShrink: 0,
-                  borderLeft: `1px solid ${colors.border}`,
-                }}
-              >
+            {/* Config panel — always present so the canvas doesn't reflow */}
+            <div
+              style={{
+                width: 340,
+                flexShrink: 0,
+                borderLeft: `1px solid ${colors.border}`,
+                background: colors.panel,
+              }}
+            >
+              {selectedNode ? (
                 <NodeConfigPanel
                   key={selectedNode.id}
                   node={selectedNode}
@@ -410,9 +379,19 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
                   onMoveDown={handleMoveDown}
                   isFirst={selectedIndex === 0}
                   isLast={selectedIndex === sorted.length - 1}
+                  saving={saving}
+                  saveError={saveError}
+                  savedAt={savedAt}
                 />
-              </div>
-            )}
+              ) : (
+                <EmptyState
+                  compact
+                  icon="⚙"
+                  title="No step selected"
+                  description="Select a step on the canvas or from the left panel to edit its configuration."
+                />
+              )}
+            </div>
           </>
         ) : activeTab === "enroll" ? (
           <EnrollTab
@@ -437,28 +416,40 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === "PUBLISHED"
-      ? colors.success
-      : status === "ARCHIVED"
-      ? colors.textDim
-      : colors.warning;
-  return (
-    <span
-      style={{
-        fontSize: 10.5,
-        fontWeight: 700,
-        color,
-        border: `1px solid ${color}`,
-        borderRadius: 4,
-        padding: "2px 7px",
-        textTransform: "uppercase",
-        letterSpacing: 0.4,
-        opacity: 0.9,
-      }}
-    >
-      {status}
-    </span>
-  );
+function SaveStatus({
+  saving,
+  error,
+  savedAt,
+}: {
+  saving: boolean;
+  error: string | null;
+  savedAt: string | null;
+}) {
+  if (error) {
+    return (
+      <Tooltip content={error}>
+        <span style={{ fontSize: font.size.sm, color: colors.danger, display: "inline-flex", alignItems: "center", gap: 5 }}>
+          ● Save failed
+        </span>
+      </Tooltip>
+    );
+  }
+  if (saving) {
+    return <span style={{ fontSize: font.size.sm, color: colors.textDim }}>Saving…</span>;
+  }
+  if (savedAt) {
+    return (
+      <span style={{ fontSize: font.size.sm, color: colors.textDim, display: "inline-flex", alignItems: "center", gap: 5 }}>
+        <span style={{ color: colors.success }}>✓</span> Saved
+      </span>
+    );
+  }
+  return null;
 }
+
+const centerStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: "100%",
+};

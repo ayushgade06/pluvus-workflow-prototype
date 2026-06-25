@@ -35,7 +35,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
 
   constructor(opts: MockNegotiationOptions = {}) {
     this.forceAction = opts.forceAction;
-    this.counterUntilRound = opts.counterUntilRound ?? 0;
+    this.counterUntilRound = opts.counterUntilRound ?? 1;
   }
 
   async negotiate(req: NegotiationRequest): Promise<NegotiationResponse> {
@@ -117,78 +117,96 @@ export class MockNegotiationProvider implements NegotiationProvider {
   async draft(req: DraftRequest): Promise<DraftResponse> {
     const name = req.creatorName;
     const platform = req.creatorPlatform ?? "social media";
+    const niche = req.creatorNiche ?? "your niche";
     const sender = req.senderName ?? "Pluvus Partnerships";
+    const ctx = (req.campaignContext ?? {}) as Record<string, unknown>;
+    const brand = typeof ctx["brandName"] === "string" ? ctx["brandName"] : sender;
+    const minBudget = typeof ctx["minBudget"] === "number" ? ctx["minBudget"] : null;
+    const maxBudget = typeof ctx["maxBudget"] === "number" ? ctx["maxBudget"] : null;
+    const commissionRate = typeof ctx["commissionRate"] === "number" ? ctx["commissionRate"] : null;
+
+    const budgetRange = minBudget !== null && maxBudget !== null
+      ? `$${minBudget}–$${maxBudget}`
+      : maxBudget !== null ? `up to $${maxBudget}` : null;
 
     switch (req.purpose) {
       case "initial_outreach":
         return {
-          subject: `Collaboration opportunity — ${name}`,
+          subject: `${brand} partnership opportunity — ${name}`,
           body: [
             `Hi ${name},`,
             ``,
-            `We've been following your ${platform} content and think you'd be a perfect fit for our upcoming campaign.`,
+            `We've been following your ${platform} ${niche} content and love what you're building.`,
             ``,
-            `${sender} works with top creators in your space, and we believe this partnership could be mutually beneficial.`,
+            `${brand} is looking for creators like you for an upcoming campaign${budgetRange ? ` — we're offering ${budgetRange}${commissionRate ? ` + ${commissionRate}% commission` : ""}` : ""}.`,
             ``,
             `Would you be open to a quick conversation about the details?`,
             ``,
             `Best,`,
-            `${sender}`,
+            `${brand} Team`,
           ].join("\n"),
         };
 
       case "follow_up": {
         const n = req.round ?? 1;
         return {
-          subject: `Re: Collaboration opportunity — ${name}`,
+          subject: `Following up — ${brand} partnership`,
           body: [
             `Hi ${name},`,
             ``,
-            `Just following up on my previous message${n > 1 ? ` (follow-up #${n})` : ""} — still very interested in collaborating!`,
+            `Just following up on our ${brand} partnership offer${n > 1 ? ` (note #${n})` : ""}.`,
             ``,
-            `We'd love to hear from you when you have a moment.`,
+            budgetRange ? `We have ${budgetRange} budgeted for the right creator in the ${niche} space — we think that's you.` : `We'd love to hear from you when you have a moment.`,
             ``,
             `Best,`,
-            `${sender}`,
+            `${brand} Team`,
           ].join("\n"),
         };
       }
 
       case "counter_offer": {
-        const rate = req.proposedTerms?.["rate"];
+        const round = req.round ?? 1;
+        const proposedRate = req.proposedTerms?.["rate"];
+        const offerAmount = proposedRate !== undefined
+          ? `$${proposedRate}`
+          : budgetRange ?? "a competitive fee";
         return {
-          subject: `Re: Partnership proposal — updated offer`,
+          subject: `${brand} × ${name} — updated offer`,
           body: [
             `Hi ${name},`,
             ``,
-            `Thank you for your response. We appreciate your consideration.`,
+            `Thanks for getting back to us! We've reviewed your request and here's our revised offer:`,
             ``,
-            rate !== undefined
-              ? `After reviewing your feedback, we'd like to propose a rate of $${rate} for this collaboration.`
-              : `We'd like to revise our proposal based on your feedback.`,
+            `• Fee: ${offerAmount}${commissionRate ? `\n• Commission: ${commissionRate}% on all sales driven by your content` : ""}`,
             ``,
-            `Please let us know if these terms work for you.`,
+            `This is for a dedicated ${platform} post showcasing ${brand}. Our team handles the brief and creative direction — we just need your authentic voice.`,
+            ``,
+            round > 1 ? `We're keen to make this work and hope we can reach an agreement. Please let us know your thoughts.` : `Let us know if this works for you or if you'd like to discuss further.`,
             ``,
             `Best,`,
-            `${sender}`,
+            `${brand} Team`,
           ].join("\n"),
         };
       }
 
       case "acceptance":
         return {
-          subject: `Partnership confirmed — welcome to the campaign!`,
+          subject: `You're in! ${brand} × ${name} partnership confirmed`,
           body: [
             `Hi ${name},`,
             ``,
-            `Wonderful news — we're thrilled to confirm your participation in our campaign!`,
+            `Fantastic — we're thrilled to confirm your partnership with ${brand}!`,
             ``,
-            `Our team will be in touch shortly with the formal agreement and next steps.`,
+            [
+              budgetRange ? `• Compensation: ${budgetRange}` : null,
+              commissionRate ? `• Commission: ${commissionRate}% on sales` : null,
+              `• Platform: ${platform}`,
+            ].filter(Boolean).join("\n"),
             ``,
-            `Welcome aboard!`,
+            `Our team will reach out shortly with the campaign brief, content guidelines, and contract. Excited to work with you!`,
             ``,
-            `Best,`,
-            `${sender}`,
+            `Welcome to the ${brand} family,`,
+            `${brand} Partnerships Team`,
           ].join("\n"),
         };
     }

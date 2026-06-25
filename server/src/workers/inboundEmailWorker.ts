@@ -1,6 +1,6 @@
 import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
-import { QUEUE_INBOUND_EMAIL } from "./queues.js";
+import { QUEUE_INBOUND_EMAIL, enqueueNodeExecution } from "./queues.js";
 import type { InboundEmailJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
@@ -118,9 +118,26 @@ async function handleInboundEmail(
   }
 
   const updated = await findInstanceById(instanceId);
+  const newState = updated?.currentState ?? "unknown";
   console.log(
-    `[inbound-email] done — ${instanceId}: REPLY_RECEIVED → ${updated?.currentState ?? "unknown"} (job ${job.id})`,
+    `[inbound-email] done — ${instanceId}: REPLY_RECEIVED → ${newState} (job ${job.id})`,
   );
+
+  // Reply detection classified the reply and landed on NEGOTIATING.
+  // Enqueue a node-execution job to run the negotiation executor immediately
+  // so the agent sends a response without waiting for a manual trigger.
+  if (newState === "NEGOTIATING") {
+    const refreshed = await findInstanceById(instanceId);
+    const round = refreshed?.negotiationRound ?? 0;
+    await enqueueNodeExecution({
+      instanceId,
+      expectedState: "NEGOTIATING",
+      triggerRef: `auto-negotiate-${instanceId}-r${round}`,
+    });
+    console.log(
+      `[inbound-email] auto-enqueued negotiation step for ${instanceId} (round ${round})`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -57,3 +57,165 @@ button {
 .mono {
   font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Design-system interaction states (Phase A)                                */
+/* ------------------------------------------------------------------------- */
+/* Inline styles can't express :hover / :focus-visible / :active, so the DS    */
+/* primitives attach these classes. Colours mirror tokens in theme.ts.         */
+
+/* Shared focus ring for every interactive primitive. */
+.ds-focusable {
+  outline: none;
+  transition: background 0.13s ease, border-color 0.13s ease,
+    box-shadow 0.13s ease, color 0.13s ease, transform 0.06s ease;
+}
+.ds-focusable:focus-visible {
+  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.4);
+}
+
+/* Buttons --------------------------------------------------------------- */
+.ds-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.ds-btn-primary:not(:disabled):hover {
+  background: #4a97fd;
+}
+.ds-btn-primary:not(:disabled):active {
+  transform: translateY(0.5px);
+}
+.ds-btn-secondary:not(:disabled):hover {
+  background: #1c2230;
+  border-color: #3d444d;
+}
+.ds-btn-ghost:not(:disabled):hover {
+  background: rgba(145, 152, 161, 0.1);
+}
+.ds-btn-danger:not(:disabled):hover {
+  background: rgba(248, 81, 73, 0.12);
+}
+
+/* Icon-only buttons ----------------------------------------------------- */
+.ds-iconbtn:not(:disabled):hover {
+  background: rgba(145, 152, 161, 0.14);
+  color: #e6edf3;
+}
+
+/* Inputs / selects / textareas ----------------------------------------- */
+.ds-input:focus-visible,
+.ds-input:focus {
+  border-color: #388bfd;
+  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.18);
+}
+.ds-input::placeholder {
+  color: #6e7681;
+}
+
+/* Cards (hover lift only when interactive) ------------------------------ */
+.ds-card-interactive {
+  transition: border-color 0.13s ease, box-shadow 0.13s ease,
+    background 0.13s ease;
+}
+.ds-card-interactive:hover {
+  border-color: #3d444d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* Generic row hover (list rows, node-list items) ------------------------ */
+.ds-row {
+  transition: background 0.1s ease;
+}
+.ds-row:hover {
+  background: rgba(145, 152, 161, 0.07);
+}
+
+/* Tooltip --------------------------------------------------------------- */
+.ds-tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.ds-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  background: #1c2230;
+  border: 1px solid #2d333b;
+  color: #e6edf3;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 6px 9px;
+  border-radius: 6px;
+  white-space: normal;
+  width: max-content;
+  max-width: 220px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 1100;
+}
+.ds-tooltip-wrap:hover .ds-tooltip,
+.ds-tooltip-wrap:focus-within .ds-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Skeleton shimmer ------------------------------------------------------ */
+@keyframes ds-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.ds-skeleton {
+  background: linear-gradient(
+    90deg,
+    #161b22 25%,
+    #1c2230 37%,
+    #161b22 63%
+  );
+  background-size: 200% 100%;
+  animation: ds-shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* Toast entrance -------------------------------------------------------- */
+@keyframes ds-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ds-toast {
+  animation: ds-toast-in 0.18s ease-out;
+}
+
+/* Modal entrance -------------------------------------------------------- */
+@keyframes ds-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.ds-modal {
+  animation: ds-modal-in 0.16s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-skeleton,
+  .ds-toast,
+  .ds-modal {
+    animation: none;
+  }
+}

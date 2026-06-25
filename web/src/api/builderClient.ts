@@ -84,6 +84,10 @@ export function createCampaign(data: {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }
 
+export function deleteCampaign(id: string): Promise<void> {
+  return apiFetch<void>(`/api/campaigns/${id}`, { method: "DELETE" });
+}
+
 // ---------------------------------------------------------------------------
 // Workflows
 // ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ export interface NegotiationRequest {
     termFloor: NegotiationTerm;
     termCeiling: NegotiationTerm;
     tone?: string;
+    senderName?: string;
   };
 }
 

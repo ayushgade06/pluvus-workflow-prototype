@@ -71,7 +71,10 @@ function extractInboundMessage(payload: unknown): InboundMessage | null {
   };
 }
 
-// ── GET: endpoint verification challenge ───────────────────────────────────
+// ── GET/HEAD: endpoint verification challenge ──────────────────────────────
+// Nylas Dashboard probes the endpoint with HEAD (no challenge param) to confirm
+// reachability before saving. It must return 200. It then sends GET ?challenge=xxx
+// and expects the exact challenge value as the plain-text body.
 router.get("/nylas", (req: Request, res: Response) => {
   const challenge = req.query["challenge"];
   if (typeof challenge === "string") {
@@ -79,7 +82,13 @@ router.get("/nylas", (req: Request, res: Response) => {
     res.status(200).type("text/plain").send(challenge);
     return;
   }
-  res.status(400).json({ error: "missing challenge" });
+  // No challenge param — this is a plain reachability probe (e.g. HEAD promoted to GET,
+  // or Nylas connectivity check). Return 200 with empty body so creation succeeds.
+  res.status(200).end();
+});
+
+router.head("/nylas", (_req: Request, res: Response) => {
+  res.status(200).end();
 });
 
 // ── POST: inbound event ────────────────────────────────────────────────────

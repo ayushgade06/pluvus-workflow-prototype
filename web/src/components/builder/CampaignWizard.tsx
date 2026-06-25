@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { createCampaign, createWorkflowForCampaign } from "../../api/builderClient";
-import { colors } from "../../theme";
+import { colors, radii, font } from "../../theme";
+import { Modal, Button, Input, Textarea, FormField, useToast } from "../ds";
 import type { TemplateKey } from "../../api/builderTypes";
 
 interface Props {
@@ -36,6 +37,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [step, setStep] = useState<1 | 2>(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   // Step 1 fields
   const [name, setName] = useState("");
@@ -46,6 +48,12 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   // Step 2 selection
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateKey | null>(null);
   const [workflowName, setWorkflowName] = useState("");
+
+  const nameId = useId();
+  const brandId = useId();
+  const objId = useId();
+  const notesId = useId();
+  const wfNameId = useId();
 
   function handleStep1Next() {
     if (!name.trim()) {
@@ -73,6 +81,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
     setError(null);
     setSubmitting(true);
     try {
+      // Identical payload shape to the original implementation.
       const campaignData: Parameters<typeof createCampaign>[0] = {
         name: name.trim(),
         brand: brand.trim(),
@@ -84,282 +93,146 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
         name: workflowName.trim(),
         templateKey: selectedTemplate,
       });
+      toast.success(`Created “${campaign.name}”.`);
       onCreated(workflow.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      const msg = err instanceof Error ? err.message : "Something went wrong";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{
-          background: colors.panel,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 12,
-          width: 560,
-          maxWidth: "95vw",
-          maxHeight: "90vh",
-          overflow: "auto",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: "20px 24px 16px",
-            borderBottom: `1px solid ${colors.border}`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>
-              {step === 1 ? "Create Campaign" : "Choose Template"}
-            </div>
-            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-              Step {step} of 2
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: colors.textMuted,
-              fontSize: 18,
-              cursor: "pointer",
-              padding: 4,
-            }}
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Step indicator */}
-        <div style={{ padding: "12px 24px 0", display: "flex", gap: 8 }}>
-          {[1, 2].map((s) => (
-            <div
-              key={s}
-              style={{
-                flex: 1,
-                height: 3,
-                borderRadius: 2,
-                background: s <= step ? colors.accent : colors.border,
-                transition: "background 0.2s",
-              }}
-            />
-          ))}
-        </div>
-
-        {/* Content */}
-        <div style={{ padding: "20px 24px" }}>
-          {step === 1 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <Field label="Campaign Name *">
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Summer 2026 Launch"
-                  style={inputStyle}
-                  autoFocus
-                />
-              </Field>
-              <Field label="Brand *">
-                <input
-                  value={brand}
-                  onChange={(e) => setBrand(e.target.value)}
-                  placeholder="e.g. Acme Co"
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label="Objective">
-                <input
-                  value={objective}
-                  onChange={(e) => setObjective(e.target.value)}
-                  placeholder="e.g. Drive awareness for new product launch"
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label="Notes">
-                <textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Any context or constraints for this campaign…"
-                  rows={3}
-                  style={{ ...inputStyle, resize: "vertical" }}
-                />
-              </Field>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <Field label="Workflow Name">
-                <input
-                  value={workflowName}
-                  onChange={(e) => setWorkflowName(e.target.value)}
-                  style={inputStyle}
-                />
-              </Field>
-              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 4 }}>
-                Select a template — this determines the default node pipeline:
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {TEMPLATES.map((t) => (
-                  <TemplateCard
-                    key={t.key}
-                    template={t}
-                    selected={selectedTemplate === t.key}
-                    onSelect={() => setSelectedTemplate(t.key)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: "8px 12px",
-                background: "rgba(248,81,73,0.1)",
-                border: `1px solid ${colors.danger}`,
-                borderRadius: 6,
-                fontSize: 12,
-                color: colors.danger,
-              }}
-            >
-              {error}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: "12px 24px 20px",
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-          }}
-        >
+    <Modal
+      title={step === 1 ? "Create Campaign" : "Choose Template"}
+      subtitle={`Step ${step} of 2`}
+      onClose={onClose}
+      width={560}
+      footer={
+        <>
           {step === 2 ? (
-            <button
-              onClick={() => setStep(1)}
-              style={{
-                padding: "8px 16px",
-                background: "none",
-                color: colors.textMuted,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 6,
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              ← Back
-            </button>
+            <Button variant="secondary" onClick={() => setStep(1)} disabled={submitting} leftIcon="←">
+              Back
+            </Button>
           ) : (
-            <button
-              onClick={onClose}
-              style={{
-                padding: "8px 16px",
-                background: "none",
-                color: colors.textMuted,
-                border: `1px solid ${colors.border}`,
-                borderRadius: 6,
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
+            <Button variant="secondary" onClick={onClose}>
               Cancel
-            </button>
+            </Button>
           )}
           {step === 1 ? (
-            <button
-              onClick={handleStep1Next}
-              style={{
-                padding: "8px 22px",
-                background: colors.accent,
-                color: "#fff",
-                border: "none",
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Next →
-            </button>
+            <Button variant="primary" onClick={handleStep1Next} rightIcon="→">
+              Next
+            </Button>
           ) : (
-            <button
+            <Button
+              variant="primary"
               onClick={() => void handleCreate()}
               disabled={submitting || !selectedTemplate}
-              style={{
-                padding: "8px 22px",
-                background: submitting || !selectedTemplate ? colors.border : colors.accent,
-                color: submitting || !selectedTemplate ? colors.textDim : "#fff",
-                border: "none",
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: submitting || !selectedTemplate ? "not-allowed" : "pointer",
-              }}
             >
               {submitting ? "Creating…" : "Create Workflow"}
-            </button>
+            </Button>
           )}
-        </div>
+        </>
+      }
+    >
+      {/* Step progress bar */}
+      <div style={{ padding: "14px 22px 0", display: "flex", gap: 8 }}>
+        {[1, 2].map((s) => (
+          <div
+            key={s}
+            style={{
+              flex: 1,
+              height: 3,
+              borderRadius: 2,
+              background: s <= step ? colors.accent : colors.border,
+              transition: "background 0.2s",
+            }}
+          />
+        ))}
       </div>
-    </div>
+
+      <div style={{ padding: "18px 22px" }}>
+        {step === 1 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <FormField label="Campaign Name *" htmlFor={nameId}>
+              <Input
+                id={nameId}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Summer 2026 Launch"
+                invalid={!!error && !name.trim()}
+                autoFocus
+              />
+            </FormField>
+            <FormField label="Brand *" htmlFor={brandId}>
+              <Input
+                id={brandId}
+                value={brand}
+                onChange={(e) => setBrand(e.target.value)}
+                placeholder="e.g. Acme Co"
+                invalid={!!error && !brand.trim()}
+              />
+            </FormField>
+            <FormField label="Objective" htmlFor={objId}>
+              <Input
+                id={objId}
+                value={objective}
+                onChange={(e) => setObjective(e.target.value)}
+                placeholder="e.g. Drive awareness for new product launch"
+              />
+            </FormField>
+            <FormField label="Notes" htmlFor={notesId}>
+              <Textarea
+                id={notesId}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Any context or constraints for this campaign…"
+                rows={3}
+              />
+            </FormField>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <FormField label="Workflow Name" htmlFor={wfNameId}>
+              <Input id={wfNameId} value={workflowName} onChange={(e) => setWorkflowName(e.target.value)} />
+            </FormField>
+            <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
+              Select a template — this determines the default node pipeline:
+            </div>
+            <div role="radiogroup" aria-label="Workflow template" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {TEMPLATES.map((t) => (
+                <TemplateCard
+                  key={t.key}
+                  template={t}
+                  selected={selectedTemplate === t.key}
+                  onSelect={() => setSelectedTemplate(t.key)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "9px 12px",
+              background: "rgba(248,81,73,0.1)",
+              border: `1px solid ${colors.danger}`,
+              borderRadius: radii.md,
+              fontSize: font.size.md,
+              color: colors.danger,
+            }}
+          >
+            {error}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label
-        style={{
-          display: "block",
-          fontSize: 12,
-          fontWeight: 600,
-          color: colors.textMuted,
-          marginBottom: 5,
-          textTransform: "uppercase",
-          letterSpacing: 0.4,
-        }}
-      >
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  background: colors.bg,
-  border: `1px solid ${colors.border}`,
-  borderRadius: 6,
-  color: colors.text,
-  fontSize: 13,
-  outline: "none",
-  boxSizing: "border-box",
-};
 
 function TemplateCard({
   template,
@@ -371,33 +244,39 @@ function TemplateCard({
   onSelect: () => void;
 }) {
   return (
-    <div
+    <button
+      role="radio"
+      aria-checked={selected}
       onClick={onSelect}
+      className="ds-focusable ds-card-interactive"
       style={{
-        padding: "12px 16px",
+        padding: "13px 16px",
         background: selected ? "rgba(56,139,253,0.08)" : colors.bg,
         border: `1.5px solid ${selected ? colors.accent : colors.border}`,
-        borderRadius: 8,
+        borderRadius: radii.md,
         cursor: "pointer",
         display: "flex",
         gap: 14,
         alignItems: "flex-start",
-        transition: "border-color 0.15s, background 0.15s",
+        textAlign: "left",
+        width: "100%",
       }}
     >
-      <div style={{ fontSize: 24, lineHeight: 1, marginTop: 2 }}>{template.icon}</div>
-      <div>
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: colors.text, marginBottom: 3 }}>
+      <div aria-hidden style={{ fontSize: 24, lineHeight: 1, marginTop: 2 }}>
+        {template.icon}
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: font.size.md, fontWeight: font.weight.semibold, color: colors.text, marginBottom: 3 }}>
           {template.name}
         </div>
-        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: font.size.md, color: colors.textMuted, lineHeight: 1.5 }}>
           {template.description}
         </div>
       </div>
       {selected && (
         <div
+          aria-hidden
           style={{
-            marginLeft: "auto",
             width: 20,
             height: 20,
             borderRadius: "50%",
@@ -406,11 +285,13 @@ function TemplateCard({
             alignItems: "center",
             justifyContent: "center",
             flexShrink: 0,
+            color: "#fff",
+            fontSize: 12,
           }}
         >
-          <span style={{ color: "#fff", fontSize: 12, lineHeight: 1 }}>✓</span>
+          ✓
         </div>
       )}
-    </div>
+    </button>
   );
 }

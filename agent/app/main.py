@@ -1,3 +1,8 @@
+from pathlib import Path
+from dotenv import load_dotenv
+# Load from repo root (.env sits one level above agent/)
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
