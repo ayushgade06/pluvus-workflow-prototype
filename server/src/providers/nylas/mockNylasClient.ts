@@ -54,6 +54,17 @@ export class MockNylasClient implements NylasClientLike {
 
       return { data: { id, threadId } };
     },
+
+    // Resolve a sent message back to its threadId, mirroring nylas.messages.find.
+    // Used by NylasEmailProvider.resolveThreadId when a send response omits the
+    // threadId. Returns the recorded threadId for a known message id.
+    find: async (params: {
+      identifier: string;
+      messageId: string;
+    }): Promise<{ data: { id: string; threadId?: string } }> => {
+      const record = this.sent.find((m) => m.id === params.messageId);
+      return { data: { id: params.messageId, ...(record ? { threadId: record.threadId } : {}) } };
+    },
   };
 }
 
