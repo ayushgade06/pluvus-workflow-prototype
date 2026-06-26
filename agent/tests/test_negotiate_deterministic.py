@@ -25,6 +25,11 @@ REC = 300.0
 CEIL = 500.0
 
 
+# Deterministic step value for ask 480 from our round-0 offer (= recommended
+# 300): avg(300, 480) = 390. Still OUR computed number, never the model's choice.
+STEP_480 = 390.0
+
+
 def test_decision_is_pure_and_reproducible():
     # Same inputs, many invocations → identical result every time.
     results = {
@@ -32,15 +37,16 @@ def test_decision_is_pure_and_reproducible():
          _decide_action("RATE_PROPOSAL", 480, recommended_offer=REC, ceiling_rate=CEIL).proposed_rate)
         for _ in range(50)
     }
-    assert results == {("COUNTER", REC)}
+    assert results == {("COUNTER", STEP_480)}
 
 
-def test_counter_amount_is_recommended_not_model_choice():
-    # Even though the creator named 480, we counter with the deterministic
-    # recommended offer — the number is ours, computed, not the model's.
+def test_counter_amount_is_computed_not_model_choice():
+    # Even though the creator named 480, we counter with a deterministically
+    # computed step (midpoint of our offer and their ask) — the number is ours,
+    # computed, not the model's free choice.
     d = _decide_action("RATE_PROPOSAL", 480, recommended_offer=REC, ceiling_rate=CEIL)
     assert d.action == "COUNTER"
-    assert d.proposed_rate == REC
+    assert d.proposed_rate == STEP_480
 
 
 def test_accept_amount_is_creator_validated_rate_not_invented():
@@ -82,7 +88,9 @@ def test_end_to_end_decision_reproducible(monkeypatch):
         (r.action, None if r.proposedTerms is None else r.proposedTerms.get("rate"))
         for r in (neg_mod._langgraph_negotiate(_req()) for _ in range(20))
     }
-    assert seen == {("COUNTER", 300.0)}
+    # round 1, our offer = recommended 300 (no prior offer in history), ask 480
+    # → step avg(300, 480) = 390. Deterministic across all 20 runs.
+    assert seen == {("COUNTER", 390.0)}
 
 
 def test_confidence_does_not_change_decision(monkeypatch):

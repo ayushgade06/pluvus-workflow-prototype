@@ -115,6 +115,7 @@ export interface IAgentProvider {
       proposedTerms?: NegotiationTerm;
       creatorReply?: string;
       creatorRequestedRate?: number;
+      dealDescription?: string;
     },
   ): Promise<EmailDraft | null>;
 }
@@ -256,6 +257,12 @@ export function mapNegotiationResponse(
       return {
         outcome: "counter",
         message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
+        ...(proposedRate !== undefined ? { proposedRate } : {}),
+      };
+    case "PRESENT_OFFER":
+      return {
+        outcome: "present_offer",
+        message: resp.responseDraft ?? "Here are the details of our offer.",
         ...(proposedRate !== undefined ? { proposedRate } : {}),
       };
     case "REJECT":

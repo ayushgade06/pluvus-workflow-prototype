@@ -111,6 +111,13 @@ export class MockNegotiationProvider implements NegotiationProvider {
           action: "ESCALATE",
           reasoning: "Terms require human review",
         };
+      case "PRESENT_OFFER":
+        return {
+          action: "PRESENT_OFFER",
+          proposedTerms: currentOffer,
+          responseDraft: `Thanks for your interest! Here are the details of our offer.`,
+          reasoning: "Presenting offer in response to a terms question",
+        };
     }
   }
 

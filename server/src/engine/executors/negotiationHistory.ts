@@ -13,7 +13,7 @@ import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../ty
 
 type Payload = Record<string, unknown>;
 
-const VALID_ACTIONS = new Set(["ACCEPT", "COUNTER", "REJECT", "ESCALATE"]);
+const VALID_ACTIONS = new Set(["ACCEPT", "COUNTER", "REJECT", "ESCALATE", "PRESENT_OFFER"]);
 
 function asPayload(p: unknown): Payload {
   return p && typeof p === "object" ? (p as Payload) : {};
@@ -71,8 +71,10 @@ export function buildPriorContextFromEvents(events: Event[]): PriorNegotiationCo
     });
 
     // Track the last rate we actually put on the table (an offer we made).
-    // ACCEPT/COUNTER carry a proposed number; REJECT/ESCALATE do not.
-    if (rate !== undefined && (action === "ACCEPT" || action === "COUNTER")) {
+    // ACCEPT/COUNTER/PRESENT_OFFER carry a proposed number; REJECT/ESCALATE do
+    // not. PRESENT_OFFER (answering a "what's the rate?" question) is a genuine
+    // offer on the table, so the next turn knows our standing number.
+    if (rate !== undefined && (action === "ACCEPT" || action === "COUNTER" || action === "PRESENT_OFFER")) {
       currentOffer = rate;
     }
   }

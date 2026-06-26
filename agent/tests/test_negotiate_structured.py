@@ -47,15 +47,16 @@ def _patch_llm(monkeypatch, outputs):
 
 
 def test_rate_proposal_counters_via_structured_path(monkeypatch):
-    # floor 100, ceiling 500 → recommended 300. Creator names 480 (>rec, <=ceil)
-    # → COUNTER toward recommended. Proves structured output → decision wiring.
+    # floor 100, ceiling 500 → recommended 300. Creator names 480 (>our offer,
+    # <=ceil) → COUNTER stepping toward them: avg(300, 480) = 390. Proves
+    # structured output → decision wiring.
     _patch_llm(
         monkeypatch,
         ['{"intent": "RATE_PROPOSAL", "response": "Thanks! Let me check.", "creatorRateMentioned": 480}'],
     )
     resp = neg_mod._langgraph_negotiate(_req())
     assert resp.action == "COUNTER"
-    assert resp.proposedTerms == {"rate": 300.0}
+    assert resp.proposedTerms == {"rate": 390.0}
 
 
 def test_empty_response_field_triggers_retry_then_succeeds(monkeypatch):

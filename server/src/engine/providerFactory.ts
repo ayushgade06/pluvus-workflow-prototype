@@ -153,6 +153,7 @@ export class AgentProviderAdapter implements IAgentProvider {
       proposedTerms?: NegotiationTerm;
       creatorReply?: string;
       creatorRequestedRate?: number;
+      dealDescription?: string;
     },
   ): Promise<EmailDraft | null> {
     try {
@@ -166,6 +167,7 @@ export class AgentProviderAdapter implements IAgentProvider {
         proposedTerms: extra?.proposedTerms,
         creatorReply: extra?.creatorReply,
         creatorRequestedRate: extra?.creatorRequestedRate,
+        dealDescription: extra?.dealDescription,
         // Strip the internal price band before handing config to the copy
         // generator. The negotiation prompt is told to keep floor/ceiling
         // secret, but the draft endpoint was being handed the raw band

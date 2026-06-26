@@ -100,6 +100,51 @@ export async function executeNegotiation(
   );
 
   switch (outcome) {
+    case "present_offer": {
+      // The creator ASKED about terms (no number proposed). Present the fee
+      // (+ commission) as information and wait for their actual response —
+      // WITHOUT consuming a negotiation round. A curious creator's questions
+      // must not exhaust the negotiation budget. We reuse the offer-presenting
+      // draft (counter_offer purpose) so the email states the fixed fee and, for
+      // a hybrid deal, the commission.
+      const aiDraft = await agent.draftEmail("counter_offer", creator, config, {
+        ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
+        ...(creatorReply ? { creatorReply } : {}),
+      });
+      const body = aiDraft?.body ?? message;
+      const draft = aiDraft ?? await email.draft(creator, body, config);
+
+      // FIX-4: the presented fee is allowlisted; still scan for floor/ceiling leak.
+      const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(config, proposedRate));
+      if (!guard.ok) {
+        return blockedByGuard(instance.negotiationRound, guard.hits);
+      }
+
+      // Idempotent send keyed on (instance, present, round) — re-asking at the
+      // same round (e.g. a duplicate webhook) won't double-send.
+      await sendOnce(
+        email,
+        instance.id,
+        creator,
+        draft,
+        `negotiation:present:${instance.id}:${instance.negotiationRound}`,
+      );
+
+      // Back to AWAITING_REPLY at the SAME node and the SAME round (no increment).
+      return {
+        nextState: "AWAITING_REPLY",
+        nextNodeId: node.id,
+        // negotiationRound intentionally omitted → unchanged.
+        eventType: "NEGOTIATION_TURN",
+        eventPayload: {
+          outcome: "present_offer",
+          round: instance.negotiationRound,
+          message: body,
+          ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+        },
+      };
+    }
+
     case "accept": {
       // An ACCEPT now always carries a real agreed rate (the agent only
       // returns accept when a concrete number is on the table — a bare "I'm

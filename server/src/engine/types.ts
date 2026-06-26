@@ -47,7 +47,9 @@ export interface ClassifyResult {
 }
 
 // NegotiateResult — returned by MockAgentProvider.negotiate()
-export type NegotiateOutcome = "accept" | "counter" | "reject" | "escalate";
+//   present_offer: the creator asked about terms (no number proposed); present
+//   the fee+commission but do NOT consume a negotiation round (informational).
+export type NegotiateOutcome = "accept" | "counter" | "reject" | "escalate" | "present_offer";
 
 export interface NegotiateResult {
   outcome: NegotiateOutcome;
@@ -74,7 +76,7 @@ export interface PriorNegotiationContext {
 // A trimmed history entry the executor can build purely from persisted events.
 export interface NegotiationHistoryEntryLite {
   round: number;
-  action: "ACCEPT" | "COUNTER" | "REJECT" | "ESCALATE";
+  action: "ACCEPT" | "COUNTER" | "REJECT" | "ESCALATE" | "PRESENT_OFFER";
   rate?: number | undefined;
   message?: string | undefined;
 }

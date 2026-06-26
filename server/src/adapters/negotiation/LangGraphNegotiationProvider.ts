@@ -16,7 +16,7 @@ import { agentBaseUrl, agentPostJson } from "../agentServiceClient.js";
 //
 // Base URL, auth header (FIX-12), and timeout are handled by agentPostJson.
 
-const VALID_ACTIONS = new Set<NegotiationAction>(["ACCEPT", "COUNTER", "REJECT", "ESCALATE"]);
+const VALID_ACTIONS = new Set<NegotiationAction>(["ACCEPT", "COUNTER", "REJECT", "ESCALATE", "PRESENT_OFFER"]);
 
 function isValidAction(v: unknown): v is NegotiationAction {
   return typeof v === "string" && VALID_ACTIONS.has(v as NegotiationAction);

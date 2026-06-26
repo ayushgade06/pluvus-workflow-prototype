@@ -2,7 +2,7 @@
 // Negotiation adapter — shared types
 // ---------------------------------------------------------------------------
 
-export type NegotiationAction = "ACCEPT" | "COUNTER" | "REJECT" | "ESCALATE";
+export type NegotiationAction = "ACCEPT" | "COUNTER" | "REJECT" | "ESCALATE" | "PRESENT_OFFER";
 
 export interface NegotiationTerm {
   rate?: number;
@@ -58,6 +58,9 @@ export interface DraftRequest {
   /** The rate the creator asked for this turn, if any — lets a counter
    *  acknowledge it explicitly ("we considered your request of $480 …"). */
   creatorRequestedRate?: number | undefined;
+  /** Short, number-free description of the deal structure (e.g. hybrid =
+   *  fixed fee + commission) so outreach explains the real offer. */
+  dealDescription?: string | undefined;
 }
 
 export interface DraftResponse {

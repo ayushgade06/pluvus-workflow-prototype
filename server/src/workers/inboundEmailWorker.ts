@@ -126,16 +126,22 @@ async function handleInboundEmail(
   // Reply detection classified the reply and landed on NEGOTIATING.
   // Enqueue a node-execution job to run the negotiation executor immediately
   // so the agent sends a response without waiting for a manual trigger.
+  //
+  // The triggerRef (→ BullMQ jobId) MUST be unique per reply, not per round.
+  // A PRESENT_OFFER turn (answering a "what's the rate?" question) deliberately
+  // does NOT increment negotiationRound, so two distinct replies can both occur
+  // at the same round. Keying the job on the round alone would collide with the
+  // earlier (completed) round-N job and BullMQ would silently drop the add —
+  // stranding the instance at NEGOTIATING. Keying on the inbound message id (one
+  // per reply) makes every reply enqueue its own negotiation step.
   if (newState === "NEGOTIATING") {
-    const refreshed = await findInstanceById(instanceId);
-    const round = refreshed?.negotiationRound ?? 0;
     await enqueueNodeExecution({
       instanceId,
       expectedState: "NEGOTIATING",
-      triggerRef: `auto-negotiate-${instanceId}-r${round}`,
+      triggerRef: `auto-negotiate-${instanceId}-msg-${externalMessageId}`,
     });
     console.log(
-      `[inbound-email] auto-enqueued negotiation step for ${instanceId} (round ${round})`,
+      `[inbound-email] auto-enqueued negotiation step for ${instanceId} (reply ${externalMessageId})`,
     );
   }
 }

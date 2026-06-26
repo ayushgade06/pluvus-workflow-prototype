@@ -1,6 +1,7 @@
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
+import { describeDeal } from "../dealDescription.js";
 
 function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: number): number {
   const intervals = Array.isArray(config["intervals"]) ? config["intervals"] as number[] : [3, 5, 7];
@@ -15,7 +16,7 @@ export async function executeFollowUp(
   email: IEmailProvider,
   agent: IAgentProvider,
 ): Promise<NodeResult> {
-  const { instance, node, creator } = ctx;
+  const { instance, node, nodeGraph, creator } = ctx;
   const config = node.config;
   const maxCount = typeof config["maxCount"] === "number" ? config["maxCount"] : 3;
 
@@ -61,7 +62,11 @@ export async function executeFollowUp(
 
     // Try AI-generated follow-up copy; fall back to template-based email.draft().
     const followUpRound = instance.followUpCount + 1;
-    const aiDraft = await agent.draftEmail("follow_up", creator, config, { round: followUpRound });
+    const dealDescription = describeDeal(nodeGraph.find((n) => n.type === "NEGOTIATION")?.config);
+    const aiDraft = await agent.draftEmail("follow_up", creator, config, {
+      round: followUpRound,
+      ...(dealDescription ? { dealDescription } : {}),
+    });
     const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
 
     // FIX-11: reserve-before-send keyed on (instance, follow-up round) so a
