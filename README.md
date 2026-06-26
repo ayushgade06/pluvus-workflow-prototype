@@ -243,20 +243,3 @@ pluvus-workflow-proto/
 ├── .env.example              # All env vars documented
 └── .claude/docs/             # Architecture documentation
 ```
-
----
-
-## Implementation Phases
-
-| Phase | Deliverable | Status |
-|-------|-------------|--------|
-| 1 | Repository foundation | ✓ done |
-| 2 | Data models (Prisma schema, seed) | ✓ done |
-| 3 | Workflow runtime engine | ✓ done |
-| 4 | Event system (BullMQ queues + workers) | ✓ done |
-| 5 | Scheduler + instance locking (OCC + Redis locks) | ✓ done |
-| 6 | Nylas integration layer | pending |
-| 7 | Reply classification (LangGraph) | pending |
-| 8 | Negotiation agent | pending |
-| 9 | Observability UI (React Flow) | pending |
-| 10 | Testing & validation | pending |
