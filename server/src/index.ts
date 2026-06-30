@@ -6,6 +6,7 @@ import webhooksRouter from "./routes/webhooks.js";
 import observabilityRouter from "./routes/observability.js";
 import campaignsRouter from "./routes/campaigns.js";
 import workflowsRouter from "./routes/workflows.js";
+import manualQueueRouter from "./routes/manualQueue.js";
 import { listCreators } from "./db/creators.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
@@ -61,6 +62,12 @@ app.use("/observability", observabilityRouter);
 
 app.use("/campaigns", campaignsRouter);
 app.use("/workflows", workflowsRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 11 — Manual Queue (escalated creators + brand notifications)
+// ---------------------------------------------------------------------------
+
+app.use("/manual-queue", manualQueueRouter);
 
 /** List all creators — used by the enrollment UI. */
 app.get("/creators", async (_req, res) => {

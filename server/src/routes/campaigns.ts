@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import {
   listCampaigns,
   createCampaign,
+  updateCampaign,
   getCampaignWithWorkflows,
   findCampaignById,
   deleteCampaign,
@@ -26,6 +27,7 @@ router.get("/", async (_req: Request, res: Response) => {
         brand: c.brand,
         objective: c.objective,
         notes: c.notes,
+        notifyEmail: c.notifyEmail,
         createdAt: c.createdAt.toISOString(),
         updatedAt: c.updatedAt.toISOString(),
         workflowCount: c._count.workflows,
@@ -37,13 +39,21 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
+// Lightweight email shape check — good enough to reject obvious typos without
+// pulling in a validation lib. The notifyEmail is optional; only validated when
+// a non-empty value is supplied.
+function isEmailish(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 // POST /campaigns — create a campaign
 router.post("/", async (req: Request, res: Response) => {
-  const { name, brand, objective, notes } = req.body as {
+  const { name, brand, objective, notes, notifyEmail } = req.body as {
     name?: string;
     brand?: string;
     objective?: string;
     notes?: string;
+    notifyEmail?: string;
   };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -54,6 +64,12 @@ router.post("/", async (req: Request, res: Response) => {
     res.status(400).json({ error: "brand is required" });
     return;
   }
+  const trimmedNotify =
+    typeof notifyEmail === "string" ? notifyEmail.trim() : "";
+  if (trimmedNotify && !isEmailish(trimmedNotify)) {
+    res.status(400).json({ error: "notifyEmail must be a valid email address" });
+    return;
+  }
 
   try {
     const campaign = await createCampaign({
@@ -61,6 +77,7 @@ router.post("/", async (req: Request, res: Response) => {
       brand: brand.trim(),
       objective: typeof objective === "string" ? objective.trim() || null : null,
       notes: typeof notes === "string" ? notes.trim() || null : null,
+      notifyEmail: trimmedNotify || null,
     });
     res.status(201).json({
       id: campaign.id,
@@ -68,6 +85,7 @@ router.post("/", async (req: Request, res: Response) => {
       brand: campaign.brand,
       objective: campaign.objective,
       notes: campaign.notes,
+      notifyEmail: campaign.notifyEmail,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {
@@ -90,6 +108,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       brand: campaign.brand,
       objective: campaign.objective,
       notes: campaign.notes,
+      notifyEmail: campaign.notifyEmail,
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       workflows: campaign.workflows.map((w) => ({
@@ -165,6 +184,53 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[campaigns] create workflow error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// PATCH /campaigns/:id — update editable campaign fields (notifyEmail, etc.)
+router.patch("/:id", async (req: Request, res: Response) => {
+  const { notifyEmail, objective, notes } = req.body as {
+    notifyEmail?: string | null;
+    objective?: string | null;
+    notes?: string | null;
+  };
+
+  const patch: Parameters<typeof updateCampaign>[1] = {};
+
+  if (notifyEmail !== undefined) {
+    const trimmed = typeof notifyEmail === "string" ? notifyEmail.trim() : "";
+    if (trimmed && !isEmailish(trimmed)) {
+      res.status(400).json({ error: "notifyEmail must be a valid email address" });
+      return;
+    }
+    patch.notifyEmail = trimmed || null;
+  }
+  if (objective !== undefined) {
+    patch.objective = typeof objective === "string" ? objective.trim() || null : null;
+  }
+  if (notes !== undefined) {
+    patch.notes = typeof notes === "string" ? notes.trim() || null : null;
+  }
+
+  try {
+    const existing = await findCampaignById(req.params["id"]!);
+    if (!existing) {
+      res.status(404).json({ error: "campaign not found" });
+      return;
+    }
+    const campaign = await updateCampaign(req.params["id"]!, patch);
+    res.json({
+      id: campaign.id,
+      name: campaign.name,
+      brand: campaign.brand,
+      objective: campaign.objective,
+      notes: campaign.notes,
+      notifyEmail: campaign.notifyEmail,
+      updatedAt: campaign.updatedAt.toISOString(),
+    });
+  } catch (err) {
+    console.error("[campaigns] update error:", err);
     res.status(500).json({ error: "internal server error" });
   }
 });

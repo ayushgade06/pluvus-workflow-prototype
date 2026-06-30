@@ -20,6 +20,13 @@ export async function createCampaign(
   return prisma.campaign.create({ data });
 }
 
+export async function updateCampaign(
+  id: string,
+  data: Prisma.CampaignUpdateInput,
+): Promise<Campaign> {
+  return prisma.campaign.update({ where: { id }, data });
+}
+
 export async function deleteCampaign(id: string): Promise<void> {
   // Delete all dependent records first (cascade order)
   const workflows = await prisma.workflow.findMany({

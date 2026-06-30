@@ -19,6 +19,8 @@ import type {
   LaunchResponse,
   ValidationResponse,
   TemplateKey,
+  ManualQueueResponse,
+  NotifyResult,
 } from "./builderTypes";
 
 // ---------------------------------------------------------------------------
@@ -80,8 +82,20 @@ export function createCampaign(data: {
   brand: string;
   objective?: string;
   notes?: string;
+  notifyEmail?: string;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
+}
+
+export function updateCampaign(
+  id: string,
+  data: { notifyEmail?: string | null; objective?: string | null; notes?: string | null },
+) {
+  return apiFetch<{ id: string; notifyEmail: string | null }>(`/api/campaigns/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
 }
 
 export function deleteCampaign(id: string): Promise<void> {
@@ -172,6 +186,25 @@ export function launchWorkflow(workflowId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Manual Queue (Phase 11)
+// ---------------------------------------------------------------------------
+
+export function useManualQueue(workflowId: string | null) {
+  return useQuery({
+    queryKey: ["manual-queue", workflowId],
+    queryFn: () =>
+      apiFetch<ManualQueueResponse>(`/api/manual-queue/workflows/${workflowId}`),
+    enabled: !!workflowId,
+    refetchInterval: POLL_INTERVAL_MS,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function notifyBrand(instanceId: string) {
+  return postJson<NotifyResult>(`/api/manual-queue/instances/${instanceId}/notify`, {});
+}
+
+// ---------------------------------------------------------------------------
 // Query invalidation helpers
 // ---------------------------------------------------------------------------
 
@@ -183,6 +216,8 @@ export function useBuilderInvalidator(workflowId: string | null) {
       qc.invalidateQueries({ queryKey: ["workflow-versions", workflowId] }),
     invalidateExecution: () =>
       qc.invalidateQueries({ queryKey: ["workflow-execution", workflowId] }),
+    invalidateManualQueue: () =>
+      qc.invalidateQueries({ queryKey: ["manual-queue", workflowId] }),
     invalidateCampaigns: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
   };
 }
