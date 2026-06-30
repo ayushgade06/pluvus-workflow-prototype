@@ -6,7 +6,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 
 // Replies with confidence below this threshold are treated as UNKNOWN and
 // routed to MANUAL_REVIEW rather than auto-advanced.
-const LOW_CONFIDENCE_THRESHOLD = 0.70;
+const LOW_CONFIDENCE_THRESHOLD = 0.50;
 
 // DB seam — injectable so the routing logic (incl. the active-negotiation
 // short-circuit) is unit-testable without a live database. Defaults to real db.

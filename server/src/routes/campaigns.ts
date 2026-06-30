@@ -48,12 +48,13 @@ function isEmailish(value: string): boolean {
 
 // POST /campaigns — create a campaign
 router.post("/", async (req: Request, res: Response) => {
-  const { name, brand, objective, notes, notifyEmail } = req.body as {
+  const { name, brand, objective, notes, notifyEmail, brandDescription } = req.body as {
     name?: string;
     brand?: string;
     objective?: string;
     notes?: string;
     notifyEmail?: string;
+    brandDescription?: string;
   };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -78,6 +79,7 @@ router.post("/", async (req: Request, res: Response) => {
       objective: typeof objective === "string" ? objective.trim() || null : null,
       notes: typeof notes === "string" ? notes.trim() || null : null,
       notifyEmail: trimmedNotify || null,
+      brandDescription: typeof brandDescription === "string" ? brandDescription.trim() || null : null,
     });
     res.status(201).json({
       id: campaign.id,
@@ -162,7 +164,12 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
     const nodes = (JSON.parse(JSON.stringify(template.nodes)) as typeof template.nodes).map(
       (node) => ({
         ...node,
-        config: { brandName: campaign.brand, senderName: campaign.brand, ...node.config },
+        config: {
+          brandName: campaign.brand,
+          senderName: campaign.brand,
+          ...(campaign.brandDescription ? { brandDescription: campaign.brandDescription } : {}),
+          ...node.config,
+        },
       }),
     );
 
@@ -190,10 +197,11 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
 
 // PATCH /campaigns/:id — update editable campaign fields (notifyEmail, etc.)
 router.patch("/:id", async (req: Request, res: Response) => {
-  const { notifyEmail, objective, notes } = req.body as {
+  const { notifyEmail, objective, notes, brandDescription } = req.body as {
     notifyEmail?: string | null;
     objective?: string | null;
     notes?: string | null;
+    brandDescription?: string | null;
   };
 
   const patch: Parameters<typeof updateCampaign>[1] = {};
@@ -211,6 +219,9 @@ router.patch("/:id", async (req: Request, res: Response) => {
   }
   if (notes !== undefined) {
     patch.notes = typeof notes === "string" ? notes.trim() || null : null;
+  }
+  if (brandDescription !== undefined) {
+    patch.brandDescription = typeof brandDescription === "string" ? brandDescription.trim() || null : null;
   }
 
   try {

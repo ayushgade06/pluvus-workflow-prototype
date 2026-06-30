@@ -152,7 +152,7 @@ router.post("/inbound-email", async (req, res) => {
     instanceId,
     subject = "Re: Collaboration opportunity",
     body = "Yes, I'm interested!",
-    mockIntent = "POSITIVE",
+    mockIntent,
     threadId,
   } = req.body as {
     instanceId?: string;

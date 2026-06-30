@@ -39,6 +39,11 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(`${res.status} ${res.statusText}: ${detail}`.trim());
   }
+  // No body to parse (e.g. 204 No Content from DELETE) — calling res.json()
+  // on an empty body throws a SyntaxError, so short-circuit here.
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return res.json() as Promise<T>;
 }
 
@@ -83,6 +88,7 @@ export function createCampaign(data: {
   objective?: string;
   notes?: string;
   notifyEmail?: string;
+  brandDescription?: string;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }

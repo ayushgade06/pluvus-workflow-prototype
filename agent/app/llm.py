@@ -50,7 +50,7 @@ def _ollama_model_id() -> str:
     a later `ollama pull` of the same tag can't silently change behavior on the
     decision path (audit Determinism finding).
     """
-    model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
     digest = os.getenv("OLLAMA_MODEL_DIGEST", "").strip()
     if digest:
         # Tolerate the digest being given with or without the sha256: prefix.

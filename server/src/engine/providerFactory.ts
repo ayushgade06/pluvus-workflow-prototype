@@ -163,6 +163,7 @@ export class AgentProviderAdapter implements IAgentProvider {
         creatorPlatform: creator.platform ?? undefined,
         creatorNiche: creator.niche ?? undefined,
         senderName: typeof config["senderName"] === "string" ? config["senderName"] : undefined,
+        brandDescription: typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined,
         round: extra?.round,
         proposedTerms: extra?.proposedTerms,
         creatorReply: extra?.creatorReply,

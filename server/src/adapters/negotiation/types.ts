@@ -22,6 +22,7 @@ export interface NegotiationRequest {
     termCeiling: NegotiationTerm;
     tone?: string;
     senderName?: string;
+    brandDescription?: string;
   };
 }
 
@@ -61,6 +62,9 @@ export interface DraftRequest {
   /** Short, number-free description of the deal structure (e.g. hybrid =
    *  fixed fee + commission) so outreach explains the real offer. */
   dealDescription?: string | undefined;
+  /** What the brand does / sells — lets the LLM answer creator questions like
+   *  "what does your brand do?" without hallucinating. */
+  brandDescription?: string | undefined;
 }
 
 export interface DraftResponse {

@@ -96,6 +96,8 @@ def extract_json_object(raw: str) -> dict:
     result is still validated against a schema by the caller.
     """
     text = raw.strip()
+    # Strip qwen3 thinking blocks before any other processing
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     try:

@@ -19,6 +19,7 @@ from pydantic import BaseModel, field_validator
 from app.injection import (
     looks_like_injection,
     looks_like_opt_out,
+    looks_like_question,
     mentions_rate,
     sanitize_creator_text,
 )
@@ -194,6 +195,17 @@ def classify_message(message: str) -> ClassifyResponse:
             intent="POSITIVE",
             confidence=1.0,
             reasoning="deterministic rate-statement match (engaged; routed to negotiation)",
+        )
+
+    # 3.6 — question gate → FORCE QUESTION. A creator asking about the product,
+    # budget, or deal terms is engaged — small models return UNKNOWN or low
+    # confidence on question-heavy replies, pushing them to MANUAL_REVIEW.
+    # Conservative: suppressed when rejection language is present.
+    if looks_like_question(clean):
+        return ClassifyResponse(
+            intent="QUESTION",
+            confidence=1.0,
+            reasoning="deterministic question-phrase match (engaged; routed to negotiation)",
         )
 
     # 4 — normal LLM path on the sanitized text.

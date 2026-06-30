@@ -67,6 +67,7 @@ class CampaignConstraints(BaseModel):
     termCeiling: NegotiationTerm
     tone: str | None = None
     senderName: str | None = None
+    brandDescription: str | None = None
 
 
 class NegotiateRequest(BaseModel):
@@ -115,6 +116,7 @@ class DraftRequest(BaseModel):
     round: int | None = None
     proposedTerms: dict[str, Any] | None = None
     campaignContext: dict[str, Any] | None = None
+    brandDescription: str | None = None
     # Personalization context (threaded by the executor for counter/onboarding):
     #   creatorReply  — the creator's most recent message, so the email can
     #                   reference what they actually said (e.g. their requested
@@ -288,14 +290,23 @@ def _decide_action(
     if intent == "REJECTION":
         return NegotiationDecision(action="REJECT", proposed_rate=None)
 
-    # RATE_DISCOVERY: the creator is ASKING what the rate/terms are, not proposing
-    # a number. Present the recommended fee (+ commission) as information — this
-    # must NOT burn a negotiation round (a curious creator's questions shouldn't
-    # exhaust the negotiation budget). Only handled here when no readable number
-    # is present; a discovery message that also names a price falls through to the
-    # numeric path below and is treated as a proposal.
+    # RATE_DISCOVERY: the creator is ASKING what the rate/terms are (or asking
+    # about the product), not proposing a number. Present our STANDING offer as
+    # information — this must NOT burn a negotiation round (a curious creator's
+    # questions shouldn't exhaust the negotiation budget).
+    #
+    # Crucially, present the rate we've ALREADY put on the table (prior_offer) if
+    # there is one, falling back to the recommended offer only on the first turn.
+    # Presenting `recommended_offer` blindly here REGRESSED our offer: if we had
+    # already countered at $400 and the creator then asked "what's the product?",
+    # we'd re-present at the $350 midpoint — looking like we lowered our own offer
+    # for no reason. Never present below what we last offered.
+    #
+    # Only handled here when no readable number is present; a discovery message
+    # that also names a price falls through to the numeric path below.
     if intent == "RATE_DISCOVERY" and _coerce_rate(creator_rate_raw) is None:
-        return NegotiationDecision(action="PRESENT_OFFER", proposed_rate=recommended_offer)
+        standing_offer = prior_offer if prior_offer is not None else recommended_offer
+        return NegotiationDecision(action="PRESENT_OFFER", proposed_rate=standing_offer)
 
     # Our current standing offer: the rate we last countered with, or the
     # recommended offer on the first turn (we step UP from here, and never
@@ -375,6 +386,7 @@ You must NEVER:
 ## Campaign Context
 
 - Brand / Sender: {sender}
+- About the brand: {brand_description}
 - Recommended offer: ${recommended_offer}
 - Negotiation round: {round} of {max_rounds}
 - Previous history: {history}
@@ -461,6 +473,7 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     floor_rate = req.campaignConstraints.termFloor.rate or 0
     ceiling_rate = req.campaignConstraints.termCeiling.rate or float("inf")
     sender = req.campaignConstraints.senderName or "Pluvus Partnerships"
+    brand_description = req.campaignConstraints.brandDescription or "a brand partnership"
     # Recommended offer: midpoint, used as the natural offer to present
     recommended_offer = round(floor_rate + (ceiling_rate - floor_rate) * 0.5, 2) if ceiling_rate != float("inf") else floor_rate
 
@@ -475,6 +488,7 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
         ceiling_rate=ceiling_rate,
         recommended_offer=recommended_offer,
         sender=sender,
+        brand_description=brand_description,
         round=req.round,
         max_rounds=req.maxRounds,
         creator_reply=safe_creator_reply,
@@ -555,30 +569,42 @@ def _format_rate(rate: Any) -> str | None:
 # "Pluvus" was a real leak from the prior prompt naming Pluvus in its identity.
 _DRAFT_PROMPT = """\
 You are a Creator Partnerships Manager writing on behalf of the company "{sender}".
-
+{brand_context}
 Write a {purpose} email to the creator {name} on {platform} ({niche}).
 This email is sent BY {sender} and represents ONLY {sender}.
 {extra}
 
 Goal of the email:
 - Clearly express that {sender} is INTERESTED in partnering with {name}.
-- Explain WHAT KIND OF DEAL this is, using the deal description provided above.
-  Be concrete about the structure (e.g. fixed fee, commission, or both). Do NOT
-  state any specific dollar amount — the exact numbers are discussed on reply.
+- Include a DEDICATED short paragraph (2-3 full sentences) that explains what
+  {sender} is and what the product does, written in plain prose using the
+  "About {sender}" description above. This must read like a proper product
+  introduction the creator can actually understand — NOT a bullet point, NOT a
+  one-line fragment. Do NOT invent facts. (Skip this paragraph ONLY if no brand
+  description was provided above.)
+- Separately, explain WHAT KIND OF DEAL this is, using the deal description
+  provided above. Be concrete about the structure (e.g. fixed fee, commission,
+  or both). Do NOT state any specific dollar amount — exact numbers are discussed
+  on reply.
 - Invite {name} to reply to discuss the details.
 
 Formatting (REQUIRED — the body must be multi-line, not one paragraph):
 - Start with a greeting line on its own: "Hi {name},"
 - Then a blank line, then a short opening line saying we're interested.
-- Then a blank line, then explain the deal. If the deal has multiple parts
-  (e.g. a fixed fee AND a commission), present them as bullet points, one per
-  line, each starting with "- ".
+- Then a blank line, then the PRODUCT PARAGRAPH: 2-3 sentences of plain prose
+  describing what {sender} is and what the product does. Do NOT use bullets here.
+  This is a normal paragraph, not a list. (Omit only if no brand description was
+  given above.)
+- Then a blank line, then the DEAL, as bullet points — one per line, each
+  starting with "- ". Use bullets ONLY for the deal structure (fixed fee /
+  commission), never for the product description.
 - Then a blank line, then a short call to action inviting a reply.
 - Then a blank line, then the sign-off.
 - Use real newline characters (\\n) between lines in the JSON string.
 
 Rules (strictly enforced):
-- Keep it concise and genuine — under 120 words. No flattery filler.
+- Keep it concise and genuine — under 160 words. No flattery filler. (The product
+  paragraph is worth the extra words; do not pad anything else.)
 - Do NOT invent any facts: no fake past collaborations, no made-up creator names,
   no specific campaigns, no statistics. Only use what is given above.
 - The ONLY company/brand named in this email is "{sender}". NEVER mention any
@@ -602,7 +628,7 @@ Respond ONLY with valid JSON and nothing else:
 # and must be used verbatim — the model must not invent or alter it.
 _OFFER_PROMPT = """\
 You are a Creator Partnerships Manager writing on behalf of the company "{sender}".
-
+{brand_context}
 Write the reply email to the creator {name} on {platform} ({niche}). The creator
 has been talking with us about a partnership and we are now presenting our offer.
 This email is sent BY {sender} and represents ONLY {sender}.
@@ -610,6 +636,8 @@ This email is sent BY {sender} and represents ONLY {sender}.
 
 Goal of the email:
 - Warmly respond to the creator{ack_clause}.
+- If the creator asked about the product or brand, answer using the "About {sender}"
+  description above (1-2 sentences max). Do NOT invent facts.
 - PRESENT OUR OFFER clearly. You MUST state the fixed fee of {offer_rate} in the
   body — this is the entire purpose of the email; do not omit it or replace it
   with vague wording like "a competitive fee".
@@ -700,7 +728,7 @@ def _commission_rate(ctx: dict[str, Any]) -> int | float | None:
     return None
 
 
-def _build_offer_prompt(req: DraftRequest, sender: str, ctx: dict[str, Any]) -> str:
+def _build_offer_prompt(req: DraftRequest, sender: str, ctx: dict[str, Any], brand_context: str = "") -> str:
     """Prompt for counter_offer / acceptance: PRESENT the fixed fee (and, for a
     hybrid deal, the commission). The fee is required in the body."""
     offer_rate = _format_rate((req.proposedTerms or {}).get("rate")) or "our proposed fee"
@@ -739,6 +767,7 @@ def _build_offer_prompt(req: DraftRequest, sender: str, ctx: dict[str, Any]) -> 
         platform=req.creatorPlatform or "social media",
         niche=req.creatorNiche or "content creation",
         sender=sender,
+        brand_context=brand_context,
         offer_rate=offer_rate,
         ack_clause=ack_clause,
         commission_goal=commission_goal,
@@ -755,11 +784,13 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
 
     ctx = req.campaignContext or {}
     sender = req.senderName or ctx.get("brandName") or "Pluvus Partnerships"
+    brand_desc = req.brandDescription or ctx.get("brandDescription") or None
+    brand_context = f'About {sender}: {brand_desc}\n' if brand_desc else ""
 
     if req.purpose == "onboarding":
         prompt = _build_onboarding_prompt(req, sender)
     elif req.purpose in ("counter_offer", "acceptance"):
-        prompt = _build_offer_prompt(req, sender, ctx)
+        prompt = _build_offer_prompt(req, sender, ctx, brand_context)
     else:
         # Build the personalization block. NOTE: we deliberately do NOT pass the
         # budget range (minBudget/maxBudget) here — the email may reference only
@@ -806,6 +837,7 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
             platform=req.creatorPlatform or "social media",
             niche=req.creatorNiche or "content creation",
             sender=sender,
+            brand_context=brand_context,
             extra="\n".join(extra_parts),
         )
 

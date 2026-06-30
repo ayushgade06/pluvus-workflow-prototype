@@ -121,6 +121,11 @@ model Campaign {
   /// (env) and finally the platform operator address (see notifications/escalation).
   notifyEmail String?
 
+  /// Short description of what the brand does / sells. Fed to the LLM so it
+  /// can answer creator questions like "what does your brand do?" without
+  /// hallucinating. Stamped into every node's config as brandDescription.
+  brandDescription String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

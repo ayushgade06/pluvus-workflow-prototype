@@ -207,6 +207,7 @@ export function buildNegotiationRequest(
   // accept/counter/escalate logic was inert (see resolveBand).
   const { termFloor, termCeiling } = resolveBand(config);
   const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
+  const brandDescription = typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined;
 
   // FIX-2: thread the last offer we actually proposed; fall back to the floor
   // only when there is no prior offer (round 0 / no history).
@@ -229,7 +230,12 @@ export function buildNegotiationRequest(
     round,
     maxRounds,
     negotiationHistory,
-    campaignConstraints: { termFloor, termCeiling, ...(senderName ? { senderName } : {}) },
+    campaignConstraints: {
+      termFloor,
+      termCeiling,
+      ...(senderName ? { senderName } : {}),
+      ...(brandDescription ? { brandDescription } : {}),
+    },
   };
 }
 

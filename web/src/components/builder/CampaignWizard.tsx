@@ -43,6 +43,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [name, setName] = useState("");
   const [brand, setBrand] = useState("");
   const [notifyEmail, setNotifyEmail] = useState("");
+  const [brandDescription, setBrandDescription] = useState("");
   const [objective, setObjective] = useState("");
   const [notes, setNotes] = useState("");
 
@@ -53,6 +54,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const nameId = useId();
   const brandId = useId();
   const notifyId = useId();
+  const brandDescId = useId();
   const objId = useId();
   const notesId = useId();
   const wfNameId = useId();
@@ -96,6 +98,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
         brand: brand.trim(),
       };
       if (notifyEmail.trim()) campaignData.notifyEmail = notifyEmail.trim();
+      if (brandDescription.trim()) campaignData.brandDescription = brandDescription.trim();
       if (objective.trim()) campaignData.objective = objective.trim();
       if (notes.trim()) campaignData.notes = notes.trim();
       const campaign = await createCampaign(campaignData);
@@ -183,6 +186,19 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
                 onChange={(e) => setBrand(e.target.value)}
                 placeholder="e.g. Acme Co"
                 invalid={!!error && !brand.trim()}
+              />
+            </FormField>
+            <FormField
+              label="Brand Description"
+              htmlFor={brandDescId}
+              hint="What the brand does or sells. The AI uses this to answer creator questions like 'what does your brand do?' without making things up."
+            >
+              <Textarea
+                id={brandDescId}
+                value={brandDescription}
+                onChange={(e) => setBrandDescription(e.target.value)}
+                placeholder="e.g. Avatar is a fintech app that helps Gen Z track spending and build credit through a prepaid card."
+                rows={3}
               />
             </FormField>
             <FormField

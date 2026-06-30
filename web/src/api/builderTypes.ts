@@ -69,6 +69,7 @@ export interface CampaignListItem {
   objective: string | null;
   notes: string | null;
   notifyEmail: string | null;
+  brandDescription: string | null;
   createdAt: string;
   updatedAt: string;
   workflowCount: number;
@@ -90,6 +91,7 @@ export interface CampaignDetail {
   objective: string | null;
   notes: string | null;
   notifyEmail: string | null;
+  brandDescription: string | null;
   createdAt: string;
   updatedAt: string;
   workflows: CampaignWorkflowItem[];

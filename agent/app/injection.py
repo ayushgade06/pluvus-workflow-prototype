@@ -136,6 +136,45 @@ def looks_like_injection(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Question deterministic gate (engaged-but-asking signal)
+# ---------------------------------------------------------------------------
+# A creator who asks about the product, budget, or deal terms is ENGAGED —
+# they haven't said no, they want more information before committing. Small
+# models sometimes return UNKNOWN or low-confidence on question-heavy replies,
+# which pushes them to MANUAL_REVIEW. This gate forces QUESTION so the reply
+# reaches the negotiation agent (which can answer their questions in the reply).
+#
+# Conservative: only fires when there are explicit question phrases AND no
+# rejection language present.
+
+_QUESTION_PATTERNS = [
+    r"\bwhat(?:'s| is)\b.*\b(?:product|brand|budget|fee|rate|base|commission|deal|structure|company|offer)\b",
+    r"\bwhat\s+(?:do|does|are)\b.*\byou\b",
+    r"\bcan\s+you\s+(?:tell|share|send)\b",
+    r"\bhow\s+(?:much|does|do|would)\b.*\b(?:pay|fee|rate|budget|commission|work)\b",
+    r"\bwho\s+(?:is|are)\b.*\b(?:brand|company|you)\b",
+    r"\bmore\s+(?:info|information|details?)\b",
+    r"\btell\s+me\s+more\b",
+    r"\bquick\s+question",
+    r"\b(?:before\s+I|before\s+i)\b.*\b(?:say|commit|agree|decide)\b",
+]
+_QUESTION_RE = re.compile("|".join(_QUESTION_PATTERNS), re.IGNORECASE | re.DOTALL)
+
+
+def looks_like_question(text: str) -> bool:
+    """True when the text contains clear product/deal question phrases and no rejection language.
+
+    Used to force intent=QUESTION so an engaged-but-asking creator reaches the
+    negotiation agent instead of being routed to MANUAL_REVIEW by a low-confidence
+    LLM classification.
+    """
+    t = text or ""
+    if _REJECTION_RE.search(t):
+        return False
+    return bool(_QUESTION_RE.search(t))
+
+
+# ---------------------------------------------------------------------------
 # Rate-statement deterministic gate (engaged-in-negotiation signal)
 # ---------------------------------------------------------------------------
 # A creator who states a price ("I charge 480 dollars", "my rate is $480") is

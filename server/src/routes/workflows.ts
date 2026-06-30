@@ -32,7 +32,7 @@ const router = Router();
 // config object on save, which can drop those keys — so we re-inject them here
 // on every draft save. Existing non-empty values are preserved (a deliberate
 // per-node override is never clobbered); only missing/blank values are filled.
-function restampBrand(nodes: unknown, brand: string): unknown {
+function restampBrand(nodes: unknown, brand: string, brandDescription?: string | null): unknown {
   if (!Array.isArray(nodes)) return nodes;
   return nodes.map((node) => {
     if (!node || typeof node !== "object") return node;
@@ -43,13 +43,15 @@ function restampBrand(nodes: unknown, brand: string): unknown {
     >;
     const hasBrand = typeof config["brandName"] === "string" && config["brandName"] !== "";
     const hasSender = typeof config["senderName"] === "string" && config["senderName"] !== "";
-    if (hasBrand && hasSender) return node;
+    const hasDesc = typeof config["brandDescription"] === "string" && config["brandDescription"] !== "";
+    if (hasBrand && hasSender && (hasDesc || !brandDescription)) return node;
     return {
       ...n,
       config: {
         ...config,
         ...(hasBrand ? {} : { brandName: brand }),
         ...(hasSender ? {} : { senderName: brand }),
+        ...(hasDesc || !brandDescription ? {} : { brandDescription }),
       },
     };
   });
@@ -160,7 +162,7 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
     let nodesToSave: unknown = nodes;
     if (wf.campaignId) {
       const campaign = await findCampaignById(wf.campaignId);
-      if (campaign) nodesToSave = restampBrand(nodes, campaign.brand);
+      if (campaign) nodesToSave = restampBrand(nodes, campaign.brand, campaign.brandDescription);
     }
 
     const updated = await updateWorkflow(wf.id, {
@@ -225,10 +227,26 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
       return;
     }
 
+    // Re-stamp brand fields (including brandDescription) at publish time so the
+    // immutable snapshot always carries the campaign's brand context even if the
+    // builder's draft-save didn't stamp it (e.g. workflows created before
+    // brandDescription was added, or configs edited in the builder).
+    let nodeGraphToPublish: Prisma.InputJsonValue = wf.draftNodes as Prisma.InputJsonValue;
+    if (wf.campaignId) {
+      const campaign = await findCampaignById(wf.campaignId);
+      if (campaign) {
+        nodeGraphToPublish = restampBrand(
+          wf.draftNodes,
+          campaign.brand,
+          campaign.brandDescription,
+        ) as Prisma.InputJsonValue;
+      }
+    }
+
     const versionNumber = await nextVersionNumber(wf.id);
     const version = await createVersion({
       version: versionNumber,
-      nodeGraph: wf.draftNodes as Prisma.InputJsonValue,
+      nodeGraph: nodeGraphToPublish,
       publishedAt: new Date(),
       workflow: { connect: { id: wf.id } },
     });
