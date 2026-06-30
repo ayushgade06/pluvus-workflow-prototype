@@ -426,12 +426,13 @@ function FollowUpForm({
             id={unitId}
             value={unit}
             onChange={(e) => {
-              const next = e.target.value as "days" | "hours" | "seconds";
+              const next = e.target.value as "seconds" | "minutes" | "hours" | "days";
               setUnit(next);
               flush({ intervalUnit: next });
             }}
           >
             <option value="seconds">Seconds</option>
+            <option value="minutes">Minutes</option>
             <option value="hours">Hours</option>
             <option value="days">Days</option>
           </Select>

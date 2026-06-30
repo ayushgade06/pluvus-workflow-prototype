@@ -25,7 +25,7 @@ export interface InitialOutreachConfig {
 
 export interface FollowUpConfig {
   intervals: number[];
-  intervalUnit: "seconds" | "hours" | "days";
+  intervalUnit: "seconds" | "minutes" | "hours" | "days";
   maxCount: number;
   bodyTemplate: string;
   stopOnReply: boolean;
@@ -68,6 +68,7 @@ export interface CampaignListItem {
   brand: string;
   objective: string | null;
   notes: string | null;
+  notifyEmail: string | null;
   createdAt: string;
   updatedAt: string;
   workflowCount: number;
@@ -88,6 +89,7 @@ export interface CampaignDetail {
   brand: string;
   objective: string | null;
   notes: string | null;
+  notifyEmail: string | null;
   createdAt: string;
   updatedAt: string;
   workflows: CampaignWorkflowItem[];
@@ -190,4 +192,49 @@ export interface LaunchResponse {
 export interface ValidationResponse {
   valid: boolean;
   errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Manual Queue (Phase 11)
+// ---------------------------------------------------------------------------
+
+export type BrandNotificationStatus = "SENT" | "FAILED" | "SKIPPED";
+
+export interface ManualQueueNotification {
+  status: BrandNotificationStatus;
+  recipient: string;
+  error: string | null;
+  sentAt: string;
+}
+
+export interface ManualQueueItem {
+  instanceId: string;
+  creatorId: string;
+  creatorName: string;
+  creatorEmail: string;
+  creatorHandle: string | null;
+  platform: string | null;
+  niche: string | null;
+  negotiationRound: number;
+  reason: string;
+  reasonLabel: string;
+  escalatedAt: string | null;
+  updatedAt: string;
+  notification: ManualQueueNotification | null;
+}
+
+export interface ManualQueueResponse {
+  workflowId: string;
+  versionId?: string;
+  version?: number;
+  items: ManualQueueItem[];
+  total: number;
+  generatedAt: string;
+}
+
+export interface NotifyResult {
+  instanceId: string;
+  reason: string;
+  status: "SENT" | "FAILED" | "SKIPPED" | "ALREADY_NOTIFIED";
+  recipient: string | null;
 }

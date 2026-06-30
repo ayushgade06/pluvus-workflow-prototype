@@ -42,6 +42,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   // Step 1 fields
   const [name, setName] = useState("");
   const [brand, setBrand] = useState("");
+  const [notifyEmail, setNotifyEmail] = useState("");
   const [objective, setObjective] = useState("");
   const [notes, setNotes] = useState("");
 
@@ -51,9 +52,13 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
 
   const nameId = useId();
   const brandId = useId();
+  const notifyId = useId();
   const objId = useId();
   const notesId = useId();
   const wfNameId = useId();
+
+  const notifyEmailInvalid =
+    !!notifyEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyEmail.trim());
 
   function handleStep1Next() {
     if (!name.trim()) {
@@ -62,6 +67,10 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
     }
     if (!brand.trim()) {
       setError("Brand is required");
+      return;
+    }
+    if (notifyEmailInvalid) {
+      setError("Notification email must be a valid email address");
       return;
     }
     setError(null);
@@ -86,6 +95,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
         name: name.trim(),
         brand: brand.trim(),
       };
+      if (notifyEmail.trim()) campaignData.notifyEmail = notifyEmail.trim();
       if (objective.trim()) campaignData.objective = objective.trim();
       if (notes.trim()) campaignData.notes = notes.trim();
       const campaign = await createCampaign(campaignData);
@@ -173,6 +183,20 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
                 onChange={(e) => setBrand(e.target.value)}
                 placeholder="e.g. Acme Co"
                 invalid={!!error && !brand.trim()}
+              />
+            </FormField>
+            <FormField
+              label="Escalation notification email"
+              htmlFor={notifyId}
+              hint="Where we email the brand when a creator is escalated to the manual review queue. Defaults to the workspace operator if left blank."
+            >
+              <Input
+                id={notifyId}
+                type="email"
+                value={notifyEmail}
+                onChange={(e) => setNotifyEmail(e.target.value)}
+                placeholder="e.g. partnerships@acme.com"
+                invalid={notifyEmailInvalid}
               />
             </FormField>
             <FormField label="Objective" htmlFor={objId}>

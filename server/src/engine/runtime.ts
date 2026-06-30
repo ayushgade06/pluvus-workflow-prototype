@@ -10,8 +10,9 @@ import {
 } from "../db/index.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
-import type { ExecutionContext, NodeSnapshot } from "./types.js";
+import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
 import { logTransition, type TransitionSource } from "../observability/logger.js";
+import { notifyBrandOfEscalation } from "../notifications/escalation.js";
 import {
   executeImportCreatorList,
   executeInitialOutreach,
@@ -188,6 +189,15 @@ export class WorkflowRuntime {
       });
     }
 
+    // ── Manual-queue escalation notification ─────────────────────────────────
+    // A fresh transition INTO MANUAL_REVIEW means the creator just landed in the
+    // manual queue. Email the brand so a human can take over. Best-effort: the
+    // state is already persisted above, and notifyBrandOfEscalation never throws,
+    // so a notification failure cannot roll back or block the workflow step.
+    if (result.nextState === "MANUAL_REVIEW" && instance.currentState !== "MANUAL_REVIEW") {
+      await notifyBrandOfEscalation(this.email, instanceId, escalationReason(result));
+    }
+
     // Return updated context
     return this.loadContext(instanceId);
   }
@@ -345,4 +355,26 @@ function inferSourceFromEvent(eventType: EventType): TransitionSource {
     default:
       return "node-execution-worker";
   }
+}
+
+// ---------------------------------------------------------------------------
+// escalationReason — derive a stable reason code for a MANUAL_REVIEW transition
+// from the executor's NodeResult, used in the brand notification + audit row.
+//
+//   reply detection (low confidence) → MANUAL_REVIEW_FLAGGED → "low_confidence_reply"
+//   negotiation escalations          → NEGOTIATION_TURN with payload.reason
+//                                       (max_rounds_reached, output_guard_blocked,
+//                                        escalated, max_rounds_reached_on_counter)
+// Falls back to "escalated" when no specific reason is present on the payload.
+// ---------------------------------------------------------------------------
+
+function escalationReason(result: NodeResult): string {
+  if (result.eventType === "MANUAL_REVIEW_FLAGGED") {
+    return "low_confidence_reply";
+  }
+  const payloadReason = result.eventPayload?.["reason"];
+  if (typeof payloadReason === "string" && payloadReason) {
+    return payloadReason;
+  }
+  return "escalated";
 }

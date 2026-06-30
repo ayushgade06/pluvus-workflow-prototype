@@ -15,6 +15,7 @@ import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EnrollTab } from "./EnrollTab";
 import { LaunchTab } from "./LaunchTab";
 import { MonitorTab } from "./MonitorTab";
+import { ManualQueueTab } from "./ManualQueueTab";
 import {
   Button,
   IconButton,
@@ -30,7 +31,7 @@ import {
 } from "../ds";
 import type { DraftNode } from "../../api/builderTypes";
 
-type Tab = "build" | "enroll" | "launch" | "monitor";
+type Tab = "build" | "enroll" | "launch" | "monitor" | "queue";
 
 interface Props {
   workflowId: string;
@@ -167,6 +168,7 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
   }
 
   const executionCounts = execution.data?.stateCounts;
+  const queueCount = executionCounts?.["MANUAL_REVIEW"] ?? 0;
 
   // -- loading / error states --------------------------------------------
   if (wfQuery.isLoading) {
@@ -243,6 +245,30 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
             { key: "enroll", label: "Enroll" },
             { key: "launch", label: "Launch" },
             { key: "monitor", label: "Monitor" },
+            {
+              key: "queue",
+              label: "Manual Queue",
+              badge:
+                queueCount > 0 ? (
+                  <span
+                    style={{
+                      minWidth: 18,
+                      height: 18,
+                      padding: "0 5px",
+                      borderRadius: 9,
+                      background: colors.warning,
+                      color: "#1b1300",
+                      fontSize: font.size.xs,
+                      fontWeight: font.weight.bold,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {queueCount}
+                  </span>
+                ) : undefined,
+            },
           ]}
         />
       </div>
@@ -408,6 +434,8 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
               setActiveTab("monitor");
             }}
           />
+        ) : activeTab === "queue" ? (
+          <ManualQueueTab workflow={wf} />
         ) : (
           <MonitorTab workflow={wf} />
         )}

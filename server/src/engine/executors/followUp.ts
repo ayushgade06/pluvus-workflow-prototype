@@ -7,7 +7,11 @@ function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: numbe
   const intervals = Array.isArray(config["intervals"]) ? config["intervals"] as number[] : [3, 5, 7];
   const unit = typeof config["intervalUnit"] === "string" ? config["intervalUnit"] : "days";
   const value = intervals[followUpIndex] ?? intervals[intervals.length - 1] ?? 3;
-  const multiplier = unit === "seconds" ? 1000 : 24 * 60 * 60 * 1000;
+  const multiplier =
+    unit === "seconds" ? 1_000 :
+    unit === "minutes" ? 60 * 1_000 :
+    unit === "hours"   ? 60 * 60 * 1_000 :
+    24 * 60 * 60 * 1_000; // days (default)
   return value * multiplier;
 }
 

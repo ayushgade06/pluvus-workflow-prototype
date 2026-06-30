@@ -90,6 +90,8 @@ enum EventType {
   REPLY_CLASSIFIED
   NEGOTIATION_TURN
   MANUAL_REVIEW_FLAGGED
+  // Manual queue: the brand was emailed that a creator needs human review.
+  BRAND_NOTIFIED
 }
 
 /// Lifecycle of a Workflow definition.
@@ -111,6 +113,13 @@ model Campaign {
   brand     String
   objective String?
   notes     String?
+
+  /// Brand contact email that receives manual-queue escalation notices.
+  /// When a creator is escalated to MANUAL_REVIEW, the brand is emailed here so
+  /// a human can take over. Nullable: campaigns created before this field, or
+  /// brands that haven't supplied a contact, fall back to BRAND_NOTIFY_EMAIL
+  /// (env) and finally the platform operator address (see notifications/escalation).
+  notifyEmail String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -224,6 +233,7 @@ model ExecutionInstance {
   creator         Creator         @relation(fields: [creatorId], references: [id])
   messages        Message[]
   events          Event[]
+  brandNotifications BrandNotification[]
 
   @@unique([workflowVersionId, creatorId])
 }
@@ -287,4 +297,46 @@ model Event {
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 
   @@index([instanceId, occurredAt])
+}
+
+/// A record of a manual-queue escalation notice sent to the brand.
+///
+/// One row is written each time a creator's ExecutionInstance enters
+/// MANUAL_REVIEW and the brand is notified. The unique idempotencyKey
+/// (instanceId + reason) makes the send-and-record path safe under BullMQ
+/// retries: a second attempt for the same escalation hits the unique constraint
+/// and is skipped, so the brand is never double-emailed for the same event.
+///
+/// status:
+///   SENT   — the email was handed to the email provider successfully
+///   FAILED — the provider threw; the row is kept so the UI can surface that the
+///            brand was NOT reached and a human can follow up out of band
+///   SKIPPED — no recipient could be resolved (no campaign notifyEmail, no env,
+///            no operator default); recorded for audit, no email attempted
+enum BrandNotificationStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
+model BrandNotification {
+  id         String                  @id @default(cuid())
+  instanceId String
+  /// Resolved recipient address the notice was (or would have been) sent to.
+  recipient  String
+  /// Why the creator was escalated, e.g. "low_confidence_reply",
+  /// "max_rounds_reached", "output_guard_blocked", "escalated".
+  reason     String
+  status     BrandNotificationStatus @default(SENT)
+  /// Deterministic key (instanceId + reason) enforcing at-most-once delivery
+  /// per escalation event.
+  idempotencyKey String              @unique
+  /// Provider error message when status = FAILED. Null otherwise.
+  error      String?
+
+  createdAt DateTime @default(now())
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([instanceId])
 }

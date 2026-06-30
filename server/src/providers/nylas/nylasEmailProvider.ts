@@ -7,6 +7,7 @@ import {
   nylasGrantId,
   type NylasClientLike,
 } from "./client.js";
+import { plainTextToHtmlEmail } from "./emailFormatter.js";
 
 // ---------------------------------------------------------------------------
 // NylasEmailProvider
@@ -45,12 +46,17 @@ export class NylasEmailProvider implements IEmailProvider {
     draft: EmailDraft,
     creator: Creator,
   ): Promise<{ messageId: string; threadId: string }> {
+    // Presentation only: the draft body is authored as plain text, which Nylas
+    // (rendering `body` as HTML) would otherwise collapse into one block. Wrap
+    // it in minimal business-email HTML so it reads professionally. The wording
+    // is unchanged, and the plain-text body is what was persisted upstream — we
+    // only format the bytes that go over the wire.
     const response = await this.client.messages.send({
       identifier: this.grantId,
       requestBody: {
         to: [{ email: creator.email, name: creator.name }],
         subject: draft.subject,
-        body: draft.body,
+        body: plainTextToHtmlEmail(draft.body),
       },
     });
 
