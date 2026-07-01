@@ -34,6 +34,14 @@ export interface NylasClientLike {
         to: Array<{ email: string; name?: string }>;
         subject?: string;
         body?: string;
+        // Optional file attachments (Phase 16 — Content Brief). Nylas expects
+        // each as base64-encoded `content` plus filename/content_type. Omitted
+        // for every send except the Content Brief campaign-brief email.
+        attachments?: Array<{
+          filename: string;
+          contentType: string;
+          content: string;
+        }>;
       };
     }): Promise<{ data: { id: string; threadId?: string } }>;
     /**

@@ -1,9 +1,10 @@
 import { Router, urlencoded } from "express";
 import type { Request, Response } from "express";
 import type { PayoutMethod } from "@prisma/client";
-import { findPaymentInfoByToken } from "../db/index.js";
+import { findPaymentInfoByToken, findInstanceById } from "../db/index.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
+import { enqueueNodeExecution } from "../workers/queues.js";
 import {
   renderPaymentFormPage,
   renderPaymentThankYouPage,
@@ -152,6 +153,34 @@ router.post("/:token", async (req: Request, res: Response) => {
       console.error("[payment] submission error:", err);
       rejectWith("We couldn't record your submission. Please try again in a moment.");
       return;
+    }
+
+    // ── Auto-chain into Content Brief ──────────────────────────────────────
+    // handlePaymentSubmission advanced the instance to PAYMENT_RECEIVED here (the
+    // payment route), NOT via a node-execution job, so the node-execution worker's
+    // auto-chain never sees it — exactly like the reward reply in the inbound
+    // worker. Enqueue the Content Brief step so a completed payout flows straight
+    // into the campaign-brief email (guarded for legacy graphs without a
+    // CONTENT_BRIEF node, which leave PAYMENT_RECEIVED terminal). Best-effort: the
+    // payout is already recorded and the creator has seen the thank-you page, so a
+    // failure to enqueue must not fail the POST.
+    try {
+      const after = await findInstanceById(payment.instanceId);
+      if (
+        after?.currentState === "PAYMENT_RECEIVED" &&
+        (await runtime.contentBriefApplies(payment.instanceId))
+      ) {
+        await enqueueNodeExecution({
+          instanceId: payment.instanceId,
+          expectedState: "PAYMENT_RECEIVED",
+          triggerRef: `auto-content-brief-${payment.instanceId}`,
+        });
+        console.log(
+          `[payment] auto-enqueued content-brief step for ${payment.instanceId} (PAYMENT_RECEIVED)`,
+        );
+      }
+    } catch (err) {
+      console.error("[payment] content-brief enqueue error (non-fatal):", err);
     }
 
     res.type("html").send(renderPaymentThankYouPage({ creatorName, brandName }));

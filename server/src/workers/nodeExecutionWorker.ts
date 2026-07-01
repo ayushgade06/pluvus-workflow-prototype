@@ -106,6 +106,8 @@ async function handleNodeExecution(
   //                    send the agreement-confirmation email → REWARD_PENDING
   //   REWARD_CONFIRMED — agreement confirmed; Payment Info runs immediately to
   //                    send the payout-form email → PAYMENT_PENDING
+  //   PAYMENT_RECEIVED — payout collected; Content Brief runs immediately to send
+  //                    the campaign-brief email → CONTENT_BRIEF_SENT (terminal)
   //
   // AWAITING_REPLY, REWARD_PENDING and PAYMENT_PENDING are intentionally excluded:
   // they wait for a real reply / form submission (or a scheduled follow-up),
@@ -153,6 +155,26 @@ async function handleNodeExecution(
     } else {
       console.log(
         `[node-execution] ${instanceId} REWARD_CONFIRMED with no Payment Info node — leaving as final state`,
+      );
+    }
+  } else if (newState === "PAYMENT_RECEIVED") {
+    // Only auto-chain into Content Brief when the workflow actually has a
+    // CONTENT_BRIEF node. Legacy workflows (Payment-Info-terminated) leave
+    // PAYMENT_RECEIVED as the final state — the pre-Content-Brief behavior. (The
+    // real payout-form path enqueues this from the payment route; this branch
+    // covers a PAYMENT_RECEIVED produced via a direct node-execution step.)
+    if (await runtime.contentBriefApplies(instanceId)) {
+      await enqueueNodeExecution({
+        instanceId,
+        expectedState: "PAYMENT_RECEIVED",
+        triggerRef: `auto-content-brief-${instanceId}`,
+      });
+      console.log(
+        `[node-execution] auto-enqueued content-brief step for ${instanceId} (PAYMENT_RECEIVED)`,
+      );
+    } else {
+      console.log(
+        `[node-execution] ${instanceId} PAYMENT_RECEIVED with no Content Brief node — leaving as final state`,
       );
     }
   } else if (newState === "NEGOTIATING") {

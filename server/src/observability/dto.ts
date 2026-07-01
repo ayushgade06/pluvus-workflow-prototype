@@ -32,6 +32,7 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
   "REWARD_CONFIRMED",
   "PAYMENT_PENDING",
   "PAYMENT_RECEIVED",
+  "CONTENT_BRIEF_SENT",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -39,9 +40,10 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
 ];
 
 export const TERMINAL_STATES: InstanceState[] = [
-  // ACCEPTED and REWARD_CONFIRMED are no longer terminal (they auto-advance into
-  // Reward Setup and Payment Info); PAYMENT_RECEIVED is the new success terminal.
-  "PAYMENT_RECEIVED",
+  // ACCEPTED, REWARD_CONFIRMED and PAYMENT_RECEIVED are no longer terminal (they
+  // auto-advance into Reward Setup, Payment Info and Content Brief);
+  // CONTENT_BRIEF_SENT is the new success terminal.
+  "CONTENT_BRIEF_SENT",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",

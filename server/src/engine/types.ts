@@ -34,10 +34,22 @@ export interface NodeResult {
   eventPayload?: Record<string, unknown>;
 }
 
+// EmailAttachment — an out-of-body file to send alongside an email (Phase 16).
+// Bytes are carried as a Buffer; the provider is responsible for encoding them
+// for the wire (Nylas expects base64). Only the Content Brief node sets this
+// today; every other draft omits it, so the send path is unchanged for them.
+export interface EmailAttachment {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 // EmailDraft — returned by MockEmailProvider.draft()
 export interface EmailDraft {
   subject: string;
   body: string;
+  /** Optional file attachments. Absent for all nodes except Content Brief. */
+  attachments?: EmailAttachment[];
 }
 
 // ClassifyResult — returned by MockAgentProvider.classify()

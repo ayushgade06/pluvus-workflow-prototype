@@ -24,9 +24,13 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // Payment Info waiting state. Stays here until the creator submits the payout
   // form (PAYMENT_PENDING → PAYMENT_RECEIVED), and can still be escalated.
   PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "MANUAL_REVIEW"],
-  // Payment Info success. Terminal for now — the future Content Brief node will
-  // extend the graph from here.
-  PAYMENT_RECEIVED: [],
+  // Payment Info success. No longer terminal: the payout submission auto-advances
+  // into the Content Brief node. Content Brief has NO waiting state — it sends the
+  // brief email and completes in a single step — so PAYMENT_RECEIVED transitions
+  // straight to the CONTENT_BRIEF_SENT terminal.
+  PAYMENT_RECEIVED: ["CONTENT_BRIEF_SENT"],
+  // Content Brief success. Terminal — the end of the linear graph.
+  CONTENT_BRIEF_SENT: [],
   REJECTED: [],
   OPTED_OUT: [],
   NO_RESPONSE: [],
@@ -39,10 +43,10 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
 // ---------------------------------------------------------------------------
 
 const TERMINAL_STATES: InstanceState[] = [
-  // ACCEPTED and REWARD_CONFIRMED are intentionally NOT terminal anymore — they
-  // auto-advance into Reward Setup and Payment Info respectively. PAYMENT_RECEIVED
-  // is the new success terminal.
-  "PAYMENT_RECEIVED",
+  // ACCEPTED, REWARD_CONFIRMED and PAYMENT_RECEIVED are intentionally NOT terminal
+  // anymore — they auto-advance into Reward Setup, Payment Info and Content Brief
+  // respectively. CONTENT_BRIEF_SENT is the new success terminal.
+  "CONTENT_BRIEF_SENT",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",

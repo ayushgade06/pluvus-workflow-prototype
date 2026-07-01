@@ -51,12 +51,22 @@ export class NylasEmailProvider implements IEmailProvider {
     // it in minimal business-email HTML so it reads professionally. The wording
     // is unchanged, and the plain-text body is what was persisted upstream — we
     // only format the bytes that go over the wire.
+    // Attachments (Content Brief PDF) are base64-encoded for the Nylas wire
+    // format. Only Content Brief sets draft.attachments; for every other draft
+    // this is undefined and the requestBody is byte-for-byte what it was before.
+    const attachments = draft.attachments?.map((a) => ({
+      filename: a.filename,
+      contentType: a.contentType,
+      content: a.content.toString("base64"),
+    }));
+
     const response = await this.client.messages.send({
       identifier: this.grantId,
       requestBody: {
         to: [{ email: creator.email, name: creator.name }],
         subject: draft.subject,
         body: plainTextToHtmlEmail(draft.body),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
       },
     });
 

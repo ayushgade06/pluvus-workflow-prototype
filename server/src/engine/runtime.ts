@@ -23,6 +23,7 @@ import {
   executeRewardReply,
   executePaymentInfo,
   executePaymentSubmission,
+  executeContentBrief,
   executeEnd,
 } from "./executors/index.js";
 import { markPaymentReceived } from "../db/index.js";
@@ -104,6 +105,18 @@ export class WorkflowRuntime {
       const paymentNode = nodeGraph.find((n) => n.type === "PAYMENT_INFO");
       if (paymentNode && node?.type !== "PAYMENT_INFO") {
         node = paymentNode;
+      }
+    }
+
+    // Content Brief handoff: mirrors the Payment Info resolution above. Once the
+    // payout form is submitted the instance is PAYMENT_RECEIVED with its output
+    // pointing at the Content Brief node; PAYMENT_RECEIVED can ONLY mean "hand off
+    // to Content Brief" (the payment node never handles it), so resolve to the
+    // CONTENT_BRIEF node even if currentNodeId still points at the payment node.
+    if (instance.currentState === "PAYMENT_RECEIVED") {
+      const contentBriefNode = nodeGraph.find((n) => n.type === "CONTENT_BRIEF");
+      if (contentBriefNode && node?.type !== "CONTENT_BRIEF") {
+        node = contentBriefNode;
       }
     }
 
@@ -469,6 +482,15 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // Backward compatibility: a workflow published before Content Brief has no
+      // CONTENT_BRIEF node. For those, PAYMENT_RECEIVED is effectively terminal,
+      // so stop here rather than trying to step it. When a CONTENT_BRIEF node IS
+      // present, PAYMENT_RECEIVED is NOT a stop state — Content Brief has no
+      // waiting phase, so the loop steps straight through to CONTENT_BRIEF_SENT.
+      if (state === "PAYMENT_RECEIVED" && !hasContentBriefNode(ctx.nodeGraph)) {
+        return state;
+      }
+
       // Stop at AWAITING_REPLY — harness injects a reply or triggers follow-ups manually
       if (state === "AWAITING_REPLY") {
         return state;
@@ -520,6 +542,18 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // contentBriefApplies — does this instance's workflow have a Content Brief node?
+  // -------------------------------------------------------------------------
+  // Used by the node-execution worker to decide whether a PAYMENT_RECEIVED
+  // instance should auto-chain into Content Brief. Legacy workflows (no
+  // CONTENT_BRIEF node) return false so PAYMENT_RECEIVED stays terminal.
+
+  async contentBriefApplies(instanceId: string): Promise<boolean> {
+    const ctx = await this.loadContext(instanceId);
+    return hasContentBriefNode(ctx.nodeGraph);
+  }
+
+  // -------------------------------------------------------------------------
   // Private: dispatch to executor
   // -------------------------------------------------------------------------
 
@@ -558,6 +592,11 @@ export class WorkflowRuntime {
           return executePaymentSubmission(ctx, this.email, this.agent);
         }
         return executePaymentInfo(ctx, this.email, this.agent);
+      case "CONTENT_BRIEF":
+        // Content Brief has a single phase: on PAYMENT_RECEIVED it sends the
+        // campaign-brief email (PDF attachment + referral link) and completes
+        // immediately. There is no waiting state / creator reply to handle.
+        return executeContentBrief(ctx, this.email, this.agent);
       case "END":
         return executeEnd(ctx, this.email, this.agent);
       default:
@@ -585,6 +624,13 @@ function hasRewardSetupNode(nodeGraph: NodeSnapshot[]): boolean {
 // stays terminal for them.
 function hasPaymentInfoNode(nodeGraph: NodeSnapshot[]): boolean {
   return nodeGraph.some((n) => n.type === "PAYMENT_INFO");
+}
+
+// True when the workflow graph contains a Content Brief node. Legacy workflows
+// (published before Content Brief) lack it and return false, so PAYMENT_RECEIVED
+// stays terminal for them.
+function hasContentBriefNode(nodeGraph: NodeSnapshot[]): boolean {
+  return nodeGraph.some((n) => n.type === "CONTENT_BRIEF");
 }
 
 function inferSourceFromEvent(eventType: EventType): TransitionSource {

@@ -9,6 +9,7 @@ import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
 import paymentRouter from "./routes/payment.js";
+import uploadsRouter from "./routes/uploads.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
@@ -80,6 +81,14 @@ app.use("/creators", creatorsRouter);
 // Payment Info email. Self-contained HTML; no SPA/router dependency.
 
 app.use("/payment", paymentRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)
+// ---------------------------------------------------------------------------
+// POST /uploads — stores a brand-uploaded PDF via the local file-storage seam
+// and returns a reference the builder persists in the Content Brief node config.
+
+app.use("/uploads", uploadsRouter);
 
 startWorkers();
 startScheduler();

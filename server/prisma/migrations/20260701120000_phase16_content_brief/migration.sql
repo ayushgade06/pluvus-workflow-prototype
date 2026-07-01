@@ -1,0 +1,8 @@
+-- AlterEnum
+ALTER TYPE "EventType" ADD VALUE 'CONTENT_BRIEF_SENT';
+
+-- AlterEnum
+ALTER TYPE "InstanceState" ADD VALUE 'CONTENT_BRIEF_SENT';
+
+-- AlterEnum
+ALTER TYPE "NodeType" ADD VALUE 'CONTENT_BRIEF';

@@ -85,6 +85,14 @@ const affiliateNodes: NodeSnapshot[] = [
     // No config needed: the payout-form link + email are derived at runtime.
     config: {},
   },
+  {
+    id: "node-content-brief",
+    type: "CONTENT_BRIEF",
+    order: 6,
+    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
+    // a referral link + creator notes in the builder before launch.
+    config: {},
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -151,6 +159,14 @@ const hybridNodes: NodeSnapshot[] = [
     type: "PAYMENT_INFO",
     order: 5,
     // No config needed: the payout-form link + email are derived at runtime.
+    config: {},
+  },
+  {
+    id: "node-content-brief",
+    type: "CONTENT_BRIEF",
+    order: 6,
+    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
+    // a referral link + creator notes in the builder before launch.
     config: {},
   },
 ];
@@ -220,6 +236,14 @@ const fixedFeeNodes: NodeSnapshot[] = [
     // No config needed: the payout-form link + email are derived at runtime.
     config: {},
   },
+  {
+    id: "node-content-brief",
+    type: "CONTENT_BRIEF",
+    order: 6,
+    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
+    // a referral link + creator notes in the builder before launch.
+    config: {},
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -267,10 +291,12 @@ export function validateNodeGraph(nodes: unknown): { valid: boolean; errors: str
     "REPLY_DETECTION",
     "NEGOTIATION",
     // REWARD_SETUP finalizes the agreement; PAYMENT_INFO follows it to collect
-    // payout details and is the current terminal node. END is still accepted so
-    // workflows published before these changes remain valid.
+    // payout details; CONTENT_BRIEF follows that to send the campaign brief and is
+    // the current terminal node. END is still accepted so workflows published
+    // before these changes remain valid.
     "REWARD_SETUP",
     "PAYMENT_INFO",
+    "CONTENT_BRIEF",
     "END",
   ]);
   const seenIds = new Set<string>();
@@ -312,6 +338,24 @@ export function validateNodeGraph(nodes: unknown): { valid: boolean; errors: str
   // (legacy, pre-Reward-Setup workflows).
   if (!types.includes("REWARD_SETUP") && !types.includes("END")) {
     errors.push("workflow must include a REWARD_SETUP node");
+  }
+
+  // Content Brief requires an uploaded Campaign Brief PDF (briefFileRef). The
+  // referral link and creator notes are optional. Only enforced when the workflow
+  // actually contains a CONTENT_BRIEF node, so legacy graphs stay valid.
+  const contentBriefNode = nodes.find(
+    (n): n is Record<string, unknown> =>
+      typeof n === "object" && n !== null && (n as { type?: unknown })["type"] === "CONTENT_BRIEF",
+  );
+  if (contentBriefNode) {
+    const cfg = contentBriefNode["config"];
+    const ref =
+      cfg && typeof cfg === "object"
+        ? (cfg as Record<string, unknown>)["briefFileRef"]
+        : undefined;
+    if (typeof ref !== "string" || !ref.trim()) {
+      errors.push("Content Brief node requires an uploaded Campaign Brief PDF");
+    }
   }
 
   return { valid: errors.length === 0, errors };
