@@ -44,6 +44,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [brand, setBrand] = useState("");
   const [notifyEmail, setNotifyEmail] = useState("");
   const [brandDescription, setBrandDescription] = useState("");
+  const [deliverables, setDeliverables] = useState("");
+  const [timeline, setTimeline] = useState("");
   const [objective, setObjective] = useState("");
   const [notes, setNotes] = useState("");
 
@@ -55,6 +57,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const brandId = useId();
   const notifyId = useId();
   const brandDescId = useId();
+  const deliverablesId = useId();
+  const timelineId = useId();
   const objId = useId();
   const notesId = useId();
   const wfNameId = useId();
@@ -99,6 +103,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
       };
       if (notifyEmail.trim()) campaignData.notifyEmail = notifyEmail.trim();
       if (brandDescription.trim()) campaignData.brandDescription = brandDescription.trim();
+      if (deliverables.trim()) campaignData.deliverables = deliverables.trim();
+      if (timeline.trim()) campaignData.timeline = timeline.trim();
       if (objective.trim()) campaignData.objective = objective.trim();
       if (notes.trim()) campaignData.notes = notes.trim();
       const campaign = await createCampaign(campaignData);
@@ -199,6 +205,31 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
                 onChange={(e) => setBrandDescription(e.target.value)}
                 placeholder="e.g. Avatar is a fintech app that helps Gen Z track spending and build credit through a prepaid card."
                 rows={3}
+              />
+            </FormField>
+            <FormField
+              label="Deliverables"
+              htmlFor={deliverablesId}
+              hint="What the creator is expected to produce. The AI states this as the agreed scope in outreach and negotiation. Leave blank to finalize it later with the creator."
+            >
+              <Textarea
+                id={deliverablesId}
+                value={deliverables}
+                onChange={(e) => setDeliverables(e.target.value)}
+                placeholder="e.g. 3 Instagram Reels + 1 YouTube integration, with 30-day usage rights."
+                rows={2}
+              />
+            </FormField>
+            <FormField
+              label="Timeline"
+              htmlFor={timelineId}
+              hint="When the content should go live. The AI only states a timeline when you provide one here — it never invents dates."
+            >
+              <Input
+                id={timelineId}
+                value={timeline}
+                onChange={(e) => setTimeline(e.target.value)}
+                placeholder="e.g. Content live by September 15, 2026"
               />
             </FormField>
             <FormField

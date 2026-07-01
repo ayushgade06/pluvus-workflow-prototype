@@ -70,6 +70,8 @@ export interface CampaignListItem {
   notes: string | null;
   notifyEmail: string | null;
   brandDescription: string | null;
+  deliverables: string | null;
+  timeline: string | null;
   createdAt: string;
   updatedAt: string;
   workflowCount: number;
@@ -92,6 +94,8 @@ export interface CampaignDetail {
   notes: string | null;
   notifyEmail: string | null;
   brandDescription: string | null;
+  deliverables: string | null;
+  timeline: string | null;
   createdAt: string;
   updatedAt: string;
   workflows: CampaignWorkflowItem[];
@@ -166,6 +170,26 @@ export interface CreatorItem {
   handle: string | null;
   platform: string | null;
   niche: string | null;
+}
+
+/** One parsed CSV row sent to POST /creators/import. `email` is required. */
+export interface CreatorImportRow {
+  email: string;
+  name?: string;
+  handle?: string;
+  platform?: string;
+  niche?: string;
+  /** Any CSV columns that don't map to a known field, preserved as JSON. */
+  metadata?: Record<string, string>;
+}
+
+export interface CreatorImportResponse {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: Array<{ row: number; reason: string }>;
+  /** Upserted creators, for immediate pre-selection in the enroll list. */
+  creators: CreatorItem[];
 }
 
 // ---------------------------------------------------------------------------

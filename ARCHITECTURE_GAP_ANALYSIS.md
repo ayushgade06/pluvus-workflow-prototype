@@ -1,592 +1,354 @@
-# Pluvus Workflow Platform — Staff-Engineer Architecture & Product Gap Analysis
+# Pluvus AI Agents & Nylas Integration — Focused Gap Analysis
 
-> Deep architecture and product gap analysis of the `pluvus-workflow-proto` repository,
-> written from the perspective of a Staff Engineer responsible for evolving this prototype
-> into a **production-grade autonomous workflow execution engine for creator outreach and
-> negotiations** over the next 2–3 years.
+> Scoped gap analysis for the **current priority**: making the **Nylas email integration**
+> and the **AI agents** (reply classification, negotiation, drafting) work properly for real
+> users — proper reply handling end to end.
 >
-> This is **not** a code-quality or bug review. It maps the distance between *what the
-> prototype has proven* and *what the production vision requires*, and sequences that
-> distance by architectural leverage.
+> **Explicitly out of scope right now:** authentication, authorization, multi-tenancy,
+> billing/usage metering, SaaS platform features, workflow-builder DAG authoring, horizontal
+> scaling. Those are real future concerns but are **not** what we are solving in this phase,
+> so they are deliberately omitted here.
+>
+> This is **not** a code-quality or bug review. It maps the distance between what the AI +
+> email layer does today and what "the agents work properly for users" requires.
 >
 > _Analysis date: 2026-07-01. Reflects the codebase through Phase 12 (brand description)._
 
 ---
 
-## Target vision (the flow being built toward)
+## What we are actually trying to make work
 
 ```
-Campaign → Workflow → Outreach → Reply Classification → Negotiation
-        → Approval → Onboarding → Campaign Execution
+Outreach email (Nylas send)
+   → creator replies (Nylas inbound webhook)
+   → Reply Classification  (positive / negative / question / opt-out / unknown)
+   → Negotiation           (accept / counter / present-offer / reject / escalate)
+   → reply handling loops until a deal closes, is rejected, or escalates to a human
 ```
 
-The product should become an **autonomous workflow execution engine** for creator outreach
-and negotiations.
+Everything below serves that single loop: **email goes out, a reply comes back, the agents
+read it correctly, respond appropriately, and drive the instance to the right outcome
+without a human unless one is genuinely needed.**
 
 ---
 
-## Author's framing
+## Readiness scorecard (out of 10)
 
-This repository is an exceptionally clean *validation harness*. It deliberately proves the
-hard execution bets — instance-as-unit, event-driven advancement, queue-as-seam, OCC
-correctness, bounded AI, snapshot versioning — on mocks before promotion. The code quality
-of what exists is high, and many "gaps" below are **intentional scope cuts** the team
-already documented as non-goals (see `.claude/docs/source-of-truth.md` §2 and
-`.claude/docs/open-questions.md`).
+Rating **production-readiness for real users**, not "does a demo work." Scores are for the
+current priority scope (AI agents + Nylas reply handling). Auth/tenancy/billing/scale are out
+of scope and not rated.
 
-The job here is not to fault the prototype for being a prototype. It is to map the distance
-between *what was proven* and *what an autonomous workflow execution engine must become*,
-and to sequence that distance by architectural leverage.
+### Core priority areas
 
-The single most important finding, stated up front so everything else has context:
+| Area | Score | Verdict |
+|---|---|---|
+| **Negotiation decision logic** | **8.5 / 10** | Strongest part of the codebase |
+| **Reply classification** | **7.5 / 10** | Solid gates; eval is synthetic |
+| **AI safety / guardrails** | **8 / 10** | Genuinely well-designed |
+| **Graceful degradation / resilience** | **8 / 10** | Fail-safe-to-human wired end to end |
+| **Nylas outbound (send)** | **6 / 10** | Works, but thin and unmonitored |
+| **Nylas inbound (reply handling)** | **5 / 10** | The weakest link in the actual loop |
+| **AI eval / measurable correctness** | **4 / 10** | Classification only; negotiation untested |
+| **AI observability / debuggability** | **3 / 10** | Near-blind when something goes wrong |
+| **Model quality / provider flexibility** | **5 / 10** | Local 7B / OpenAI only; no Claude |
+| **Prompt management** | **3 / 10** | Inline constants, no versioning |
 
-> **The current engine is structurally a hardcoded, linear, single-tenant, six-node state
-> machine.** The "workflow" is a JSON `nodeGraph` snapshot, but the FSM, the node-type set,
-> the dispatch switch, the transition table, and the routing logic are all *compile-time
-> constants shared by every workflow*. To reach the vision, the platform must cross one
-> architectural chasm before almost anything else matters: **the workflow definition must
-> become data the engine interprets, not code the engine hardcodes.** Roughly 60% of the
-> high-value items below are blocked on, or dramatically cheapened by, that one transition.
+> **Weighted readiness for the current goal: ~6.0 / 10** — the *brain* is strong, the
+> *senses and instrumentation* are weak.
+
+### Why each score
+
+- **🟢 Negotiation decision logic — 8.5.** The `_decide_action` ladder
+  (`agent/app/routes/negotiate.py:230-349`) is production-grade thinking: deterministic (not
+  model-sampled), unit-testable, fails safe on unreadable rates, never fabricates an agreed
+  price, never regresses its own offer, has a convergent stepping counter + final-round close.
+  *Held back from 10 by:* no real-trajectory eval to prove it negotiates well, and it leans on
+  a weak model for the intent read feeding it.
+- **🟢 AI safety / guardrails — 8.** Opt-out and prompt-injection decided in *code* not the
+  model (`classify.py:152-219`), output guard blocks price-band leaks
+  (`server/src/engine/guards/outputGuard.ts`), rate/question gates correct small-model
+  mislabels. *Held back by:* no tone/hallucination/claims guard — only band-leak.
+- **🟢 Graceful degradation — 8.** Classify fail → UNKNOWN → manual review; negotiate fail →
+  escalate; draft fail → template; circuit breaker + timeout on the agent service
+  (`server/src/adapters/agentServiceClient.ts`). An AI failure never strands the instance.
+  *Held back by:* engine-side stranding (jobless non-terminal instances) is still possible.
+- **🟡 Reply classification — 7.5.** Good deterministic-gates-then-LLM pipeline. *Held back
+  by:* a 34-case synthetic eval set ("tripwire, not an accuracy claim" per its own README),
+  and replies aren't cleaned (quoted history/signatures) before classifying — real replies
+  score worse than the harness suggests.
+- **🟡 Nylas outbound — 6.** Real send works, HTML formatting, thread-id resolution for
+  correlation. *Held back by:* single send, no permanent-vs-transient error distinction, no
+  rate limiting, no bounce/delivery handling — a hard bounce loops instead of stopping.
+- **🔴 Nylas inbound / reply handling — 5** *(most important gap for the goal)*. Correlation
+  is **thread-id only**, and a reply with no/unknown thread is **silently acked and dropped**
+  (`server/src/routes/webhooks.ts:131-150`) — the creator replied, the agent never sees it,
+  the instance waits forever. No recipient/recent-window fallback, no orphaned-reply record.
+  Signature verification + producer pattern are good; correlation robustness is not.
+- **🔴 AI eval / measurable correctness — 4.** Classification has a real harness + CI gate.
+  **Negotiation — the financial decision — has zero accuracy eval**, only fixed-input unit
+  tests. You currently *cannot measure* whether the agent negotiates correctly for users.
+- **🔴 AI observability — 3.** Intent/confidence/action are in the DB, but **not** the raw
+  model output, which prompt, which model, token usage, or latency (`usage_metadata` is never
+  read, `agent/app/structured.py:79-80`). Debugging a bad negotiation is guesswork.
+- **🔴 Model quality / provider — 5.** Only Ollama + OpenAI (`agent/app/llm.py:92-95`); no
+  Anthropic/Claude, no OpenRouter. The hard negotiation read runs on a local 7B whose
+  mislabels are patched with deterministic gates. A better model is high-leverage and the
+  `get_llm` seam is ready for it.
+- **🔴 Prompt management — 3.** Inline string constants, no version tag, no registry — a
+  decision can't be tied back to the prompt that produced it.
+
+### The honest summary
+
+> **The decision-making is ~8.5/10 (genuinely good). The email reliability and instrumentation
+> around it are ~4/10. For "make the agents work properly for users," the bottleneck is not
+> the AI's intelligence — it's (1) replies getting silently dropped, (2) no way to prove or
+> debug what the agents decide, and (3) a weak model feeding a strong decision engine.**
+
+Fixing the three P0s below — **inbound correlation fallback, reply-text cleaning, and a real
+negotiation eval set** — moves the weighted score from ~6 to ~8, because those are exactly the
+load-bearing weaknesses dragging the average down.
+
+---
+
+## Where the AI layer is genuinely strong today (keep this)
+
+These are deliberate, well-reasoned design choices. They should be **preserved**, not
+reworked — listing them so we don't accidentally "fix" what already works:
+
+- **The money decision is deterministic, not model-sampled.** `_decide_action`
+  (`agent/app/routes/negotiate.py:230-349`) is a pure `if`-ladder: the LLM only classifies
+  intent and extracts a rate; the accept/counter/escalate split is explicit code, unit-testable
+  without the model. This is the right boundary and the reason the system is safe.
+- **It fails safe to a human.** An unreadable rate → `ESCALATE` (`negotiate.py:341-344`); a
+  bare "yes I'm interested" with no number ever on the table → `PRESENT_OFFER` rather than a
+  fabricated acceptance (`negotiate.py:265-288`); above-ceiling → escalate. The agent never
+  invents an agreed price.
+- **Offers never silently regress.** The stepping counter (`_step_offer`, `negotiate.py:212-227`)
+  always moves toward the creator and never below our own prior offer
+  (`negotiate.py:307-314`).
+- **Classification has compliance-critical deterministic gates ahead of the model**
+  (`agent/app/routes/classify.py:152-219`): opt-out and prompt-injection are decided in code,
+  never by the (injectable) LLM; rate-statement and question gates correct known small-model
+  mislabels before they can terminate an instance wrongly.
+- **The internal price band can't leak into outbound copy** — the output guard
+  (`server/src/engine/guards/outputGuard.ts`) scans every AI-rendered email and routes a leak
+  to manual review instead of sending.
+- **Graceful degradation is wired end to end** — classify failure → `UNKNOWN` → manual review;
+  negotiate failure → `escalate` → manual review; draft failure → template fallback
+  (`server/src/engine/providerFactory.ts`). A circuit breaker + timeout guards the agent
+  service (`server/src/adapters/agentServiceClient.ts`).
+
+The gaps below are about **confidence in correctness, model quality, and email reliability** —
+not about replacing this architecture.
 
 ---
 
 ## How to read each item
 
-Every suggestion carries: **Why it matters · Current limitation (with evidence) · Proposed
-solution · Priority · Complexity · Now vs. Deferred.**
+Every item carries: **Why it matters · Current limitation (with evidence) · Proposed
+solution · Priority · Complexity · Now vs. Later.**
 
-- **Priorities** (P0/P1/P2) are relative to *the production vision*, not the prototype's
-  success criteria.
-- **Complexity** is S / M / L / XL (engineer-weeks order of magnitude: S ≈ <1, M ≈ 1–3,
-  L ≈ 4–8, XL ≈ a quarter+).
+- **Priority** is relative to "make the agents work properly for users *now*."
+- **Complexity:** S / M / L (S ≈ <1 wk, M ≈ 1–3 wk, L ≈ 4+ wk).
 
 ---
 
-## 1. Workflow Engine
+## 1. Reply Handling & Nylas Round-Tripping
 
-The foundational chasm lives here.
+This is the spine of the priority: an outreach goes out, a reply must reliably come back and
+reach the right instance.
 
-### 1.1 — Data-driven node graph & generic node runtime (the keystone)
+### 1.1 — Inbound correlation robustness (thread-id only today)
 
-- **Why it matters.** The vision ("autonomous workflow execution engine") *is* a generic
-  engine. Today there is no engine — there is a hardcoded pipeline. Adding a *single* new
-  node type ("Onboarding," "Reward Setup," "Contract Sign") today requires editing the
-  enum, the dispatch switch, the transition table, and writing an executor — a code change
-  and redeploy, not a config change.
-- **Current limitation.** `runtime.dispatch()` is a `switch` over six literal node types
-  (`server/src/engine/runtime.ts:318-337`, throws on unknown); the transition table is a
-  compile-time constant identical for every workflow
-  (`server/src/engine/stateMachine.ts:7-20`); navigation is `order + 1` integer stepping
-  inside each executor (`importCreatorList.ts:19`, `initialOutreach.ts:44`,
-  `replyDetection.ts:102`). `NodeSnapshot.type` is a free string but only six values
-  dispatch; the declared `NodeType` enum isn't even used to validate graphs
-  (`server/src/engine/types.ts:10-15`). The graph is linear-only with no edge model —
-  "branching" is implicit and hardcoded inside executors. The state machine is global, not
-  per-workflow.
-- **Proposed solution.** Introduce a **node-type registry** and a **per-node-type contract**
-  (`input`, `output`, `execute(ctx) → NodeResult`, `validate(config)`). The
-  `WorkflowVersion.nodeGraph` becomes an interpreted DAG: nodes carry typed `edges` (with
-  optional conditions), not just `order`. Move the state machine from a global enum table to
-  **per-instance progress through the graph**, where "legal transition" means "an edge
-  exists from the current node." Replace the `InstanceState` enum-as-FSM with `currentNodeId`
-  + a small set of *node-lifecycle* states (`PENDING / RUNNING / WAITING / DONE / FAILED`)
-  that are node-agnostic; the *business* states (NEGOTIATING, ACCEPTED…) become node
-  *outputs/labels*, not engine primitives. This is the difference between Temporal/n8n
-  (interpret a graph) and the current design (run a fixed program).
-- **Priority: P0. Complexity: XL. Now.** Nothing else in the "platform" vision is reachable
-  without it; every quarter it's deferred, more executor logic hardcodes assumptions that
-  must later be unwound.
+- **Why it matters.** If a reply can't be matched to its instance, the whole loop stalls —
+  the creator replied but the agent never sees it. This is the most common real-world failure
+  mode for email automation.
+- **Current limitation.** The webhook correlates **only by `threadId`** (`server/src/routes/webhooks.ts:131-150`):
+  if there's no threadId, or the thread isn't found, the reply is acked and **silently
+  dropped** ("ignored: thread not found"). There is no fallback to recipient + recent-window
+  matching, and no record of a dropped/orphaned reply for an operator to recover. The
+  open-questions doc itself recommended a fallback ("recipient + recent-window matching and
+  flag for review") that isn't implemented.
+- **Proposed solution.** Add a correlation fallback chain: thread-id → in-reply-to/message-id
+  headers → recipient + recent outbound window. When all fail, persist the orphaned inbound as
+  an "unmatched reply" row and surface it for manual correlation instead of dropping it.
+- **Priority: P0. Complexity: M. Now.**
 
-### 1.2 — Conditional branching & dynamic routing (DAG, not line)
+### 1.2 — Nylas send path is minimal and unmonitored
 
-- **Why it matters.** Real outreach is not linear: "if creator is high-tier → premium
-  negotiation track; if low-confidence reply → human review then re-enter; if accepted →
-  onboarding subflow." The source-of-truth even names this ("explicit pauses, skips, and
-  exits") and the team explicitly deferred branching authoring as a *prototype* non-goal —
-  correct then, mandatory now.
-- **Current limitation.** No edge/condition model exists in the data layer (no DAG, no
-  conditional edges, no parallel paths). Branching is buried in executor `switch` statements
-  and not author-editable or visualizable.
-- **Proposed solution.** Edge model with conditions evaluated against instance context +
-  node outputs (see expression engine, §3.2). Routing becomes: node returns a labeled
-  outcome → engine selects the matching outgoing edge. A natural consequence of 1.1.
-- **Priority: P0. Complexity: L (on top of 1.1). Now (co-designed with 1.1).**
+- **Why it matters.** Send failures, bounces, and rate limits are normal at volume; if a send
+  silently fails the creator never gets the email and the instance waits forever.
+- **Current limitation.** `NylasEmailProvider.send` (`server/src/providers/nylas/nylasEmailProvider.ts:45-67`)
+  does a single send with no provider-level retry, no bounce/delivery handling, and no
+  outbound rate limiting; it relies entirely on the enclosing BullMQ job's 3 retries. There's
+  no handling of Nylas-side send errors distinct from transient failures.
+- **Proposed solution.** Distinguish permanent vs. transient send errors; add a send rate
+  limiter (deliverability + Nylas limits); ingest bounce/delivery webhook events so a hard
+  bounce marks the instance instead of looping. Keep the thin-adapter shape.
+- **Priority: P1. Complexity: M. Now-ish.**
 
-### 1.3 — Human-approval & manual-intervention nodes as first-class
+### 1.3 — Real-reply test fixtures for the inbound path
 
-- **Why it matters.** The vision flow has an explicit **Approval** stage. Today "approval"
-  and "manual review" are *terminal dead-ends*, not resumable nodes.
-- **Current limitation.** `MANUAL_REVIEW` is modeled as **terminal** — the transition table
-  gives it no outgoing edges (`stateMachine.ts:19`), and no code path re-routes it. A human
-  can be notified (`server/src/notifications/escalation.ts`) but cannot *resolve* the
-  instance back into the flow. There is no approve/reject/resume action; `approvalMode:
-  auto/manual` exists in the negotiation config UI (`NodeConfigPanel.tsx`) but no executor
-  reads it.
-- **Proposed solution.** A generic **Wait-for-Human** node type: it parks the instance in
-  `WAITING`, emits a task to a work-queue, and exposes resume actions (`approve` / `reject` /
-  `edit-and-continue` / `reroute-to-node`) that re-enter the graph. The existing Manual Queue
-  UI becomes the front end for it.
-- **Priority: P0. Complexity: M. Now** — it's the missing half of the product flow, and it's
-  small once 1.1 exists (it's "just another node type").
-
-### 1.4 — Timeouts, delayed execution, scheduled nodes, looping
-
-- **Why it matters.** Autonomous execution needs per-node SLAs ("if no negotiation movement
-  in 7 days, escalate"), scheduled sends ("send onboarding Monday 9am creator-local"), and
-  bounded loops as configuration not code.
-- **Current limitation.** The *only* timer is the follow-up `dueAt` poll
-  (`server/src/scheduler/poller.ts`, `server/src/db/instances.ts:120-130`); it's hardcoded
-  to two states. Loops (follow-up `maxCount`, negotiation `maxRounds`) are hardcoded counter
-  logic inside two executors (`followUp.ts:25`, `negotiation.ts:65`), not a general loop
-  primitive. No node-level timeout, no scheduled/cron node, no calendar-aware send.
-- **Proposed solution.** Generalize `dueAt` into a **timer subsystem** keyed by (instanceId,
-  nodeId, purpose) so any node can arm a timer; add a `Timer`/`ScheduledAction` table (§6).
-  Make loop bounds and timeouts node config interpreted by the generic runtime. Add a
-  scheduled-node type.
-- **Priority: P1. Complexity: L. Now-ish** (land the timer table with 1.1's schema work to
-  avoid a later migration).
-
-### 1.5 — Retry strategies, rollbacks, compensation (Saga)
-
-- **Why it matters.** Autonomous money-adjacent workflows (onboarding, contract, reward
-  setup — all in the vision) need compensation: if step 5 fails after step 4 sent an
-  email/created a record, you need a defined undo or a safe park. Production reliability for
-  "tens of thousands daily" demands per-node retry policy.
-- **Current limitation.** Retries exist only at the *BullMQ job* level (3 attempts,
-  exponential — `server/src/workers/queues.ts:17-27`), uniform across all node types, with
-  **no DLQ** (failed handlers only log — `nodeExecutionWorker.ts:147-152`). No
-  compensation/rollback concept anywhere. Events are append-only audit, never replayed to
-  reconstruct or undo.
-- **Proposed solution.** Per-node-type retry policy in config; a Saga/compensation hook
-  (`compensate(ctx)`) on node contracts; a DLQ queue with operator tooling. (Rollback in an
-  email-sending system is mostly *forward compensation* — send a correction, mark a record
-  void — so design it as compensating actions, not literal undo.)
-- **Priority: P1 (retry policy + DLQ), P2 (full compensation). Complexity: M / L. Now** for
-  DLQ; **defer** compensation until post-negotiation nodes exist.
-
-### 1.6 — Versioning improvements: migration & sequence-level controls
-
-- **Why it matters.** Snapshot versioning works (validated), but the *promotion* path —
-  migrating in-flight instances to a new version — was explicitly stubbed-only. And the
-  source-of-truth's "sequence-level vs node-level controls" distinction (§4) isn't
-  implemented: there are no workflow-level rulesets (global quiet hours, global stop-rules,
-  global rate caps).
-- **Current limitation.** No instance-migration mechanism. No sequence-level config object —
-  only per-node config. `Workflow.draftNodes` handles drafts well, but there's no version
-  diff/compare.
-- **Proposed solution.** Explicit, opt-in instance migration with a mapping function (old
-  node → new node). A `Workflow.settings` JSON for sequence-level controls the engine reads
-  alongside node config. Version diff endpoint.
-- **Priority: P2. Complexity: M. Defer** migration; **now** add the `settings` field with
-  1.1's schema work.
+- **Why it matters.** "Proper reply handling" can only be trusted if it's tested against
+  realistic inbound emails (quoted history, signatures, HTML, forwards), not just clean
+  synthetic bodies.
+- **Current limitation.** The inbound body is taken fairly directly (`extractInboundMessage`,
+  `webhooks.ts:54-72`, falls back to `snippet`). There's no quoted-trailer/signature stripping
+  before classification, so a creator's one-line reply arrives wrapped in the entire prior
+  thread — which degrades small-model classification.
+- **Proposed solution.** Strip quoted history + signatures before classifying (a reply-parser
+  step). Add fixtures of real-shaped inbound emails to the harness.
+- **Priority: P0. Complexity: S–M. Now** — directly improves classification accuracy on real
+  replies for almost no cost.
 
 ---
 
-## 2. AI Layer
+## 2. AI Model Quality & Provider
 
-The AI layer is deliberately a **thin, stateless, auditable intent-classifier +
-rate-extractor** with deterministic money logic in Python/TS (`_decide_action` in
-`agent/app/routes/negotiate.py`). An excellent, safe foundation — but greenfield on
-everything the vision needs for multi-model production.
+### 2.1 — Wire Anthropic / better models for negotiation
 
-### 2.1 — Provider abstraction, multi-model, routing & OpenRouter
+- **Why it matters.** The negotiation intent-classification and rate-extraction are the
+  hardest language tasks in the system, and the notes already flag that the local 7B model
+  mislabels (the rate/question gates exist precisely to paper over small-model errors —
+  `classify.py:187-209`, `negotiate.py:316-321`). Using a more capable model for the
+  negotiation read directly improves deal outcomes.
+- **Current limitation.** Only **Ollama and OpenAI** are supported (`agent/app/llm.py:92-95`);
+  there is no Anthropic/Claude path and no `base_url` override on `ChatOpenAI`
+  (`llm.py:85-89`). Provider is global env-only — the same model serves classify, negotiate,
+  and draft, varying only by temperature.
+- **Proposed solution.** Add an Anthropic factory (the latest Claude models are strongest for
+  nuanced negotiation reads) and/or an OpenRouter-compatible `base_url`. Allow the negotiation
+  task to use a more capable model than trivial classification — a per-task model knob, not a
+  full router.
+- **Priority: P1. Complexity: M. Now** — the `get_llm` seam already exists to extend, and it's
+  high-leverage for negotiation quality.
 
-- **Why it matters.** Use the latest, most capable Claude models for hard negotiation; cheap
-  local models for trivial classification. Cost and quality both demand per-task model
-  selection. Today you cannot use Claude/Anthropic at all.
-- **Current limitation.** Exactly **two providers** hardcoded — Ollama and OpenAI
-  (`agent/app/llm.py:92-95`). Provider is **global env-only** (`LLM_PROVIDER`), not per-task;
-  the only per-task variation is *temperature*. **No OpenRouter, no Anthropic, no Gemini**
-  (grep: zero hits). No model registry, no per-request model. `ChatOpenAI` is built with no
-  `base_url` (`llm.py:85-89`).
-- **Proposed solution.** A provider/model **router** keyed by task + difficulty + cost
-  budget. Add an OpenRouter/Anthropic-compatible factory (a `base_url` + factory addition).
-  Model choice becomes part of node config ("Negotiation node uses `claude-opus-4-8`;
-  Classify uses local qwen"). Wiring Anthropic is high-leverage for nuanced negotiation.
-- **Priority: P1. Complexity: M. Now** — cheap relative to its leverage, and the abstraction
-  seam (`get_llm`) already exists to extend.
+### 2.2 — Confidence is uncalibrated and partly hardcoded
 
-### 2.2 — AI observability: token usage, cost, prompt versioning, decision logging
-
-- **Why it matters.** You cannot run AI at scale blind to cost. You cannot debug a bad
-  negotiation without knowing *which prompt + which model* produced it. Both are absent.
-- **Current limitation.** **No token counting, no cost accounting anywhere** (grep: zero).
-  `response_metadata`/`usage_metadata` never read (`agent/app/structured.py:79-80` reads only
-  `.content`). **No prompt versioning** — prompts are inline string constants with no version
-  tag. **No LangSmith/OTel tracing.** The DB records *intent/confidence/action* but not the
-  model's raw output, token usage, prompt version, or which model produced it.
-- **Proposed solution.** Capture `usage_metadata` on every call; persist `{model,
-  promptVersion, inputTokens, outputTokens, costUsd, latencyMs}` onto an `AiCall`/`Event`
-  record. Version prompts (hash + semantic tag) and stamp the version onto every decision
-  event. Wire LangSmith or OTel for traces.
-- **Priority: P0 (a production-readiness gate, not a nicety). Complexity: M. Now.**
-
-### 2.3 — AI evaluations for negotiation & draft (not just classification)
-
-- **Why it matters.** The negotiation `_decide_action` and draft quality are the
-  *commercially risky* AI surfaces, and they have **no eval harness** — only unit tests on
-  fixed inputs. Classification has a real (if small, 34-case synthetic) eval + CI gate;
-  negotiation/draft have none.
-- **Current limitation.** No eval set, scorer, or gate for the negotiation decision or draft
-  quality. Classification eval is honest about being a "tripwire, not an accuracy claim" on
-  synthetic data.
-- **Proposed solution.** Labeled negotiation-trajectory eval set (real anonymized threads)
-  scoring accept/counter/escalate correctness and floor/ceiling adherence; an LLM-judge for
-  draft quality (tone, no-leak, personalization). Grow the classification set toward the
-  stated ~500 real-reply target. Gate CI on all three.
-- **Priority: P1. Complexity: L. Now-ish** — needs real data, so start the data-collection
-  pipeline now.
-
-### 2.4 — Confidence calibration & memory between nodes
-
-- **Why it matters.** Confidence drives the manual-review gate (the autonomy/cost dial), but
-  it's largely hardcoded heuristics (OPT_OUT→1.0, etc.), and the LLM-supplied number is
-  uncalibrated. "Memory between workflow nodes" — a creator's full relationship history
-  informing later drafts — is reconstructed ad hoc per call from events, not a first-class
-  context store.
-- **Current limitation.** Confidence: model number is clamped then thresholded but not
-  calibrated. Memory: no LangGraph checkpointer; cross-turn context is rebuilt by TS from
-  `NEGOTIATION_TURN` events each call (the right place for it, but negotiation-only and not
-  generalized).
-- **Proposed solution.** Calibrate confidence against the eval set (reliability curve).
-  Generalize "memory" into an **instance context store** the engine assembles and passes to
-  every AI node (creator profile + full message history + prior outcomes + campaign brand
-  voice), so any node gets relationship-aware context.
-- **Priority: P2. Complexity: M. Defer** calibration until eval data exists; **now**
-  generalize the context-assembly seam.
+- **Why it matters.** Confidence is the dial that decides auto-advance vs. manual review
+  (`LOW_CONFIDENCE_THRESHOLD`, `classify.py:213-218`). If it's wrong, we either bother humans
+  too often or auto-advance bad classifications.
+- **Current limitation.** Deterministic gates hardcode confidence (opt-out 1.0, injection 0.0,
+  rate 1.0, question 1.0); only the LLM middle path produces a model number, and it's not
+  calibrated against real outcomes. The threshold is a single hardcoded constant.
+- **Proposed solution.** Once a real-reply eval set exists (§3), plot a reliability curve and
+  set the threshold from data rather than a guess; consider per-intent thresholds.
+- **Priority: P2. Complexity: M. Later** — needs the eval data first.
 
 ---
 
-## 3. Workflow Builder
+## 3. AI Evaluation & Trust
 
-The builder is a **guided linear config editor**, not a graph builder. Correct for the
-prototype. To "feel like n8n/Temporal/Langflow," it needs the data-driven engine (§1.1)
-underneath first — you can't build a DAG editor over a fixed pipeline.
+### 3.1 — Negotiation has no eval harness (highest-risk untested surface)
 
-### 3.1 — True graph authoring (nodes, connections, branches, palette)
+- **Why it matters.** `_decide_action` is the financial decision boundary. It has thorough
+  unit tests on fixed inputs, but **no labeled accuracy eval** on real negotiation
+  trajectories — so we can't measure "does the agent negotiate *correctly*" the way we measure
+  classification.
+- **Current limitation.** There is an eval set + scorer + CI gate for **classification only**
+  (`agent/eval/`, 34 synthetic cases). Nothing scores the negotiation decision (accept/counter/
+  escalate correctness, floor/ceiling adherence, no-fabricated-price) or draft quality.
+- **Proposed solution.** Build a labeled negotiation-trajectory eval set (anonymized real
+  threads): for each turn, the expected action + an acceptable rate range. Score the decision
+  ladder against it and gate CI. Add an LLM-judge for draft quality (tone, no band leak,
+  personalization).
+- **Priority: P0. Complexity: L. Now-ish** — start collecting real threads immediately; it's
+  the only way to *prove* the negotiation agent works for users.
 
-- **Why it matters.** This *is* the product surface for "workflow orchestration platform."
-- **Current limitation.** No node creation (no palette/add-button). No connecting (React Flow
-  is `nodesConnectable={false}`, `nodesDraggable={false}`, handles `opacity:0` —
-  `web/src/components/builder/BuilderCanvas.tsx:62,115-116`, `BuilderNode.tsx:63-64`). Edges
-  auto-derived from sort order. No branches. Reorder + per-node config + publish is the whole
-  surface.
-- **Proposed solution.** Unlock React Flow into a real editor: palette of registered node
-  types (from the §1.1 registry), drag-to-create, draw edges, branch nodes. The front end
-  already uses React Flow, so the substrate is present — it's deliberately locked, not absent.
-- **Priority: P1. Complexity: L. After 1.1.**
+### 3.2 — Grow the classification eval set toward real data
 
-### 3.2 — Variables, expressions, reusable subflows, templates
+- **Why it matters.** The current 34-case set is synthetic and self-admittedly a "tripwire,
+  not an accuracy claim" (`agent/eval/README.md`). Real creator replies are messier.
+- **Current limitation.** Small, synthetic dataset; the README itself targets ~500 real replies
+  as the goal.
+- **Proposed solution.** Pipe real (anonymized) inbound replies into the eval set; re-baseline
+  per model/prompt change.
+- **Priority: P1. Complexity: M. Now-ish.**
 
-- **Why it matters.** Differentiates a config form from an automation platform. Conditions
-  (§1.2) *need* an expression layer.
-- **Current limitation.** "Variables/expressions" today = `{{creatorName}}`/`{{brandName}}`
-  string interpolation only (`NodeConfigPanel.tsx:285-286`); no expression engine. Templates
-  exist but are **3 hardcoded presets** chosen at creation, not user-authorable
-  (`server/src/templates/index.ts`). No subflows. (Notably, templates seed **5 nodes**, not
-  the documented 6 — `IMPORT_CREATOR_LIST` is omitted from all three templates.)
-- **Proposed solution.** A safe expression engine (sandboxed, e.g. JSONLogic or a restricted
-  JMESPath) over instance context for conditions and field interpolation; named workflow
-  variables; user-saved templates; reusable subflows (a node that embeds another workflow —
-  onboarding becomes a subflow).
-- **Priority: P1 (expressions), P2 (subflows/templates). Complexity: L. With 1.2.**
+### 3.3 — AI decision observability (what did the model actually do?)
 
-### 3.3 — Test/simulation/debug, live preview, version compare
-
-- **Why it matters.** Authors must validate a workflow before launching it at real creators
-  (who receive real emails — the Launch tab already warns about this). Without simulation,
-  every change is tested in production.
-- **Current limitation.** No in-UI test/sim/debug — only an offline server-side Node harness
-  (`server/src/observability/harness.ts`). Validation exists but is structural only
-  (`validateNodeGraph` — array/types/unique-order/must-have-outreach+end; no
-  branch/reachability/config-completeness validation). No version diff.
-- **Proposed solution.** A **dry-run/simulation mode**: execute a workflow against a synthetic
-  creator with mock providers, step-through with breakpoints, showing state at each node —
-  promote the existing harness into an API-driven simulator the UI drives.
-  Reachability/dead-node validation. Version diff view.
-- **Priority: P1 (simulation), P2 (breakpoints/diff). Complexity: L. After 1.1**, but high
-  product value.
+- **Why it matters.** When the agent makes a wrong call for a user, we need to see *why* — the
+  raw model output, which prompt, which model, and the cost. Today debugging a bad negotiation
+  is guesswork.
+- **Current limitation.** The DB stores intent/confidence/action on `Message`/`Event`, but
+  **not** the model's raw output, the prompt version, which model produced it, token usage, or
+  latency. `usage_metadata` is never read (`agent/app/structured.py:79-80`); prompts are inline
+  constants with no version tag; no LangSmith/OTel tracing.
+- **Proposed solution.** Stamp every AI call with `{model, promptVersion, rawOutput,
+  inputTokens, outputTokens, latencyMs}` onto an event/record. Version prompts (hash + tag).
+  Token/cost capture is cheap to add once `usage_metadata` is read and pays for itself the
+  first time a negotiation goes wrong in production.
+- **Priority: P1. Complexity: M. Now** — this is the difference between debuggable and opaque
+  when a user reports "the agent did something weird."
 
 ---
 
-## 4. Execution Engine (production capabilities)
+## 4. Negotiation & Drafting Behavior Coverage
 
-This is where "tens of thousands of executions daily" lives. The correctness core (OCC +
-idempotency + lock) is genuinely solid and validated. The *operational* layer is
-prototype-grade by design.
+### 4.1 — Generalize "memory" / context the agent sees per turn
 
-### 4.1 — Tier separation & horizontal worker scaling
+- **Why it matters.** A good negotiation reply uses the *whole* relationship: prior turns,
+  the creator's stated constraints, brand voice. Better context = better drafts and reads.
+- **Current limitation.** Cross-turn context is reconstructed by the engine from
+  `NEGOTIATION_TURN` events and passed per call (`buildPriorContextFromEvents`,
+  `server/src/engine/executors/negotiationHistory.ts`) — which is the right place for it, but
+  it's negotiation-only. The classifier and drafter don't get full relationship context.
+- **Proposed solution.** Assemble a single instance-context object (creator profile + full
+  message history + prior outcomes + campaign brand voice) and pass it to every AI node, so
+  classification and drafting are relationship-aware too.
+- **Priority: P2. Complexity: M. Later** (after the eval harness, so we can measure the gain).
 
-- **Why it matters.** Throughput, blast-radius isolation, independent scaling.
-- **Current limitation.** **API + both workers + scheduler all run in one process**
-  (`server/src/index.ts:92-95`). Worker concurrency is a **hardcoded `5`**, not env-tunable
-  (`nodeExecutionWorker.ts:135`, `inboundEmailWorker.ts:153`). No clustering. Single-process
-  was an *intentional* prototype choice (open-questions §8).
-- **Proposed solution.** Split API and worker into separate deployables sharing the engine
-  library; make concurrency configurable; run N worker replicas (BullMQ supports this
-  natively — the OCC + lock design already makes it safe, which is the whole point of having
-  validated them).
-- **Priority: P0. Complexity: M. Now** — mostly packaging/config, and the correctness work
-  that makes it safe is *already done*.
+### 4.2 — Draft quality guardrails beyond band-leak
 
-### 4.2 — Distributed scheduler (leader election)
+- **Why it matters.** The output guard catches price-band leaks, but not tone problems,
+  hallucinated commitments, or off-brand copy — which users *will* notice.
+- **Current limitation.** `outputGuard.ts` checks for leaked floor/ceiling numbers and
+  `internalTerms` strings; `_scrub_brand` (`negotiate.py`) regex-cleans placeholders. No check
+  for tone, fabricated promises, or unapproved claims.
+- **Proposed solution.** Add a lightweight draft-review pass (rule-based first, LLM-judge later
+  per §3.1) for tone/claims; surface borderline drafts to manual review.
+- **Priority: P2. Complexity: M. Later.**
 
-- **Why it matters.** With multiple processes, the in-process `setInterval` poller runs in
-  *every* replica, each fetching *all* due instances every tick (`poller.ts`,
-  `listDueInstances` has no `take` limit).
-- **Current limitation.** Single in-process poller, no leader election. Dedup via jobId saves
-  correctness but every replica still does the full DB scan — wasteful and unscalable.
-- **Proposed solution.** BullMQ **repeatable jobs** or a single leader-elected scheduler;
-  bound the due-query with `take` + cursor pagination.
-- **Priority: P1. Complexity: M. With 4.1** (the same change).
+### 4.3 — Make the agent service multi-worker-safe
 
-### 4.3 — DLQ, job priorities, queue partitioning, rate limiting
-
-- **Why it matters.** Operability at scale: prioritize a paying customer's launch over a
-  backfill; isolate a noisy tenant; recover poison messages; cap outbound email rate
-  (deliverability + provider limits).
-- **Current limitation.** **No DLQ** (failed jobs just log + retain last 100). **No
-  priorities** (no `priority` set anywhere). **No partitioning** (two static functional
-  queues). **No rate limiting** on outbound Nylas sends. The `/queues/jobs` route is
-  read-only (no retry/promote/delete).
-- **Proposed solution.** DLQ queue + operator retry/replay tooling; BullMQ job priorities;
-  per-tenant queue partitioning or a rate-limiter group; BullMQ rate limiter on the email
-  path.
-- **Priority: P0 (DLQ + rate limiting), P1 (priorities/partitioning). Complexity: M. Now**
-  for DLQ + email rate-limit.
-
-### 4.4 — Crash recovery / reconciliation sweeper
-
-- **Why it matters.** This is a **silent-data-loss class bug** at scale, not a feature gap.
-- **Current limitation.** Instances that end a step in a **non-due, non-terminal state with
-  no outstanding job** (`REPLY_RECEIVED`, `NEGOTIATING`, `OUTREACH_SENT`) are **never swept**
-  — nothing re-enqueues them. The scheduler only looks at `AWAITING_REPLY`/`FOLLOWED_UP`. A
-  crash between auto-chain enqueue and worker pickup, or a dropped job, strands the instance
-  forever. The Redis lock can also orphan for up to 30s (no fencing, unconditional `del`
-  release — `server/src/scheduler/lock.ts:61-64`).
-- **Proposed solution.** A **reconciliation sweeper**: periodically find non-terminal
-  instances with no in-flight job and no future `dueAt`, beyond a grace window, and
-  re-enqueue or flag them. Add fencing tokens to the lock (or accept OCC as the sole
-  guarantee and treat the lock as pure optimization — already its documented role).
-- **Priority: P0. Complexity: M. Now** — cheap insurance against unbounded silent loss.
-
-### 4.5 — Cancellation, pause/resume, replay/backfill
-
-- **Why it matters.** "Stop this campaign now," "pause while we fix a bad template," "replay
-  last week's negotiations against the new model," "backfill onboarding for already-accepted
-  creators."
-- **Current limitation.** **All missing:** no cancel, no pause/resume, no replay, no backfill.
-  (`FOLLOW_UP_CANCELLED` is just an event label, not a mechanism.)
-- **Proposed solution.** Instance/campaign cancel (terminal `CANCELLED` + queue purge); pause
-  (BullMQ `queue.pause()` + instance pause flag); replay from the append-only `Event` log
-  (which already exists for audit — this is where event-sourcing leverage pays off, §6);
-  backfill as a bulk-enrollment job.
-- **Priority: P1. Complexity: M–L. Now** for cancel/pause; **defer** replay/backfill.
+- **Why it matters.** The agent's rate limiter is in-process (`agent/app/security.py` notes
+  this); under more than one uvicorn worker it under-counts, and the agent has no shared state.
+- **Current limitation.** In-process fixed-window rate limiter; fine for one worker, incorrect
+  for several.
+- **Proposed solution.** Back the limiter with a shared store (Redis) when the agent runs more
+  than one worker.
+- **Priority: P2. Complexity: S. Later** (only when we scale the agent process).
 
 ---
 
-## 5. Observability
+## Priority summary (for this phase only)
 
-Per-instance *inspection* is strong (canvas, timeline, message thread, AI-decision view,
-transition trace with source/worker/jobId attribution). **Aggregate operational and business
-dashboards are entirely absent** — and the team scoped analytics as a non-goal, correctly
-for then.
+**Do now (P0):**
 
-- **What EXISTS:** per-state counts, `avgTimeInStateSeconds`, stuck-instance flagging
-  (waiting + `dueAt` >1h), per-instance drilldown, AI decisions, logs trace.
-- **What's MISSING:** **AI token usage, AI cost, node execution duration** (only
-  state-residency time exists, not executor runtime), **queue latency** (raw BullMQ counts
-  exist but no metric/dashboard), **failure-rate aggregates**, **negotiation funnel /
-  conversion rate**, **creator-journey analytics**. No metrics store, no Prometheus/OTel, no
-  time-series.
+1. **Inbound correlation fallback** so replies are never silently dropped (§1.1).
+2. **Reply parsing** — strip quoted history/signatures before classifying (§1.3); directly
+   lifts real-reply accuracy.
+3. **Negotiation eval harness** on real trajectories — start collecting threads now (§3.1).
 
-- **Why it matters.** You cannot operate or optimize at scale without these. Cost dashboards
-  gate AI spend; funnel/conversion dashboards are the *product's headline value* ("where is
-  each creator"); failure heatmaps + queue latency are the on-call surface.
-- **Proposed solution.** Emit metrics to a time-series backend (Prometheus/OTel + Grafana, or
-  a metrics table for in-app dashboards). Build: **Negotiation funnel**
-  (enrolled→outreach→reply→negotiating→accepted with rates), **AI cost/token** (from §2.2),
-  **node duration + queue latency**, **failure heatmap by node/tenant**, **creator-journey**
-  view. The append-only `Event` log already holds most of the raw material.
-- **Priority: P1 (funnel/conversion + cost are near-P0 for a SaaS), P2 (heatmaps).
-  Complexity: L. Now** for cost (pairs with 2.2) and funnel.
+**Do next (P1):**
+
+4. **Anthropic/better model for negotiation** (§2.1).
+5. **AI decision observability** — raw output + prompt version + model + tokens (§3.3).
+6. **Nylas send hardening** — error classification, rate limit, bounce handling (§1.2).
+7. **Real-reply classification eval growth** (§3.2).
+
+**Later (P2):**
+
+8. Confidence calibration from eval data (§2.2).
+9. Generalized per-turn context for all AI nodes (§4.1).
+10. Draft tone/claims guardrails (§4.2).
+11. Multi-worker-safe agent rate limiting (§4.3).
 
 ---
 
-## 6. Data Model
+## The one-sentence read
 
-The definition/execution split is excellent and the audit `Event` log is a strong
-foundation. The gaps are about **multi-tenancy, the graph-as-data, and turning the audit log
-into a real event-sourcing substrate.**
-
-### 6.1 — Tenancy & identity entities (see also §10)
-
-- **Missing entities:** `Organization`/`Workspace`, `User`, `Membership`, `Role`, `ApiKey`,
-  `Session`. The schema has **8 models, zero tenant scoping** — `Campaign` is the unowned
-  root. This blocks SaaS entirely.
-- **Priority: P0. Complexity: L (schema) + XL (retrofitting every query with tenant scope).
-  Now** — the longer the schema lives untenanted, the more expensive the retrofit.
-
-### 6.2 — Graph/edge entities & node-type registry table
-
-- **Missing:** node, edge, and node-type-definition tables (the graph is opaque JSON; no
-  referential integrity on node references — `currentNodeId` is a free string, `Event.nodeId`
-  has no FK). This is the data side of §1.1. Keeping the *version snapshot* as JSON is fine
-  (immutability), but the *node-type catalog* and *draft graph* benefit from structure.
-- **Priority: P0 (with 1.1). Complexity: M. Now.**
-
-### 6.3 — Event sourcing, analytics tables, richer audit
-
-- **Why it matters.** Replay (§4.5), backfill, time-travel debugging, and analytics all want
-  the `Event` log promoted from "audit nicety" to "first-class projection source."
-- **Current limitation.** `Event` is append-only audit but **never the system of record and
-  never replayed** (an intentional prototype choice, open-questions §3). No analytics/rollup
-  tables. No `AiCall` table (token/cost/prompt-version — §2.2). No `Timer`/`ScheduledAction`
-  table (§1.4). No `Task`/`HumanTask` table (§1.3). Audit lacks *who* (no actor — because no
-  users).
-- **Proposed solution.** Add `AiCall`, `Timer`, `HumanTask` tables. Build read-model
-  **projections** off the event stream for analytics (CQRS-lite). Add actor/tenant to events.
-  Don't go full event-sourcing-as-primary-store (open-questions §3 rightly rejected that) —
-  but make projections a real pattern.
-- **Priority: P1. Complexity: L. Now** for the new tables (avoid later migrations); **defer**
-  full projection infra.
-
----
-
-## 7. Product Features (SaaS expectations)
-
-All absent today (appropriate for a prototype). Ranked by what customers gate adoption on:
-
-- **Multi-tenancy + permissions + team collaboration** — **P0** (table stakes; see §6.1,
-  §10). No user/team/role model exists.
-- **Environments (draft/staging/prod) + workflow approval-to-publish** — **P1**.
-  `DRAFT/PUBLISHED/ARCHIVED` status exists but no environment promotion or publish-approval
-  gate.
-- **Import/export + workflow sharing + marketplace** — **P2**. No serialization endpoints;
-  templates are hardcoded.
-- **Billing/usage metrics** — **P1**. **Nothing** tracks usage for billing (no per-tenant
-  counters, no metering). Pairs with §2.2 cost and §5 metrics.
-- **Audit history (user-facing)** — **P1**. The `Event` log exists but has no actor and isn't
-  surfaced as a user-facing audit trail.
-- **Draft workflows** — ✅ partially exists (`Workflow.draftNodes`).
-
-**Complexity: L–XL collectively. Now** for tenancy; rest **deferred** behind it.
-
----
-
-## 8. Developer Experience (extensibility SDKs)
-
-Nothing here exists yet, and it's correctly the *last* layer — but it's the long-term moat.
-
-- **Custom Node SDK / Provider SDK / Trigger SDK** — the §1.1 node-type registry *is* the
-  foundation; once nodes are pluggable, an SDK to author them externally follows. **P2. L.
-  Defer** until the registry (1.1) and a stable node contract exist.
-- **CLI + testing framework + local simulator / mock execution** — the simulation work
-  (§3.3) and harnesses are the seed of a local simulator; promote them. **P2. M. Defer.**
-
-These should be designed *as a consequence* of 1.1's contracts, not before — building an SDK
-over a hardcoded engine would be wasted.
-
----
-
-## 9. Architecture (structural)
-
-- **Event-driven design** — ✅ already the core strength (queue-as-seam, validated). Keep.
-- **CQRS / event sourcing** — **introduce CQRS-lite** (read-model projections off the `Event`
-  log for observability/analytics — §6.3), but **do not** make events the primary write store
-  (open-questions §3 correctly rejected this). **P1. L. Now-ish.**
-- **Module boundaries / bounded contexts / domain separation** — today it's a single
-  `server/` monolith with clean internal layering. The right next step is extracting the
-  **engine as a standalone, dependency-light library** (the open-questions §9 portability
-  goal) with the API and workers as thin consumers — this is what makes promotion into Pluvus
-  V2 real. **P1. M. Now** (it's mostly already structured for it).
-- **Workflow DSL / internal APIs** — the §1.1 interpreted graph *is* the DSL; formalize its
-  schema (a versioned JSON schema for `nodeGraph`) as the contract between builder, engine,
-  and (later) SDK. **P1. M. With 1.1.**
-
----
-
-## 10. Production Readiness
-
-The hard reliability/correctness bets are proven; the *production envelope* around them is
-not. Consolidated, most urgent first:
-
-- **Security & multi-tenancy — there is NO authentication or authorization on any application
-  route** (only the Nylas webhook HMAC, which authenticates the *source*, not a user). The
-  design doc says so explicitly. **Any caller can read/mutate any campaign, workflow, or
-  instance.** This is the single largest production blocker after the engine chasm. **P0. XL**
-  (auth + authz + tenant-scoping every query). **Now.**
-- **Reliability — crash-recovery sweeper (§4.4), DLQ (§4.3), tier separation + horizontal
-  scale (§4.1). P0. Now.**
-- **Cost controls — AI cost tracking + budgets (§2.2), outbound email rate limiting (§4.3).**
-  Without these, scale = uncontrolled spend and deliverability risk. **P0/P1. Now.**
-- **Monitoring — aggregate dashboards + alerting (§5), structured logging to an aggregator**
-  (today logs are stdout JSON only). **P1. Now-ish.**
-- **Rate limiting — agent service has in-process rate limiting only** (multi-worker needs a
-  shared store — the agent itself flags this); **no inbound API rate limiting at all** (no
-  auth means no per-tenant limits possible yet). **P1. With auth.**
-- **Disaster recovery — no documented backup/restore, no RPO/RTO, Redis is a single point**
-  (locks + queues). **P2. Defer** but document.
-- **Secrets management** — API keys via env only; production needs a vault. **P2.**
-
----
-
-## Cross-cutting theme (the through-line)
-
-Three structural facts explain ~80% of the gaps:
-
-1. **The workflow is data but the engine is code.** Until §1.1 lands, "workflow platform"
-   features (branching, custom nodes, builder, SDK, subflows) are all blocked.
-2. **There is no identity.** Until tenancy/auth lands, "SaaS" features (permissions, billing,
-   environments, sharing) are all blocked, and the system is unshippable.
-3. **The operational envelope is single-process and unmetered.** Until tier-split + recovery +
-   cost/metrics land, "scale" is unsafe (silent loss, uncontrolled spend, no on-call surface).
-
-Everything else hangs off these three.
-
----
-
-## TOP 20 — ranked by long-term architectural leverage
-
-Ranking weighs: *how many other items it unblocks* × *production-criticality* × *cost of
-deferring* (schema/coupling debt compounds).
-
-| #  | Improvement | Pri | Cx | Now? | Why it ranks here |
-|----|-------------|-----|----|------|-------------------|
-| **1**  | **Data-driven node graph + generic node-type registry & runtime** (§1.1) | P0 | XL | Now | The keystone. Unblocks branching, custom nodes, builder, subflows, SDK. Every deferred quarter adds hardcoded debt to unwind. |
-| **2**  | **Multi-tenancy + auth/authz + identity entities** (§6.1, §10) | P0 | XL | Now | Zero auth today. Unshippable as SaaS without it; retrofit cost compounds with every new query. |
-| **3**  | **Crash-recovery / reconciliation sweeper + lock hardening** (§4.4) | P0 | M | Now | Closes a silent-data-loss class: non-due, non-terminal, jobless instances are stranded forever. Cheap, urgent. |
-| **4**  | **Tier separation + horizontal worker scaling + configurable concurrency** (§4.1) | P0 | M | Now | The correctness to make it safe is already proven; this is mostly packaging. Gates all throughput. |
-| **5**  | **Conditional branching & dynamic routing (DAG + edges)** (§1.2) | P0 | L | Now | The defining capability of a "workflow engine." Co-designed with #1. |
-| **6**  | **AI cost + token + prompt-version observability** (§2.2) | P0 | M | Now | Running AI at scale blind to cost/provenance is a production gate. Feeds billing + dashboards. |
-| **7**  | **DLQ + outbound email rate limiting + operator job tooling** (§4.3) | P0 | M | Now | Poison-message recovery and deliverability/cost protection. Standard at scale; absent today. |
-| **8**  | **Human-approval / manual-intervention as resumable nodes** (§1.3) | P0 | M | Now | Completes the product's own flow (Approval stage). `MANUAL_REVIEW` is currently a terminal dead-end. Small atop #1. |
-| **9**  | **Engine extracted as standalone portable library + formal nodeGraph DSL** (§9) | P1 | M | Now | The literal promotion path into Pluvus V2 (the prototype's stated purpose). Already mostly structured for it. |
-| **10** | **Provider/model router + Anthropic/OpenRouter support, model-per-node** (§2.1) | P1 | M | Now | Quality (Claude for negotiation) + cost (local for classify). Cheap given existing `get_llm` seam. |
-| **11** | **Timer subsystem: per-node timeouts, delayed/scheduled nodes, general loops** (§1.4) | P1 | L | Now-ish | Generalizes the one hardcoded follow-up timer into a primitive. Land the table with #1's schema. |
-| **12** | **True graph builder UI (palette, connect, branch)** (§3.1) | P1 | L | After #1 | The product surface. React Flow already present but deliberately locked. |
-| **13** | **Negotiation funnel + conversion + node-duration + queue-latency dashboards** (§5) | P1 | L | Now | The product's headline value ("where is each creator") + the on-call surface. |
-| **14** | **Distributed scheduler (leader election) + bounded due-query** (§4.2) | P1 | M | With #4 | Required the moment #4 runs >1 replica. |
-| **15** | **Simulation / dry-run / test mode in the builder** (§3.3) | P1 | L | After #1 | Stops every workflow change being tested on real creators (who get real emails). Promote the existing harness. |
-| **16** | **Expression engine + workflow variables** (§3.2) | P1 | L | With #5 | The substrate branching conditions need; turns config into automation. |
-| **17** | **Per-node retry policy + Saga/compensation hooks** (§1.5) | P1 | L | Partial now | Reliability for money-adjacent nodes (onboarding/contract). Retry policy now, compensation when those nodes exist. |
-| **18** | **AI evals for negotiation & draft + CI gates** (§2.3) | P1 | L | Now-ish | The commercially risky AI surfaces have zero eval. Start the real-data pipeline now. |
-| **19** | **Cancellation + pause/resume** (§4.5) | P1 | M | Now | Basic operator control over live campaigns; absent today. (Replay/backfill defer.) |
-| **20** | **CQRS-lite projections + new tables (`AiCall`, `Timer`, `HumanTask`) + billing/usage metering** (§6.3, §7) | P1 | L | Now (tables) | Adds the tables now to avoid painful later migrations; enables analytics, billing, and replay later. |
-
-### Notably deferred (correct to wait)
-
-Full event-sourcing-as-primary-store · compensation logic until post-negotiation nodes exist
-· marketplace/import-export/sharing · custom-node/provider/trigger SDKs (design *after* #1's
-contracts stabilize) · instance version-migration · DR/backup formalization ·
-breakpoints/version-diff.
-
----
-
-## The one-sentence strategic read
-
-**Spend the next two quarters making the engine interpret a graph (#1), giving the platform
-an identity model (#2), and closing the silent-loss + cost-blindness + single-process gaps
-(#3, #4, #6, #7) — because those seven items are the load-bearing walls, and roughly
-everything else in the 2–3 year vision is either blocked by them or made cheap once they
-exist.**
+**The AI decision architecture is sound and safe — the remaining work to make the agents
+"work properly for users" is reliability of the email round-trip (never drop a reply, clean
+the text before classifying), confidence in correctness (a real negotiation eval set +
+decision observability), and a more capable model for the negotiation read — not a redesign.**

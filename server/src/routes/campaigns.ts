@@ -48,14 +48,17 @@ function isEmailish(value: string): boolean {
 
 // POST /campaigns — create a campaign
 router.post("/", async (req: Request, res: Response) => {
-  const { name, brand, objective, notes, notifyEmail, brandDescription } = req.body as {
-    name?: string;
-    brand?: string;
-    objective?: string;
-    notes?: string;
-    notifyEmail?: string;
-    brandDescription?: string;
-  };
+  const { name, brand, objective, notes, notifyEmail, brandDescription, deliverables, timeline } =
+    req.body as {
+      name?: string;
+      brand?: string;
+      objective?: string;
+      notes?: string;
+      notifyEmail?: string;
+      brandDescription?: string;
+      deliverables?: string;
+      timeline?: string;
+    };
 
   if (!name || typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
@@ -80,6 +83,8 @@ router.post("/", async (req: Request, res: Response) => {
       notes: typeof notes === "string" ? notes.trim() || null : null,
       notifyEmail: trimmedNotify || null,
       brandDescription: typeof brandDescription === "string" ? brandDescription.trim() || null : null,
+      deliverables: typeof deliverables === "string" ? deliverables.trim() || null : null,
+      timeline: typeof timeline === "string" ? timeline.trim() || null : null,
     });
     res.status(201).json({
       id: campaign.id,
@@ -88,6 +93,9 @@ router.post("/", async (req: Request, res: Response) => {
       objective: campaign.objective,
       notes: campaign.notes,
       notifyEmail: campaign.notifyEmail,
+      brandDescription: campaign.brandDescription,
+      deliverables: campaign.deliverables,
+      timeline: campaign.timeline,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {
@@ -111,6 +119,9 @@ router.get("/:id", async (req: Request, res: Response) => {
       objective: campaign.objective,
       notes: campaign.notes,
       notifyEmail: campaign.notifyEmail,
+      brandDescription: campaign.brandDescription,
+      deliverables: campaign.deliverables,
+      timeline: campaign.timeline,
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       workflows: campaign.workflows.map((w) => ({
@@ -168,6 +179,8 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
           brandName: campaign.brand,
           senderName: campaign.brand,
           ...(campaign.brandDescription ? { brandDescription: campaign.brandDescription } : {}),
+          ...(campaign.deliverables ? { deliverables: campaign.deliverables } : {}),
+          ...(campaign.timeline ? { timeline: campaign.timeline } : {}),
           ...node.config,
         },
       }),
@@ -197,11 +210,13 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
 
 // PATCH /campaigns/:id — update editable campaign fields (notifyEmail, etc.)
 router.patch("/:id", async (req: Request, res: Response) => {
-  const { notifyEmail, objective, notes, brandDescription } = req.body as {
+  const { notifyEmail, objective, notes, brandDescription, deliverables, timeline } = req.body as {
     notifyEmail?: string | null;
     objective?: string | null;
     notes?: string | null;
     brandDescription?: string | null;
+    deliverables?: string | null;
+    timeline?: string | null;
   };
 
   const patch: Parameters<typeof updateCampaign>[1] = {};
@@ -223,6 +238,12 @@ router.patch("/:id", async (req: Request, res: Response) => {
   if (brandDescription !== undefined) {
     patch.brandDescription = typeof brandDescription === "string" ? brandDescription.trim() || null : null;
   }
+  if (deliverables !== undefined) {
+    patch.deliverables = typeof deliverables === "string" ? deliverables.trim() || null : null;
+  }
+  if (timeline !== undefined) {
+    patch.timeline = typeof timeline === "string" ? timeline.trim() || null : null;
+  }
 
   try {
     const existing = await findCampaignById(req.params["id"]!);
@@ -238,6 +259,9 @@ router.patch("/:id", async (req: Request, res: Response) => {
       objective: campaign.objective,
       notes: campaign.notes,
       notifyEmail: campaign.notifyEmail,
+      brandDescription: campaign.brandDescription,
+      deliverables: campaign.deliverables,
+      timeline: campaign.timeline,
       updatedAt: campaign.updatedAt.toISOString(),
     });
   } catch (err) {

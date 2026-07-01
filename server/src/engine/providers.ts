@@ -208,6 +208,8 @@ export function buildNegotiationRequest(
   const { termFloor, termCeiling } = resolveBand(config);
   const senderName = typeof config["senderName"] === "string" ? config["senderName"] : undefined;
   const brandDescription = typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined;
+  const deliverables = typeof config["deliverables"] === "string" ? config["deliverables"] : undefined;
+  const timeline = typeof config["timeline"] === "string" ? config["timeline"] : undefined;
 
   // FIX-2: thread the last offer we actually proposed; fall back to the floor
   // only when there is no prior offer (round 0 / no history).
@@ -235,6 +237,8 @@ export function buildNegotiationRequest(
       termCeiling,
       ...(senderName ? { senderName } : {}),
       ...(brandDescription ? { brandDescription } : {}),
+      ...(deliverables ? { deliverables } : {}),
+      ...(timeline ? { timeline } : {}),
     },
   };
 }

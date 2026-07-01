@@ -7,7 +7,7 @@ import observabilityRouter from "./routes/observability.js";
 import campaignsRouter from "./routes/campaigns.js";
 import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
-import { listCreators } from "./db/creators.js";
+import creatorsRouter from "./routes/creators.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
@@ -69,25 +69,8 @@ app.use("/workflows", workflowsRouter);
 
 app.use("/manual-queue", manualQueueRouter);
 
-/** List all creators — used by the enrollment UI. */
-app.get("/creators", async (_req, res) => {
-  try {
-    const creators = await listCreators();
-    res.json(
-      creators.map((c) => ({
-        id: c.id,
-        name: c.name,
-        email: c.email,
-        handle: c.handle,
-        platform: c.platform,
-        niche: c.niche,
-      })),
-    );
-  } catch (err) {
-    console.error("[creators] list error:", err);
-    res.status(500).json({ error: "internal server error" });
-  }
-});
+// Creator roster + CSV import — used by the enrollment UI.
+app.use("/creators", creatorsRouter);
 
 startWorkers();
 startScheduler();

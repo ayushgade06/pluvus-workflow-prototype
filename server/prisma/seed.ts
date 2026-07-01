@@ -4,8 +4,10 @@
  * Creates:
  *   - 1 Workflow (the in-scope linear path)
  *   - 1 WorkflowVersion (published snapshot with nodeGraph)
- *   - 8 mocked Creators
- *   - 8 ExecutionInstances, one per creator, all pinned to the version
+ *
+ * Creators are intentionally NOT seeded: the roster starts empty and is
+ * populated only via CSV upload (Enroll tab → Upload CSV). Because there are no
+ * creators, no ExecutionInstances are seeded either.
  *
  * Run with: npm run db:seed  (from server/)
  */
@@ -102,27 +104,6 @@ const NODE_GRAPH: NodeSnapshot[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Mocked creators
-// ---------------------------------------------------------------------------
-
-const MOCK_CREATORS = [
-  {
-    name: "Alex Rivera",
-    email: "ayushgade23@gmail.com",
-    handle: "@alexrivera",
-    niche: "fitness",
-    platform: "instagram",
-  },
-  {
-    name: "Robin Singh",
-    email: "notbaka2303@gmail.com",
-    handle: "@robinsingh",
-    niche: "finance",
-    platform: "youtube",
-  },
-];
-
-// ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
 
@@ -163,41 +144,7 @@ async function main() {
 
   console.log(`  WorkflowVersion: ${workflowVersion.id} (v${workflowVersion.version})`);
 
-  // Upsert creators
-  const createdCreators = [];
-  for (const c of MOCK_CREATORS) {
-    const creator = await prisma.creator.upsert({
-      where: { email: c.email },
-      update: {},
-      create: c,
-    });
-    createdCreators.push(creator);
-  }
-
-  console.log(`  Creators: ${createdCreators.length} upserted`);
-
-  // Upsert execution instances — one per creator, pinned to the version
-  let instanceCount = 0;
-  for (const creator of createdCreators) {
-    await prisma.executionInstance.upsert({
-      where: {
-        workflowVersionId_creatorId: {
-          workflowVersionId: workflowVersion.id,
-          creatorId: creator.id,
-        },
-      },
-      update: {},
-      create: {
-        workflowVersionId: workflowVersion.id,
-        creatorId: creator.id,
-        currentState: "ENROLLED",
-        currentNodeId: "node_import",
-      },
-    });
-    instanceCount++;
-  }
-
-  console.log(`  ExecutionInstances: ${instanceCount} upserted`);
+  console.log("  Creators: none seeded — populate the roster via CSV upload.");
   console.log("Done.");
 }
 

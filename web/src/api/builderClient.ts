@@ -13,6 +13,8 @@ import type {
   WorkflowVersion,
   WorkflowExecutionSummary,
   CreatorItem,
+  CreatorImportRow,
+  CreatorImportResponse,
   DraftNode,
   PublishResponse,
   EnrollResponse,
@@ -89,6 +91,8 @@ export function createCampaign(data: {
   notes?: string;
   notifyEmail?: string;
   brandDescription?: string;
+  deliverables?: string;
+  timeline?: string;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }
@@ -179,6 +183,12 @@ export function useCreators() {
   });
 }
 
+/** Bulk-import creators from parsed CSV rows. Caller should invalidate the
+ * ["creators"] query afterward (see useBuilderInvalidator.invalidateCreators). */
+export function importCreators(rows: CreatorImportRow[]) {
+  return postJson<CreatorImportResponse>("/api/creators/import", { rows });
+}
+
 // ---------------------------------------------------------------------------
 // Enroll + Launch
 // ---------------------------------------------------------------------------
@@ -225,5 +235,6 @@ export function useBuilderInvalidator(workflowId: string | null) {
     invalidateManualQueue: () =>
       qc.invalidateQueries({ queryKey: ["manual-queue", workflowId] }),
     invalidateCampaigns: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+    invalidateCreators: () => qc.invalidateQueries({ queryKey: ["creators"] }),
   };
 }

@@ -23,6 +23,10 @@ export interface NegotiationRequest {
     tone?: string;
     senderName?: string;
     brandDescription?: string;
+    /** Brand-supplied scope the AI may state as fact (e.g. "3 IG Reels"). */
+    deliverables?: string;
+    /** Brand-supplied go-live timeline; the AI states it only when present. */
+    timeline?: string;
   };
 }
 
@@ -65,6 +69,11 @@ export interface DraftRequest {
   /** What the brand does / sells — lets the LLM answer creator questions like
    *  "what does your brand do?" without hallucinating. */
   brandDescription?: string | undefined;
+  /** Brand-supplied deliverables (e.g. "3 IG Reels + 1 YouTube integration")
+   *  so outreach/counter copy states real scope instead of "to be finalized". */
+  deliverables?: string | undefined;
+  /** Brand-supplied go-live timeline; stated only when present, never invented. */
+  timeline?: string | undefined;
 }
 
 export interface DraftResponse {

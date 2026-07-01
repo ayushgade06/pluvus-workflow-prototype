@@ -590,6 +590,17 @@ async function main(): Promise<void> {
 
   console.log(`  Workflow ${workflow.id} v${version.version}`);
 
+  // Creator/instance seeding is intentionally disabled: the roster is populated
+  // only via CSV upload (Enroll tab → Upload CSV). The demo scenarios below all
+  // create creators + instances, so the whole loop is skipped. The scenario data
+  // (SCENARIOS / buildInstance) is left in place so this can be re-enabled by
+  // deleting this early return if the demo dataset is ever needed again.
+  console.log(
+    "  Demo creators/instances disabled — roster is CSV-only. Skipping scenarios.",
+  );
+  console.log("Done.");
+  return;
+
   for (const s of SCENARIOS) {
     await buildInstance(version.id, s);
     console.log(`  ✓ ${s.creator.name.padEnd(18)} → ${s.finalState}`);

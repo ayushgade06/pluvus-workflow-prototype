@@ -1,9 +1,21 @@
-import { useState, useMemo } from "react";
-import { useCreators, enrollCreators, useWorkflowExecution } from "../../api/builderClient";
+import { useState, useMemo, useRef } from "react";
+import {
+  useCreators,
+  enrollCreators,
+  importCreators,
+  useWorkflowExecution,
+  useBuilderInvalidator,
+} from "../../api/builderClient";
+import { parseCsv } from "../../lib/parseCsv";
 import { colors, radii, font } from "../../theme";
 import { Button, Input, StatTile, EmptyState, SkeletonRows } from "../ds";
 import { useToast } from "../ds";
-import type { EnrollResponse, WorkflowDetail, CreatorItem } from "../../api/builderTypes";
+import type {
+  EnrollResponse,
+  WorkflowDetail,
+  CreatorItem,
+  CreatorImportResponse,
+} from "../../api/builderTypes";
 
 interface Props {
   workflow: WorkflowDetail;
@@ -13,13 +25,53 @@ interface Props {
 export function EnrollTab({ workflow, onEnrolled }: Props) {
   const { data: creators, isLoading } = useCreators();
   const { data: execution } = useWorkflowExecution(workflow.id);
+  const { invalidateCreators } = useBuilderInvalidator(workflow.id);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<EnrollResponse | null>(null);
+  const [importResult, setImportResult] = useState<CreatorImportResponse | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
   const hasVersion = !!workflow.latestVersion;
+
+  async function handleFile(file: File) {
+    setImporting(true);
+    setImportResult(null);
+    setResult(null);
+    try {
+      const text = await file.text();
+      const { rows, missingEmailColumn } = parseCsv(text);
+      if (rows.length === 0) {
+        toast.error("That CSV has no data rows.");
+        return;
+      }
+      if (missingEmailColumn) {
+        toast.error('CSV needs an "email" column.');
+        return;
+      }
+      const res = await importCreators(rows);
+      setImportResult(res);
+      // Refetch the roster so the new creators appear, then pre-select them.
+      await invalidateCreators();
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const c of res.creators) next.add(c.id);
+        return next;
+      });
+      const parts = [`${res.created} new`, `${res.updated} updated`];
+      if (res.skipped > 0) parts.push(`${res.skipped} skipped`);
+      toast.success(`Imported ${res.creators.length} creator${res.creators.length !== 1 ? "s" : ""} · ${parts.join(", ")}.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "CSV import failed");
+    } finally {
+      setImporting(false);
+      // Reset the input so re-selecting the same file re-triggers onChange.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
 
   const filtered = useMemo(() => {
     if (!creators) return [];
@@ -105,7 +157,33 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         </Banner>
       )}
 
-      {/* Search + select all */}
+      {importResult && (
+        <Banner color={importResult.errors.length > 0 ? colors.warning : colors.success}>
+          <div>
+            ✓ Imported {importResult.created + importResult.updated} creator
+            {importResult.created + importResult.updated !== 1 ? "s" : ""}
+            {" "}({importResult.created} new · {importResult.updated} updated
+            {importResult.skipped > 0 ? ` · ${importResult.skipped} skipped` : ""}) — pre-selected below.
+          </div>
+          {importResult.errors.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: "pointer" }}>
+                {importResult.errors.length} row{importResult.errors.length !== 1 ? "s" : ""} skipped
+              </summary>
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {importResult.errors.slice(0, 20).map((e) => (
+                  <li key={e.row}>Row {e.row}: {e.reason}</li>
+                ))}
+                {importResult.errors.length > 20 && (
+                  <li>…and {importResult.errors.length - 20} more</li>
+                )}
+              </ul>
+            </details>
+          )}
+        </Banner>
+      )}
+
+      {/* Search + import + select all */}
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
         <Input
           value={filter}
@@ -114,6 +192,23 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           aria-label="Search creators"
           style={{ flex: 1 }}
         />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleFile(f);
+          }}
+        />
+        <Button
+          variant="secondary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={importing}
+        >
+          {importing ? "Importing…" : "Upload CSV"}
+        </Button>
         <Button variant="secondary" onClick={toggleAll} disabled={filtered.length === 0}>
           {allSelected ? "Deselect all" : "Select all"}
         </Button>

@@ -126,6 +126,17 @@ model Campaign {
   /// hallucinating. Stamped into every node's config as brandDescription.
   brandDescription String?
 
+  /// What the creator is expected to produce (e.g. "3 IG Reels + 1 YouTube
+  /// integration"). Free text supplied by the brand. Stamped into every node's
+  /// config as `deliverables` so outreach/negotiation copy can state real scope
+  /// instead of "to be finalized". Nullable: brands may leave it blank.
+  deliverables String?
+
+  /// When the content should go live (e.g. "content live by Sept 15, 2026").
+  /// Free text supplied by the brand. Stamped into node config as `timeline`.
+  /// The AI states it only when present, and never invents one when absent.
+  timeline String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
