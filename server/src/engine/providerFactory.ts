@@ -101,6 +101,13 @@ export function negotiationProvider(): NegotiationProvider {
 // so an agent outage becomes "route to a human", never "lose or strand".
 
 export class AgentProviderAdapter implements IAgentProvider {
+  // The real adapter generates LLM copy: a null from draftEmail() means
+  // generation failed after retries, so offer/counter turns escalate to a human
+  // rather than send fallback copy. (The MockNegotiationProvider.draft never
+  // returns null — it produces template copy — so this only fires on a genuine
+  // real-generation failure.)
+  readonly generatesDraftCopy = true;
+
   constructor(
     private readonly classifier: ClassificationProvider,
     private readonly negotiator: NegotiationProvider,
@@ -145,7 +152,13 @@ export class AgentProviderAdapter implements IAgentProvider {
   }
 
   async draftEmail(
-    purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding",
+    purpose:
+      | "initial_outreach"
+      | "follow_up"
+      | "counter_offer"
+      | "acceptance"
+      | "onboarding"
+      | "reward_confirmation",
     creator: Creator,
     config: Record<string, unknown>,
     extra?: {
@@ -156,45 +169,68 @@ export class AgentProviderAdapter implements IAgentProvider {
       dealDescription?: string;
     },
   ): Promise<EmailDraft | null> {
-    try {
-      return await this.negotiator.draft({
-        purpose,
-        creatorName: creator.name,
-        creatorPlatform: creator.platform ?? undefined,
-        creatorNiche: creator.niche ?? undefined,
-        senderName: typeof config["senderName"] === "string" ? config["senderName"] : undefined,
-        brandDescription: typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined,
-        deliverables: typeof config["deliverables"] === "string" ? config["deliverables"] : undefined,
-        timeline: typeof config["timeline"] === "string" ? config["timeline"] : undefined,
-        round: extra?.round,
-        proposedTerms: extra?.proposedTerms,
-        creatorReply: extra?.creatorReply,
-        creatorRequestedRate: extra?.creatorRequestedRate,
-        dealDescription: extra?.dealDescription,
-        // Strip the internal price band before handing config to the copy
-        // generator. The negotiation prompt is told to keep floor/ceiling
-        // secret, but the draft endpoint was being handed the raw band
-        // (minBudget/maxBudget/termFloor/termCeiling) in campaignContext and
-        // writing it into the email (e.g. "in the $200-$500 range") — which the
-        // output guard then blocks. The draft only ever needs the offer rate
-        // (via proposedTerms), never the band. (Defense in depth: the output
-        // guard remains the backstop if a model still emits a bound.)
-        campaignContext: stripBandFromContext(config),
-      });
-    } catch (err) {
-      // Degrade to null — the executor falls back to template-based email.draft()
-      // so outreach/follow-up still go out when only copy generation is down.
-      console.error(
-        `[agentProvider] draftEmail failed, falling back to template copy: ${errMessage(err)}`,
-      );
-      return null;
+    const request = {
+      purpose,
+      creatorName: creator.name,
+      creatorPlatform: creator.platform ?? undefined,
+      creatorNiche: creator.niche ?? undefined,
+      senderName: typeof config["senderName"] === "string" ? config["senderName"] : undefined,
+      brandDescription: typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined,
+      deliverables: typeof config["deliverables"] === "string" ? config["deliverables"] : undefined,
+      timeline: typeof config["timeline"] === "string" ? config["timeline"] : undefined,
+      round: extra?.round,
+      proposedTerms: extra?.proposedTerms,
+      creatorReply: extra?.creatorReply,
+      creatorRequestedRate: extra?.creatorRequestedRate,
+      dealDescription: extra?.dealDescription,
+      // Strip the internal price band before handing config to the copy
+      // generator. The negotiation prompt is told to keep floor/ceiling
+      // secret, but the draft endpoint was being handed the raw band
+      // (minBudget/maxBudget/termFloor/termCeiling) in campaignContext and
+      // writing it into the email (e.g. "in the $200-$500 range") — which the
+      // output guard then blocks. The draft only ever needs the offer rate
+      // (via proposedTerms), never the band. (Defense in depth: the output
+      // guard remains the backstop if a model still emits a bound.)
+      campaignContext: stripBandFromContext(config),
+    };
+
+    // Retry the draft call before degrading. A counter/offer email that fails
+    // to generate must NOT silently fall back to the sparse negotiate
+    // responseDraft (which explains only the fee and reads as a one-liner) — the
+    // executor escalates to MANUAL_REVIEW on null. But the local LLM is often
+    // just SLOW/transiently flaky, so we retry a couple of times first to keep
+    // automation flowing on a blip instead of paging a human for it.
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= DRAFT_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.negotiator.draft(request);
+      } catch (err) {
+        lastErr = err;
+        console.error(
+          `[agentProvider] draftEmail attempt ${attempt}/${DRAFT_MAX_ATTEMPTS} failed` +
+            `${attempt < DRAFT_MAX_ATTEMPTS ? ", retrying" : ""}: ${errMessage(err)}`,
+        );
+      }
     }
+    // Exhausted retries — degrade to null. Outreach/follow-up fall back to
+    // template copy; the negotiation executor escalates the turn to a human so
+    // no low-quality auto-copy reaches the creator.
+    console.error(
+      `[agentProvider] draftEmail failed after ${DRAFT_MAX_ATTEMPTS} attempts, degrading to null: ${errMessage(lastErr)}`,
+    );
+    return null;
   }
 }
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// How many times to try the /draft copy generation before degrading to null.
+// The local LLM is frequently slow/transiently flaky, so a retry usually
+// succeeds on a blip; only a persistent failure degrades (→ escalation on the
+// negotiation path).
+const DRAFT_MAX_ATTEMPTS = 3;
 
 // Keys carrying the internal price band. These must NOT reach the email copy
 // generator — the email may reference only the agreed/offer rate (via

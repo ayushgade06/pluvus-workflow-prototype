@@ -3,4 +3,7 @@ export { executeInitialOutreach } from "./initialOutreach.js";
 export { executeFollowUp } from "./followUp.js";
 export { executeReplyDetection } from "./replyDetection.js";
 export { executeNegotiation } from "./negotiation.js";
+export { executeRewardSetup } from "./rewardSetup.js";
+export { executeRewardReply } from "./rewardReply.js";
+export { executePaymentInfo, executePaymentSubmission } from "./paymentInfo.js";
 export { executeEnd } from "./end.js";

@@ -7,6 +7,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
+import { describeDeal } from "../dealDescription.js";
 
 // FIX-11: outbound AI sends use the shared reserve-before-send helper
 // (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
@@ -32,6 +33,28 @@ function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
   };
 }
 
+// Build the MANUAL_REVIEW NodeResult emitted when AI copy generation for an
+// OFFER turn (present_offer / accept / counter) fails after retries. These turns
+// PRESENT concrete terms (fee, commission, deliverables) and must read as a
+// proper, well-formatted reply. The old behavior silently fell back to the
+// sparse `negotiate` responseDraft — a one-line "$350.0" note that ignored the
+// creator's questions. Rather than send that, route the turn to a human (the
+// draftEmail path already retried before returning null). No email is sent.
+function draftUnavailable(round: number, purpose: string): NodeResult {
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
+    eventType: "NEGOTIATION_TURN",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "draft_generation_failed",
+      purpose,
+      round,
+    },
+  };
+}
+
 // Best-effort extraction of a dollar amount the creator named in their reply
 // (e.g. "I charge $480" / "480 dollars" / "my rate is 480"). Used purely to let
 // the counter copy ACKNOWLEDGE their ask — never to make the money decision
@@ -53,7 +76,7 @@ export async function executeNegotiation(
   email: IEmailProvider,
   agent: IAgentProvider,
 ): Promise<NodeResult> {
-  const { instance, node, creator } = ctx;
+  const { instance, node, nodeGraph, creator } = ctx;
   const config = node.config;
 
   if (instance.currentState !== "NEGOTIATING") {
@@ -62,7 +85,21 @@ export async function executeNegotiation(
     );
   }
 
+  // When the workflow has a Reward Setup node, it owns the post-acceptance
+  // confirmation email ("Campaign Agreement Confirmation" → asks the creator to
+  // reply "I Agree"). In that case the negotiation ACCEPT must NOT also send its
+  // own onboarding/acceptance email, or the creator gets two overlapping emails.
+  // Legacy workflows (no REWARD_SETUP node) keep sending the onboarding email as
+  // the final touch.
+  const hasRewardSetup = nodeGraph.some((n) => n.type === "REWARD_SETUP");
+
   const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
+
+  // Describe the deal structure (fixed fee / commission / both) from THIS
+  // (NEGOTIATION) node's config, exactly as outreach/follow-up do. Threading it
+  // into the offer/counter copy lets the email explain WHAT KIND of deal this is
+  // (e.g. "hybrid — fixed fee plus commission") instead of only quoting a fee.
+  const dealDescription = describeDeal(config);
 
   // Hard stop — enforce maxRounds before calling the agent.
   // This prevents the agent from even being consulted past the ceiling.
@@ -110,7 +147,16 @@ export async function executeNegotiation(
       const aiDraft = await agent.draftEmail("counter_offer", creator, config, {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
+        ...(dealDescription ? { dealDescription } : {}),
       });
+      // A present-offer email PRESENTS concrete terms. When the REAL AI copy
+      // generator returns null it means generation failed after retries — escalate
+      // to a human rather than send the sparse negotiate responseDraft that only
+      // quotes a fee. (For the mock provider, null just means "use the template";
+      // that path keeps the existing fallback so mock-mode dev/harnesses work.)
+      if (aiDraft === null && agent.generatesDraftCopy) {
+        return draftUnavailable(instance.negotiationRound, "present_offer");
+      }
       const body = aiDraft?.body ?? message;
       const draft = aiDraft ?? await email.draft(creator, body, config);
 
@@ -146,6 +192,25 @@ export async function executeNegotiation(
     }
 
     case "accept": {
+      // Reward Setup present → it owns the post-acceptance email. Skip the
+      // negotiation's own onboarding/acceptance send entirely and just transition
+      // to ACCEPTED; the Reward Setup node then sends the single, properly
+      // formatted "Campaign Agreement Confirmation" (bulleted terms + "I Agree").
+      if (hasRewardSetup) {
+        return {
+          nextState: "ACCEPTED",
+          nextNodeId: null,
+          completedAt: new Date(),
+          eventType: "NEGOTIATION_TURN",
+          eventPayload: {
+            outcome,
+            round: instance.negotiationRound,
+            message,
+            ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          },
+        };
+      }
+
       // An ACCEPT now always carries a real agreed rate (the agent only
       // returns accept when a concrete number is on the table — a bare "I'm
       // interested" with no number counters instead). On a genuine, money-
@@ -159,8 +224,16 @@ export async function executeNegotiation(
       const extra = {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
+        ...(dealDescription ? { dealDescription } : {}),
       };
       const aiDraft = await agent.draftEmail(purpose, creator, config, extra);
+      // The acceptance/onboarding email confirms the agreed rate and lays out
+      // next steps — too important to degrade to the sparse fallback. When the
+      // REAL AI generator returns null (retries exhausted), escalate to a human.
+      // (Mock null → keep the template fallback so harnesses still close deals.)
+      if (aiDraft === null && agent.generatesDraftCopy) {
+        return draftUnavailable(instance.negotiationRound, purpose);
+      }
       const body = aiDraft?.body ?? message;
 
       const draft = aiDraft ?? await email.draft(creator, body, config);
@@ -252,8 +325,19 @@ export async function executeNegotiation(
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
         ...(creatorRequestedRate !== undefined ? { creatorRequestedRate } : {}),
+        ...(dealDescription ? { dealDescription } : {}),
       };
       const aiDraft = await agent.draftEmail("counter_offer", creator, config, counterExtra);
+      // The counter email presents the fee + commission + deliverables and
+      // should answer the creator's questions. When the REAL AI generator returns
+      // null (retries exhausted), escalate to a human — do NOT send the sparse
+      // negotiate responseDraft (the "$350.0" one-liner that ignored the
+      // creator's questions). The round was NOT yet advanced (that only happens
+      // on a successful send below), so a human picks up at the same point.
+      // (Mock null → keep the template fallback so mock-mode counters still send.)
+      if (aiDraft === null && agent.generatesDraftCopy) {
+        return draftUnavailable(newRound, "counter_offer");
+      }
       const body = aiDraft?.body ?? message;
 
       const draft = aiDraft ?? await email.draft(creator, body, config);

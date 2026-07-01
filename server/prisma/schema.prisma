@@ -35,8 +35,22 @@ enum InstanceState {
   FOLLOWED_UP
   REPLY_RECEIVED
   NEGOTIATING
-  // Terminal states
+  // Negotiation succeeded on an agreed rate. No longer terminal: the Reward
+  // Setup node auto-runs from here to finalize the commercial agreement.
   ACCEPTED
+  // Reward Setup: confirmation email sent; waiting on the creator to reply
+  // "I Agree". Stays here until an agreement reply is detected.
+  REWARD_PENDING
+  // Reward Setup: creator confirmed the agreement. No longer terminal: the
+  // Payment Info node auto-runs from here to collect the creator's payout info.
+  REWARD_CONFIRMED
+  // Payment Info: payout form emailed; waiting on the creator to submit their
+  // payout details via the hosted form. Stays here until a submission arrives.
+  PAYMENT_PENDING
+  // Payment Info: creator submitted their payout information. Terminal for now;
+  // the future Content Brief node will pick up from here.
+  PAYMENT_RECEIVED
+  // Terminal states
   REJECTED
   OPTED_OUT
   NO_RESPONSE
@@ -53,6 +67,15 @@ enum NodeType {
   FOLLOW_UP
   REPLY_DETECTION
   NEGOTIATION
+  // Finalizes the commercial agreement after a successful negotiation: records
+  // the agreed fee/commission/deliverables, emails the creator for confirmation,
+  // and waits for their agreement reply.
+  REWARD_SETUP
+  // Collects the creator's payout information after they confirm the agreement:
+  // emails a link to a hosted payout form and waits for the submission before
+  // handing control back to the workflow engine. New terminal node (before the
+  // future Content Brief node).
+  PAYMENT_INFO
   END
 }
 
@@ -92,6 +115,16 @@ enum EventType {
   MANUAL_REVIEW_FLAGGED
   // Manual queue: the brand was emailed that a creator needs human review.
   BRAND_NOTIFIED
+  // Reward Setup: the agreement-confirmation email was sent to the creator.
+  REWARD_SETUP_SENT
+  // Reward Setup: the creator replied confirming the agreement.
+  REWARD_CONFIRMED
+  // Reward Setup: an inbound reply that did NOT confirm (kept in REWARD_PENDING).
+  REWARD_REPLY_UNCONFIRMED
+  // Payment Info: the payout-information request email was sent to the creator.
+  PAYMENT_INFO_SENT
+  // Payment Info: the creator submitted their payout information via the form.
+  PAYMENT_RECEIVED
 }
 
 /// Lifecycle of a Workflow definition.
@@ -250,6 +283,7 @@ model ExecutionInstance {
   messages        Message[]
   events          Event[]
   brandNotifications BrandNotification[]
+  paymentInfo        PaymentInfo?
 
   @@unique([workflowVersionId, creatorId])
 }
@@ -351,6 +385,61 @@ model BrandNotification {
   error      String?
 
   createdAt DateTime @default(now())
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([instanceId])
+}
+
+/// The payout information collected by the Payment Info node.
+///
+/// One row per ExecutionInstance (created when the Payment Info node runs). The
+/// `token` is a secure, unguessable id embedded in the hosted payout-form link
+/// (http://localhost:3001/payment/{token}); it resolves back to the creator,
+/// campaign, and workflow execution via the parent ExecutionInstance. No auth is
+/// required — the token IS the capability (prototype scope).
+///
+/// Extensibility: additional payout fields (tax info, routing numbers, invoice
+/// refs, verification status) can be added later either as first-class columns
+/// or inside `extra` (free-form JSON) without changing the node's control flow.
+///
+/// status:
+///   PAYMENT_PENDING  — link sent; the creator has not submitted the form yet.
+///   PAYMENT_RECEIVED — the creator submitted; the node completes and the engine
+///                      resumes into the next connected node.
+enum PaymentInfoStatus {
+  PAYMENT_PENDING
+  PAYMENT_RECEIVED
+}
+
+enum PayoutMethod {
+  PAYPAL
+  WISE
+  BANK_TRANSFER
+}
+
+model PaymentInfo {
+  id         String            @id @default(cuid())
+  instanceId String            @unique
+  /// Secure, unguessable token used in the hosted form URL. The capability that
+  /// authorizes an unauthenticated submission for exactly this instance.
+  token      String            @unique
+  status     PaymentInfoStatus @default(PAYMENT_PENDING)
+
+  /// Submitted payout fields. Null until the creator submits the form.
+  method            PayoutMethod?
+  /// PayPal/Wise email or bank account identifier — free text (prototype: not
+  /// validated against any payment provider).
+  accountIdentifier String?
+  country           String?
+  notes             String?
+  /// Room to grow: any future payout fields collected before a dedicated column
+  /// exists (tax id, routing number, invoice ref, verification result, …).
+  extra             Json?
+
+  createdAt   DateTime  @default(now())
+  submittedAt DateTime?
+  updatedAt   DateTime  @updatedAt
 
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 

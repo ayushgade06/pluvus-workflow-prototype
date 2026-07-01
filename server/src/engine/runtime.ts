@@ -19,8 +19,14 @@ import {
   executeFollowUp,
   executeReplyDetection,
   executeNegotiation,
+  executeRewardSetup,
+  executeRewardReply,
+  executePaymentInfo,
+  executePaymentSubmission,
   executeEnd,
 } from "./executors/index.js";
+import { markPaymentReceived } from "../db/index.js";
+import type { PayoutMethod } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // StaleInstanceError — thrown when OCC detects a concurrent state change
@@ -71,6 +77,34 @@ export class WorkflowRuntime {
 
     if (nodeId) {
       node = nodeGraph.find((n) => n.id === nodeId);
+    }
+
+    // Reward Setup handoff: the negotiation ACCEPT clears currentNodeId (it sets
+    // nextNodeId: null on the terminal-looking transition). When the instance is
+    // in the Reward Setup lifecycle (ACCEPTED just succeeded, or REWARD_PENDING),
+    // resolve to the REWARD_SETUP node so its executor runs rather than falling
+    // back to the first node. This keeps the negotiation executor untouched.
+    if (
+      !node &&
+      (instance.currentState === "ACCEPTED" || instance.currentState === "REWARD_PENDING")
+    ) {
+      node = nodeGraph.find((n) => n.type === "REWARD_SETUP");
+    }
+
+    // Payment Info handoff: mirrors the Reward Setup resolution above. In the
+    // Payment Info lifecycle (REWARD_CONFIRMED just landed, or PAYMENT_PENDING)
+    // the PAYMENT_INFO node is authoritative. REWARD_CONFIRMED can ONLY mean
+    // "hand off to Payment Info" (the reward node never handles it), so resolve to
+    // the PAYMENT_INFO node even when currentNodeId still points at the reward
+    // node — not just when it failed to resolve. This keeps dispatch state-driven.
+    if (
+      instance.currentState === "REWARD_CONFIRMED" ||
+      instance.currentState === "PAYMENT_PENDING"
+    ) {
+      const paymentNode = nodeGraph.find((n) => n.type === "PAYMENT_INFO");
+      if (paymentNode && node?.type !== "PAYMENT_INFO") {
+        node = paymentNode;
+      }
     }
 
     if (!node) {
@@ -283,6 +317,130 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // handleRewardReply
+  // -------------------------------------------------------------------------
+  // An inbound reply arrived while the instance is in REWARD_PENDING (Reward
+  // Setup waiting on the creator to confirm the agreement). This does NOT go
+  // through the negotiation/first-reply classifier: it persists the inbound
+  // message and steps the Reward Setup node, whose REWARD_PENDING dispatch runs
+  // executeRewardReply (agreement → REWARD_CONFIRMED, else stay REWARD_PENDING).
+  //
+  // Kept separate from injectReply (which forces REPLY_RECEIVED, valid only from
+  // the AWAITING_REPLY family) so the reward-confirmation reply stays inside the
+  // Reward Setup node and the four locked nodes are untouched.
+
+  async handleRewardReply(
+    instanceId: string,
+    opts: {
+      subject: string;
+      body: string;
+      threadId?: string;
+      externalMessageId?: string;
+      source?: TransitionSource;
+      worker?: string | undefined;
+      queueJobId?: string | undefined;
+    },
+  ): Promise<ExecutionContext> {
+    const instance = await findInstanceById(instanceId);
+    if (!instance) {
+      throw new Error(`Instance not found: ${instanceId}`);
+    }
+    if (instance.currentState !== "REWARD_PENDING") {
+      throw new Error(
+        `handleRewardReply expects REWARD_PENDING state, got ${instance.currentState}`,
+      );
+    }
+
+    const now = new Date();
+    const externalMessageId =
+      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
+
+    // Persist the inbound reply so executeRewardReply can read it (same contract
+    // as injectReply → executeReplyDetection).
+    await createMessage({
+      instance: { connect: { id: instanceId } },
+      direction: "INBOUND",
+      subject: opts.subject,
+      body: opts.body,
+      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
+      externalMessageId,
+      receivedAt: now,
+    });
+
+    await appendEvent({
+      instance: { connect: { id: instanceId } },
+      type: "INBOUND_REPLY_RECEIVED",
+      nodeId: instance.currentNodeId ?? null,
+      payload: { subject: opts.subject, externalMessageId, rewardReply: true },
+      occurredAt: now,
+    });
+
+    // Step the node — dispatch sees REWARD_PENDING and runs executeRewardReply,
+    // reusing the standard OCC + event-writing path in stepInstance.
+    return this.stepInstance(instanceId, {
+      source: opts.source ?? "inbound-email",
+      worker: opts.worker,
+      queueJobId: opts.queueJobId,
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // handlePaymentSubmission
+  // -------------------------------------------------------------------------
+  // The creator submitted the hosted payout form while the instance is in
+  // PAYMENT_PENDING. This persists the payout fields (markPaymentReceived) and
+  // then steps the Payment Info node, whose PAYMENT_PENDING dispatch runs
+  // executePaymentSubmission (→ PAYMENT_RECEIVED, exposing the output
+  // connection). The engine then resumes into the next connected node — the node
+  // is NOT executed by this handler.
+  //
+  // Kept separate from injectReply/handleRewardReply because a form submission is
+  // not an inbound email: there is no Message row and the transition is driven by
+  // stored payout data, not a classified reply.
+
+  async handlePaymentSubmission(
+    instanceId: string,
+    submission: {
+      method: PayoutMethod;
+      accountIdentifier: string;
+      country?: string | null;
+      notes?: string | null;
+    },
+    opts: {
+      source?: TransitionSource;
+      worker?: string | undefined;
+      queueJobId?: string | undefined;
+    } = {},
+  ): Promise<ExecutionContext> {
+    const instance = await findInstanceById(instanceId);
+    if (!instance) {
+      throw new Error(`Instance not found: ${instanceId}`);
+    }
+    if (instance.currentState !== "PAYMENT_PENDING") {
+      throw new Error(
+        `handlePaymentSubmission expects PAYMENT_PENDING state, got ${instance.currentState}`,
+      );
+    }
+
+    // Persist the payout fields BEFORE stepping, so executePaymentSubmission
+    // reads a PAYMENT_RECEIVED row (same contract as inbound reply persistence).
+    await markPaymentReceived(instanceId, {
+      method: submission.method,
+      accountIdentifier: submission.accountIdentifier,
+      country: submission.country ?? null,
+      notes: submission.notes ?? null,
+    });
+
+    // Step the node — dispatch sees PAYMENT_PENDING and runs
+    // executePaymentSubmission, reusing the standard OCC + event-writing path.
+    return this.stepInstance(instanceId, {
+      source: opts.source ?? "payment-form",
+      worker: opts.worker,
+      queueJobId: opts.queueJobId,
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // runUntilWaiting
   // -------------------------------------------------------------------------
 
@@ -297,6 +455,20 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // Backward compatibility: a workflow published before Reward Setup has no
+      // REWARD_SETUP node. For those, ACCEPTED is effectively terminal (there is
+      // nowhere to advance to), so stop here rather than trying to step it.
+      if (state === "ACCEPTED" && !hasRewardSetupNode(ctx.nodeGraph)) {
+        return state;
+      }
+
+      // Backward compatibility: a workflow published before Payment Info has no
+      // PAYMENT_INFO node. For those, REWARD_CONFIRMED is effectively terminal,
+      // so stop here rather than trying to step it.
+      if (state === "REWARD_CONFIRMED" && !hasPaymentInfoNode(ctx.nodeGraph)) {
+        return state;
+      }
+
       // Stop at AWAITING_REPLY — harness injects a reply or triggers follow-ups manually
       if (state === "AWAITING_REPLY") {
         return state;
@@ -307,8 +479,44 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // Stop at REWARD_PENDING — Reward Setup waits for the creator's agreement
+      // reply (delivered via handleRewardReply), same as AWAITING_REPLY.
+      if (state === "REWARD_PENDING") {
+        return state;
+      }
+
+      // Stop at PAYMENT_PENDING — Payment Info waits for the creator's payout
+      // form submission (delivered via handlePaymentSubmission), same as above.
+      if (state === "PAYMENT_PENDING") {
+        return state;
+      }
+
       ctx = await this.stepInstance(instanceId);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // rewardSetupApplies — does this instance's workflow have a Reward Setup node?
+  // -------------------------------------------------------------------------
+  // Used by the node-execution worker to decide whether an ACCEPTED instance
+  // should auto-chain into Reward Setup. Legacy workflows (no REWARD_SETUP node)
+  // return false so ACCEPTED stays put — the pre-Reward-Setup terminal behavior.
+
+  async rewardSetupApplies(instanceId: string): Promise<boolean> {
+    const ctx = await this.loadContext(instanceId);
+    return hasRewardSetupNode(ctx.nodeGraph);
+  }
+
+  // -------------------------------------------------------------------------
+  // paymentInfoApplies — does this instance's workflow have a Payment Info node?
+  // -------------------------------------------------------------------------
+  // Used by the node-execution worker to decide whether a REWARD_CONFIRMED
+  // instance should auto-chain into Payment Info. Legacy workflows (no
+  // PAYMENT_INFO node) return false so REWARD_CONFIRMED stays terminal.
+
+  async paymentInfoApplies(instanceId: string): Promise<boolean> {
+    const ctx = await this.loadContext(instanceId);
+    return hasPaymentInfoNode(ctx.nodeGraph);
   }
 
   // -------------------------------------------------------------------------
@@ -329,6 +537,27 @@ export class WorkflowRuntime {
         return executeReplyDetection(ctx, this.email, this.agent);
       case "NEGOTIATION":
         return executeNegotiation(ctx, this.email, this.agent);
+      case "REWARD_SETUP":
+        // The Reward Setup node has two phases keyed on state:
+        //   ACCEPTED       → send the agreement-confirmation email, enter waiting
+        //   REWARD_PENDING → an inbound reply arrived; decide confirm vs. keep waiting
+        // The reply phase is normally driven via handleRewardReply (inbound
+        // worker); dispatching on state keeps a direct stepInstance() correct too.
+        if (ctx.instance.currentState === "REWARD_PENDING") {
+          return executeRewardReply(ctx, this.email, this.agent);
+        }
+        return executeRewardSetup(ctx, this.email, this.agent);
+      case "PAYMENT_INFO":
+        // The Payment Info node has two phases keyed on state:
+        //   REWARD_CONFIRMED → send the payout-form email, enter waiting
+        //   PAYMENT_PENDING   → the creator submitted the form; finalize + advance
+        // The submission phase is normally driven via handlePaymentSubmission (the
+        // hosted payment route); dispatching on state keeps a direct
+        // stepInstance() correct too.
+        if (ctx.instance.currentState === "PAYMENT_PENDING") {
+          return executePaymentSubmission(ctx, this.email, this.agent);
+        }
+        return executePaymentInfo(ctx, this.email, this.agent);
       case "END":
         return executeEnd(ctx, this.email, this.agent);
       default:
@@ -344,6 +573,19 @@ export class WorkflowRuntime {
 // source for plain advances; classification/negotiation transitions are
 // attributed here because the agent — not the worker — owns the decision.
 // ---------------------------------------------------------------------------
+
+// True when the workflow graph contains a Reward Setup node. Legacy workflows
+// (published before Reward Setup) have only an END node and return false.
+function hasRewardSetupNode(nodeGraph: NodeSnapshot[]): boolean {
+  return nodeGraph.some((n) => n.type === "REWARD_SETUP");
+}
+
+// True when the workflow graph contains a Payment Info node. Legacy workflows
+// (published before Payment Info) lack it and return false, so REWARD_CONFIRMED
+// stays terminal for them.
+function hasPaymentInfoNode(nodeGraph: NodeSnapshot[]): boolean {
+  return nodeGraph.some((n) => n.type === "PAYMENT_INFO");
+}
 
 function inferSourceFromEvent(eventType: EventType): TransitionSource {
   switch (eventType) {

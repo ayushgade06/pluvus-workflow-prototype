@@ -27,6 +27,7 @@ export type TransitionSource =
   | "inbound-email" // an inbound reply itself (injectReply transition)
   | "classification-agent" // reply classification decided the route
   | "negotiation-agent" // negotiation decided the route
+  | "payment-form" // the creator submitted the hosted payout form
   | "manual" // a human / harness / API call drove the transition
   | "system"; // unattributed / internal
 

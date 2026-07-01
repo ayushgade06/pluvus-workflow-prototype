@@ -93,6 +93,15 @@ export class MockEmailProvider implements IEmailProvider {
 // ---------------------------------------------------------------------------
 
 export interface IAgentProvider {
+  /**
+   * True when this provider actually GENERATES email copy via an LLM (the real
+   * LangGraph adapter). When true, a null from draftEmail() means "generation
+   * failed after retries" — offer/counter turns escalate to a human rather than
+   * send lower-quality fallback copy. When false/absent (the mock), null just
+   * means "no AI copy — use the template" and executors fall back as before, so
+   * mock-mode dev and seeded harnesses keep working unchanged.
+   */
+  readonly generatesDraftCopy?: boolean;
   classify(body: string, intent?: string): Promise<ClassifyResult>;
   negotiate(
     round: number,
@@ -107,7 +116,13 @@ export interface IAgentProvider {
    * Returns null to signal "use the template fallback" (so old harnesses work).
    */
   draftEmail(
-    purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding",
+    purpose:
+      | "initial_outreach"
+      | "follow_up"
+      | "counter_offer"
+      | "acceptance"
+      | "onboarding"
+      | "reward_confirmation",
     creator: Creator,
     config: Record<string, unknown>,
     extra?: {
@@ -135,6 +150,10 @@ export interface MockAgentOptions {
 // ---------------------------------------------------------------------------
 
 export class MockAgentProvider implements IAgentProvider {
+  // The mock does NOT generate LLM copy: draftEmail() returns null to mean "no AI
+  // copy — use the template", so the negotiation executor keeps its template
+  // fallback (rather than escalating) on this path.
+  readonly generatesDraftCopy = false;
   private readonly replyIntent: ReplyIntent;
   private readonly negotiationOutcome: NegotiateOutcome;
   private readonly negotiationCounterUntilRound: number;
@@ -169,7 +188,13 @@ export class MockAgentProvider implements IAgentProvider {
   }
 
   async draftEmail(
-    _purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding",
+    _purpose:
+      | "initial_outreach"
+      | "follow_up"
+      | "counter_offer"
+      | "acceptance"
+      | "onboarding"
+      | "reward_confirmation",
     _creator: Creator,
     _config: Record<string, unknown>,
   ): Promise<EmailDraft | null> {

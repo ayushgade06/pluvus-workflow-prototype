@@ -1,0 +1,162 @@
+import { listEventsByInstance } from "../../db/index.js";
+import type { ExecutionContext, NodeResult } from "../types.js";
+import type { IEmailProvider, IAgentProvider } from "../providers.js";
+import { buildPriorContextFromEvents } from "./negotiationHistory.js";
+import { resolveBand } from "../band.js";
+import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
+import { sendOnce } from "./idempotentSend.js";
+import { blockedByGuard } from "./guardEscalation.js";
+import { renderRewardConfirmationEmail } from "./rewardEmail.js";
+
+// ---------------------------------------------------------------------------
+// Reward Setup executor
+// ---------------------------------------------------------------------------
+// Runs immediately after a successful negotiation (state ACCEPTED). It
+// finalizes the commercial agreement:
+//   1. Resolves the final agreed fee (the rate the negotiation closed on),
+//      the commission %, and the deliverables — all from the node config +
+//      the persisted NEGOTIATION_TURN history.
+//   2. Sends the "Campaign Agreement Confirmation" email asking the creator to
+//      reply "I Agree".
+//   3. Transitions ACCEPTED → REWARD_PENDING and WAITS there.
+//
+// It does NOT negotiate. The creator's agreement reply is handled separately by
+// executeRewardReply (driven by the inbound-email worker) which advances the
+// instance to REWARD_CONFIRMED on a positive reply.
+
+/**
+ * Resolve the final agreed fee for the deal.
+ *
+ * The negotiation persists the agreed rate on the ACCEPT NEGOTIATION_TURN event
+ * (FIX-2). buildPriorContextFromEvents surfaces the last rate we put on the
+ * table as `currentOffer`, which for a closed deal is exactly the agreed fee.
+ * Falls back to the negotiation band (ceiling → floor), so the email always has
+ * a concrete number to show even for legacy/mocked instances. The band comes
+ * from the NEGOTIATION node config (minBudget/maxBudget), with the reward node's
+ * own config as a secondary fallback.
+ */
+export function resolveAgreedFee(
+  events: Awaited<ReturnType<typeof listEventsByInstance>>,
+  negotiationConfig: Record<string, unknown>,
+  fallbackConfig: Record<string, unknown> = {},
+): number | undefined {
+  const prior = buildPriorContextFromEvents(events);
+  if (prior.currentOffer !== undefined) return prior.currentOffer;
+  const negBand = resolveBand(negotiationConfig);
+  const fbBand = resolveBand(fallbackConfig);
+  return negBand.ceiling ?? negBand.floor ?? fbBand.ceiling ?? fbBand.floor;
+}
+
+/** First finite number among the candidates, else undefined. */
+function firstNumber(...candidates: unknown[]): number | undefined {
+  for (const c of candidates) {
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+  }
+  return undefined;
+}
+
+/** First non-empty string among the candidates, else undefined. */
+function firstString(...candidates: unknown[]): string | undefined {
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c;
+  }
+  return undefined;
+}
+
+export async function executeRewardSetup(
+  ctx: ExecutionContext,
+  email: IEmailProvider,
+  agent: IAgentProvider,
+): Promise<NodeResult> {
+  const { instance, node, nodeGraph, creator } = ctx;
+  const config = node.config;
+
+  if (instance.currentState !== "ACCEPTED") {
+    throw new Error(
+      `REWARD_SETUP expects ACCEPTED state, got ${instance.currentState}`,
+    );
+  }
+
+  // The brand's negotiation commission is stamped onto THIS node's config at
+  // save/publish (stampRewardFromNegotiation in routes/workflows.ts), so the
+  // reward node's own config is the finalized value the builder also displays.
+  // We read the NEGOTIATION node as a defensive fallback for versions published
+  // before the stamp (or instances created directly, e.g. in tests/harnesses).
+  const negotiationConfig =
+    nodeGraph.find((n) => n.type === "NEGOTIATION")?.config ?? {};
+
+  // Assemble the finalized terms from persisted negotiation history + config.
+  const events = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
+  const agreedFee = resolveAgreedFee(events, negotiationConfig, config);
+  const commissionRate = firstNumber(
+    config["commissionRate"],
+    negotiationConfig["commissionRate"],
+  );
+  // Deliverables are a campaign-level field stamped into every node's config
+  // (see campaigns.ts / restampBrand). Prefer this node's stamped copy, then the
+  // negotiation node's value.
+  const deliverables = firstString(
+    config["deliverables"],
+    negotiationConfig["deliverables"],
+  );
+  // Timeline is likewise a campaign-level field stamped into node config; state
+  // it in the confirmation only when present.
+  const timeline = firstString(
+    config["timeline"],
+    negotiationConfig["timeline"],
+  );
+
+  // Draft the "Campaign Agreement Confirmation" email. The confirmation copy is
+  // a fixed template (renderRewardConfirmationEmail); we still offer the AI draft
+  // path (reward_confirmation purpose) so a real provider can enrich the copy,
+  // but the template is the authoritative fallback — unlike the other executors
+  // this never degrades to a generic body, since the confirmation must always
+  // state the terms and ask for "I Agree".
+  const brandName = typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
+  const senderName =
+    typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
+  const templateDraft = renderRewardConfirmationEmail({
+    creatorName: creator.name,
+    brandName,
+    senderName,
+    fixedFee: agreedFee,
+    commissionRate,
+    deliverables,
+    timeline,
+  });
+  const aiDraft = await agent.draftEmail("reward_confirmation", creator, config, {
+    ...(agreedFee !== undefined ? { proposedTerms: { rate: agreedFee } } : {}),
+  });
+  const draft = aiDraft ?? templateDraft;
+
+  // FIX-4 parity: scan the rendered draft for a leaked floor/ceiling before
+  // sending. The agreed fee is the number we mean to present, so it's allowlisted.
+  const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(config, agreedFee));
+  if (!guard.ok) {
+    return blockedByGuard(instance.negotiationRound, guard.hits);
+  }
+
+  // Idempotent send keyed on (instance, reward_confirmation) — a re-run of the
+  // ACCEPTED auto-chain (e.g. a BullMQ retry) won't double-send the email.
+  await sendOnce(
+    email,
+    instance.id,
+    creator,
+    draft,
+    `reward:confirmation:${instance.id}`,
+  );
+
+  // Enter the waiting state. Stay on THIS node so an inbound reply is handled by
+  // the reward-reply path, and expose the normal output connection (nextNodeId
+  // points at whatever node follows — Payment Info, once it exists) for later.
+  return {
+    nextState: "REWARD_PENDING",
+    nextNodeId: node.id,
+    eventType: "REWARD_SETUP_SENT",
+    eventPayload: {
+      ...(agreedFee !== undefined ? { fixedFee: agreedFee } : {}),
+      ...(commissionRate !== undefined ? { commission: commissionRate } : {}),
+      ...(deliverables ? { deliverables } : {}),
+    },
+  };
+}

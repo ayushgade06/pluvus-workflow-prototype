@@ -87,6 +87,56 @@ async function handleInboundEmail(
   );
 
   try {
+    // ── Reward Setup reply branch ──────────────────────────────────────────
+    // A reply that arrives while the instance is in REWARD_PENDING is the
+    // creator confirming (or not) the finalized agreement — NOT a first reply
+    // and NOT a negotiation turn. Route it to the Reward Setup reply handler,
+    // which persists the message, classifies agreement, and advances to
+    // REWARD_CONFIRMED (or keeps waiting). This bypasses injectReply's forced
+    // REPLY_RECEIVED transition, which is invalid from REWARD_PENDING.
+    if (instance.currentState === "REWARD_PENDING") {
+      try {
+        await runtime.handleRewardReply(instanceId, {
+          subject,
+          body,
+          threadId,
+          externalMessageId,
+          worker: "inbound-email",
+          queueJobId: job.id,
+        });
+      } catch (err) {
+        if (err instanceof StaleInstanceError) {
+          console.log(
+            `[inbound-email] OCC conflict on handleRewardReply — ${err.message} (job ${job.id})`,
+          );
+          return;
+        }
+        throw err;
+      }
+
+      // The agreement reply may have advanced the instance to REWARD_CONFIRMED.
+      // That transition happens here (inbound worker), not via a node-execution
+      // job, so the node-execution worker's auto-chain never sees it. Enqueue the
+      // Payment Info step from here so a confirmed agreement flows straight into
+      // the payout-form email (guarded for legacy graphs without a PAYMENT_INFO
+      // node, which leave REWARD_CONFIRMED terminal).
+      const afterReward = await findInstanceById(instanceId);
+      if (
+        afterReward?.currentState === "REWARD_CONFIRMED" &&
+        (await runtime.paymentInfoApplies(instanceId))
+      ) {
+        await enqueueNodeExecution({
+          instanceId,
+          expectedState: "REWARD_CONFIRMED",
+          triggerRef: `auto-payment-info-${instanceId}`,
+        });
+        console.log(
+          `[inbound-email] auto-enqueued payment-info step for ${instanceId} (REWARD_CONFIRMED)`,
+        );
+      }
+      return;
+    }
+
     try {
       await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
     } catch (err) {

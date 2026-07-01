@@ -28,6 +28,10 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
   "REPLY_RECEIVED",
   "NEGOTIATING",
   "ACCEPTED",
+  "REWARD_PENDING",
+  "REWARD_CONFIRMED",
+  "PAYMENT_PENDING",
+  "PAYMENT_RECEIVED",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -35,7 +39,9 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
 ];
 
 export const TERMINAL_STATES: InstanceState[] = [
-  "ACCEPTED",
+  // ACCEPTED and REWARD_CONFIRMED are no longer terminal (they auto-advance into
+  // Reward Setup and Payment Info); PAYMENT_RECEIVED is the new success terminal.
+  "PAYMENT_RECEIVED",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -43,8 +49,14 @@ export const TERMINAL_STATES: InstanceState[] = [
 ];
 
 // States the scheduler can act on — used to flag "stuck" instances whose dueAt
-// has long passed (waiting buckets).
-export const WAITING_STATES: InstanceState[] = ["AWAITING_REPLY", "FOLLOWED_UP"];
+// has long passed (waiting buckets). REWARD_PENDING and PAYMENT_PENDING wait on a
+// creator action (reply / form submission) so they surface as waiting buckets.
+export const WAITING_STATES: InstanceState[] = [
+  "AWAITING_REPLY",
+  "FOLLOWED_UP",
+  "REWARD_PENDING",
+  "PAYMENT_PENDING",
+];
 
 // ---------------------------------------------------------------------------
 // Workflow summary (GET /observability/workflow)

@@ -8,6 +8,7 @@ import campaignsRouter from "./routes/campaigns.js";
 import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
+import paymentRouter from "./routes/payment.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 
@@ -71,6 +72,14 @@ app.use("/manual-queue", manualQueueRouter);
 
 // Creator roster + CSV import — used by the enrollment UI.
 app.use("/creators", creatorsRouter);
+
+// ---------------------------------------------------------------------------
+// Phase 15 — Payment Info: hosted payout-information page (server-rendered)
+// ---------------------------------------------------------------------------
+// GET/POST /payment/:token — the creator-facing payout form linked from the
+// Payment Info email. Self-contained HTML; no SPA/router dependency.
+
+app.use("/payment", paymentRouter);
 
 startWorkers();
 startScheduler();

@@ -49,7 +49,16 @@ export interface NegotiationResponse {
 // ---------------------------------------------------------------------------
 
 export interface DraftRequest {
-  purpose: "initial_outreach" | "follow_up" | "counter_offer" | "acceptance" | "onboarding";
+  purpose:
+    | "initial_outreach"
+    | "follow_up"
+    | "counter_offer"
+    | "acceptance"
+    | "onboarding"
+    // Reward Setup: the "Campaign Agreement Confirmation" email that summarizes
+    // the finalized fee/commission/deliverables and asks the creator to reply
+    // "I Agree" to confirm the partnership.
+    | "reward_confirmation";
   creatorName: string;
   creatorPlatform?: string | undefined;
   creatorNiche?: string | undefined;

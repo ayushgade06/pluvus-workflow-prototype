@@ -7,6 +7,7 @@ import type {
   DraftResponse,
   NegotiationTerm,
 } from "./types.js";
+import { renderRewardConfirmationEmail } from "../../engine/executors/rewardEmail.js";
 
 // ---------------------------------------------------------------------------
 // MockNegotiationProvider
@@ -131,6 +132,20 @@ export class MockNegotiationProvider implements NegotiationProvider {
     const minBudget = typeof ctx["minBudget"] === "number" ? ctx["minBudget"] : null;
     const maxBudget = typeof ctx["maxBudget"] === "number" ? ctx["maxBudget"] : null;
     const commissionRate = typeof ctx["commissionRate"] === "number" ? ctx["commissionRate"] : null;
+    // Brand-supplied deliverables (free text). Threaded through campaignContext /
+    // top-level DraftRequest so the reward-confirmation email can state real scope.
+    const deliverables =
+      typeof req.deliverables === "string" && req.deliverables.trim()
+        ? req.deliverables.trim()
+        : typeof ctx["deliverables"] === "string" && (ctx["deliverables"] as string).trim()
+          ? (ctx["deliverables"] as string).trim()
+          : null;
+    const timeline =
+      typeof req.timeline === "string" && req.timeline.trim()
+        ? req.timeline.trim()
+        : typeof ctx["timeline"] === "string" && (ctx["timeline"] as string).trim()
+          ? (ctx["timeline"] as string).trim()
+          : null;
 
     const budgetRange = minBudget !== null && maxBudget !== null
       ? `$${minBudget}–$${maxBudget}`
@@ -241,6 +256,25 @@ export class MockNegotiationProvider implements NegotiationProvider {
             `${sender}`,
           ].join("\n"),
         };
+      }
+
+      case "reward_confirmation": {
+        // Reward Setup — the "Campaign Agreement Confirmation" email. Delegates to
+        // the shared renderer so the executor's template fallback and this provider
+        // emit identical copy. References only the agreed rate, never the band.
+        const agreedRate =
+          typeof req.proposedTerms?.["rate"] === "number"
+            ? (req.proposedTerms["rate"] as number)
+            : undefined;
+        return renderRewardConfirmationEmail({
+          creatorName: name,
+          brandName: brand,
+          senderName: sender,
+          fixedFee: agreedRate,
+          commissionRate: commissionRate ?? undefined,
+          deliverables: deliverables ?? undefined,
+          timeline: timeline ?? undefined,
+        });
       }
     }
   }

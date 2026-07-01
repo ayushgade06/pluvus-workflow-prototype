@@ -70,9 +70,19 @@ const affiliateNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-end",
-    type: "END",
+    id: "node-reward-setup",
+    type: "REWARD_SETUP",
     order: 4,
+    // No config needed: the finalized commission is read at runtime from the
+    // NEGOTIATION node (the brand's single source of truth), and deliverables are
+    // stamped from the campaign.
+    config: {},
+  },
+  {
+    id: "node-payment-info",
+    type: "PAYMENT_INFO",
+    order: 5,
+    // No config needed: the payout-form link + email are derived at runtime.
     config: {},
   },
 ];
@@ -129,9 +139,18 @@ const hybridNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-end",
-    type: "END",
+    id: "node-reward-setup",
+    type: "REWARD_SETUP",
     order: 4,
+    // Commission is read at runtime from the NEGOTIATION node; deliverables from
+    // the campaign.
+    config: {},
+  },
+  {
+    id: "node-payment-info",
+    type: "PAYMENT_INFO",
+    order: 5,
+    // No config needed: the payout-form link + email are derived at runtime.
     config: {},
   },
 ];
@@ -188,9 +207,17 @@ const fixedFeeNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-end",
-    type: "END",
+    id: "node-reward-setup",
+    type: "REWARD_SETUP",
     order: 4,
+    // Fixed-fee campaign: no commission component.
+    config: {},
+  },
+  {
+    id: "node-payment-info",
+    type: "PAYMENT_INFO",
+    order: 5,
+    // No config needed: the payout-form link + email are derived at runtime.
     config: {},
   },
 ];
@@ -239,6 +266,11 @@ export function validateNodeGraph(nodes: unknown): { valid: boolean; errors: str
     "FOLLOW_UP",
     "REPLY_DETECTION",
     "NEGOTIATION",
+    // REWARD_SETUP finalizes the agreement; PAYMENT_INFO follows it to collect
+    // payout details and is the current terminal node. END is still accepted so
+    // workflows published before these changes remain valid.
+    "REWARD_SETUP",
+    "PAYMENT_INFO",
     "END",
   ]);
   const seenIds = new Set<string>();
@@ -276,8 +308,10 @@ export function validateNodeGraph(nodes: unknown): { valid: boolean; errors: str
   if (!types.includes("INITIAL_OUTREACH")) {
     errors.push("workflow must include an INITIAL_OUTREACH node");
   }
-  if (!types.includes("END")) {
-    errors.push("workflow must include an END node");
+  // The workflow must end in a terminal node: REWARD_SETUP (current) or END
+  // (legacy, pre-Reward-Setup workflows).
+  if (!types.includes("REWARD_SETUP") && !types.includes("END")) {
+    errors.push("workflow must include a REWARD_SETUP node");
   }
 
   return { valid: errors.length === 0, errors };

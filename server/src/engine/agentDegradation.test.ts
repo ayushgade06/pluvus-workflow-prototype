@@ -8,7 +8,8 @@
  * decision:
  *   classify   → UNKNOWN / confidence 0  (low-confidence gate → MANUAL_REVIEW)
  *   negotiate  → outcome "escalate"      (executor            → MANUAL_REVIEW)
- *   draftEmail → null                    (executor falls back to template copy)
+ *   draftEmail → null (after retries)    (outreach/follow-up  → template copy;
+ *                                         negotiation offer turns → MANUAL_REVIEW)
  *
  * Run with:  npx tsx src/engine/agentDegradation.test.ts
  */
@@ -91,6 +92,22 @@ async function main() {
     const adapter = new AgentProviderAdapter(okClassifier, okNegotiator, {});
     const r = await adapter.draftEmail("acceptance", fakeCreator, config);
     assert.deepEqual(r, { subject: "s", body: "b" });
+  });
+
+  // The real adapter marks itself as generating LLM copy — this is the flag the
+  // negotiation executor keys on to decide "null draft ⇒ escalate to a human"
+  // (real path) vs "null draft ⇒ use the template" (mock path). If this flips,
+  // the executor would wrongly escalate mock-mode turns or wrongly auto-send the
+  // sparse fallback on the real path.
+  await test("real adapter advertises generatesDraftCopy = true", async () => {
+    const adapter = new AgentProviderAdapter(okClassifier, okNegotiator, {});
+    assert.equal(adapter.generatesDraftCopy, true);
+  });
+
+  await test("MockAgentProvider does NOT advertise generatesDraftCopy", async () => {
+    const { MockAgentProvider } = await import("./providers.js");
+    const mock = new MockAgentProvider();
+    assert.notEqual(mock.generatesDraftCopy, true);
   });
 
   console.log(`\n✓ agentDegradation: all ${n} tests passed\n`);

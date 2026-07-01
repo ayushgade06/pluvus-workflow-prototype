@@ -32,7 +32,13 @@ const router = Router();
 // config object on save, which can drop those keys — so we re-inject them here
 // on every draft save. Existing non-empty values are preserved (a deliberate
 // per-node override is never clobbered); only missing/blank values are filled.
-function restampBrand(nodes: unknown, brand: string, brandDescription?: string | null): unknown {
+function restampBrand(
+  nodes: unknown,
+  brand: string,
+  brandDescription?: string | null,
+  deliverables?: string | null,
+  timeline?: string | null,
+): unknown {
   if (!Array.isArray(nodes)) return nodes;
   return nodes.map((node) => {
     if (!node || typeof node !== "object") return node;
@@ -44,7 +50,20 @@ function restampBrand(nodes: unknown, brand: string, brandDescription?: string |
     const hasBrand = typeof config["brandName"] === "string" && config["brandName"] !== "";
     const hasSender = typeof config["senderName"] === "string" && config["senderName"] !== "";
     const hasDesc = typeof config["brandDescription"] === "string" && config["brandDescription"] !== "";
-    if (hasBrand && hasSender && (hasDesc || !brandDescription)) return node;
+    // deliverables/timeline are re-injected so the Reward Setup node (and the
+    // negotiation copy) reliably see the brand-supplied scope even after the
+    // builder's per-node forms round-trip a config that dropped them.
+    const hasDeliverables = typeof config["deliverables"] === "string" && config["deliverables"] !== "";
+    const hasTimeline = typeof config["timeline"] === "string" && config["timeline"] !== "";
+    if (
+      hasBrand &&
+      hasSender &&
+      (hasDesc || !brandDescription) &&
+      (hasDeliverables || !deliverables) &&
+      (hasTimeline || !timeline)
+    ) {
+      return node;
+    }
     return {
       ...n,
       config: {
@@ -52,6 +71,51 @@ function restampBrand(nodes: unknown, brand: string, brandDescription?: string |
         ...(hasBrand ? {} : { brandName: brand }),
         ...(hasSender ? {} : { senderName: brand }),
         ...(hasDesc || !brandDescription ? {} : { brandDescription }),
+        ...(hasDeliverables || !deliverables ? {} : { deliverables }),
+        ...(hasTimeline || !timeline ? {} : { timeline }),
+      },
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Mirror the negotiation commission onto the Reward Setup node.
+// ---------------------------------------------------------------------------
+// The brand decides the commission % on the NEGOTIATION node. The Reward Setup
+// node displays + emails the finalized commission, so it must always reflect the
+// CURRENT negotiation value — not a stale copy. Unlike the brand fields above
+// (preserve-if-present), this OVERWRITES the reward node's commissionRate every
+// save so editing the negotiation node keeps the reward node in sync. Deliverables
+// are already carried by restampBrand from the campaign; commission is the one
+// field sourced from another node, so it's stamped here.
+export function stampRewardFromNegotiation(nodes: unknown): unknown {
+  if (!Array.isArray(nodes)) return nodes;
+
+  const negotiation = nodes.find(
+    (n): n is { type: string; config?: Record<string, unknown> } =>
+      !!n && typeof n === "object" && (n as { type?: unknown }).type === "NEGOTIATION",
+  );
+  const negConfig = (negotiation?.config ?? {}) as Record<string, unknown>;
+  const commission = negConfig["commissionRate"];
+  // Only a positive number is a real commission; 0/absent means fixed-fee only,
+  // in which case the reward node should carry no commissionRate.
+  const hasCommission = typeof commission === "number" && commission > 0;
+
+  return nodes.map((node) => {
+    if (!node || typeof node !== "object") return node;
+    const n = node as { type?: unknown; config?: unknown; [k: string]: unknown };
+    if (n.type !== "REWARD_SETUP") return node;
+    const config = (n.config && typeof n.config === "object" ? n.config : {}) as Record<
+      string,
+      unknown
+    >;
+    // Drop any stale commissionRate, then set it iff the negotiation has one.
+    const { commissionRate: _drop, ...rest } = config;
+    return {
+      ...n,
+      config: {
+        ...rest,
+        ...(hasCommission ? { commissionRate: commission } : {}),
       },
     };
   });
@@ -162,8 +226,18 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
     let nodesToSave: unknown = nodes;
     if (wf.campaignId) {
       const campaign = await findCampaignById(wf.campaignId);
-      if (campaign) nodesToSave = restampBrand(nodes, campaign.brand, campaign.brandDescription);
+      if (campaign)
+        nodesToSave = restampBrand(
+          nodes,
+          campaign.brand,
+          campaign.brandDescription,
+          campaign.deliverables,
+          campaign.timeline,
+        );
     }
+    // Mirror the brand's negotiation commission onto the Reward Setup node so the
+    // builder + runtime always show the current value (independent of campaign).
+    nodesToSave = stampRewardFromNegotiation(nodesToSave);
 
     const updated = await updateWorkflow(wf.id, {
       draftNodes: nodesToSave as Prisma.InputJsonValue,
@@ -239,9 +313,16 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
           wf.draftNodes,
           campaign.brand,
           campaign.brandDescription,
+          campaign.deliverables,
+          campaign.timeline,
         ) as Prisma.InputJsonValue;
       }
     }
+    // Freeze the current negotiation commission onto the Reward Setup node so the
+    // immutable version carries the finalized value the deal was published with.
+    nodeGraphToPublish = stampRewardFromNegotiation(
+      nodeGraphToPublish,
+    ) as Prisma.InputJsonValue;
 
     const versionNumber = await nextVersionNumber(wf.id);
     const version = await createVersion({

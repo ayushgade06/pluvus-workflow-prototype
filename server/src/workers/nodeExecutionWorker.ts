@@ -102,9 +102,14 @@ async function handleNodeExecution(
   //   OUTREACH_SENT  — follow-up node must run to set dueAt → AWAITING_REPLY
   //   FOLLOWED_UP    — follow-up node reschedules → AWAITING_REPLY
   //   NEGOTIATING    — negotiation executor sends counter/accept immediately
+  //   ACCEPTED       — negotiation succeeded; Reward Setup runs immediately to
+  //                    send the agreement-confirmation email → REWARD_PENDING
+  //   REWARD_CONFIRMED — agreement confirmed; Payment Info runs immediately to
+  //                    send the payout-form email → PAYMENT_PENDING
   //
-  // AWAITING_REPLY is intentionally excluded: it waits for a real reply or a
-  // scheduled follow-up, both of which arrive via their own queue paths.
+  // AWAITING_REPLY, REWARD_PENDING and PAYMENT_PENDING are intentionally excluded:
+  // they wait for a real reply / form submission (or a scheduled follow-up),
+  // which arrive via their own queue paths.
   if (newState === "OUTREACH_SENT" || newState === "FOLLOWED_UP") {
     await enqueueNodeExecution({
       instanceId,
@@ -114,6 +119,42 @@ async function handleNodeExecution(
     console.log(
       `[node-execution] auto-enqueued follow-up step for ${instanceId} (${newState})`,
     );
+  } else if (newState === "ACCEPTED") {
+    // Only auto-chain into Reward Setup when the workflow actually has a
+    // REWARD_SETUP node. Legacy workflows (END-terminated) leave ACCEPTED as the
+    // final state — the pre-Reward-Setup behavior.
+    if (await runtime.rewardSetupApplies(instanceId)) {
+      await enqueueNodeExecution({
+        instanceId,
+        expectedState: "ACCEPTED",
+        triggerRef: `auto-reward-setup-${instanceId}`,
+      });
+      console.log(
+        `[node-execution] auto-enqueued reward-setup step for ${instanceId} (ACCEPTED)`,
+      );
+    } else {
+      console.log(
+        `[node-execution] ${instanceId} ACCEPTED with no Reward Setup node — leaving as final state`,
+      );
+    }
+  } else if (newState === "REWARD_CONFIRMED") {
+    // Only auto-chain into Payment Info when the workflow actually has a
+    // PAYMENT_INFO node. Legacy workflows (Reward-Setup-terminated) leave
+    // REWARD_CONFIRMED as the final state — the pre-Payment-Info behavior.
+    if (await runtime.paymentInfoApplies(instanceId)) {
+      await enqueueNodeExecution({
+        instanceId,
+        expectedState: "REWARD_CONFIRMED",
+        triggerRef: `auto-payment-info-${instanceId}`,
+      });
+      console.log(
+        `[node-execution] auto-enqueued payment-info step for ${instanceId} (REWARD_CONFIRMED)`,
+      );
+    } else {
+      console.log(
+        `[node-execution] ${instanceId} REWARD_CONFIRMED with no Payment Info node — leaving as final state`,
+      );
+    }
   } else if (newState === "NEGOTIATING") {
     const instance = await findInstanceById(instanceId);
     const round = instance?.negotiationRound ?? 0;
