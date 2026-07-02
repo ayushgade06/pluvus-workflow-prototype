@@ -19,8 +19,40 @@ import { findCampaignById } from "../db/campaigns.js";
 import { prisma } from "../db/client.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { validateNodeGraph } from "../templates/index.js";
+import { validateWorkflowGraph } from "../validation/graphValidation.js";
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// Unified validation — graph rules + legacy flat-list rules.
+// ---------------------------------------------------------------------------
+// The graph validator (Phase 17) reconstructs the workflow graph from the
+// `_graph` sidecar (or order-implicit edges for legacy drafts) and enforces the
+// full structural contract: one start, a terminal, no cycles/orphans/branches,
+// phase ordering, and required config. We also run the legacy validator so any
+// rule it caught that the graph model doesn't is still surfaced. The response
+// keeps the historical `errors: string[]` shape AND adds structured `issues[]`.
+function validateWorkflowNodes(
+  nodesRaw: unknown,
+  opts: { structuralOnly?: boolean } = {},
+): {
+  valid: boolean;
+  errors: string[];
+  issues: import("../validation/graphValidation.js").ValidationIssue[];
+} {
+  const graph = validateWorkflowGraph(nodesRaw, opts);
+  const graphMessages = graph.errors.filter((e) => e.severity === "error").map((e) => e.message);
+  // In structural-only mode (launch), the legacy validator's config-oriented
+  // rules (content-brief PDF, etc.) are intentionally skipped — the immutable
+  // published version already passed the full gate at publish time.
+  if (opts.structuralOnly) {
+    return { valid: graph.valid, errors: graphMessages, issues: graph.errors };
+  }
+  const legacy = validateNodeGraph(nodesRaw);
+  const legacyOnly = legacy.errors.filter((m) => !graphMessages.includes(m));
+  const errors = [...graphMessages, ...legacyOnly];
+  return { valid: graph.valid && legacy.valid, errors, issues: graph.errors };
+}
 
 // ---------------------------------------------------------------------------
 // Re-stamp the campaign brand into node configs.
@@ -208,7 +240,7 @@ router.put("/:id/metadata", async (req: Request, res: Response) => {
 router.put("/:id/draft", async (req: Request, res: Response) => {
   const { nodes } = req.body as { nodes?: unknown };
 
-  const validation = validateNodeGraph(nodes);
+  const validation = validateWorkflowNodes(nodes);
   // For draft saves we allow partial/empty graphs (soft validation warnings only).
   // We just store what the builder sends as-is unless it's malformed JSON.
   if (!Array.isArray(nodes)) {
@@ -252,6 +284,7 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
       draftNodes: updated.draftNodes,
       valid: validation.valid,
       validationErrors: validation.errors,
+      validationIssues: validation.issues,
       updatedAt: updated.updatedAt.toISOString(),
     });
   } catch (err) {
@@ -274,8 +307,8 @@ router.post("/:id/validate", async (req: Request, res: Response) => {
       res.status(404).json({ error: "workflow not found" });
       return;
     }
-    const validation = validateNodeGraph(wf.draftNodes);
-    res.json({ valid: validation.valid, errors: validation.errors });
+    const validation = validateWorkflowNodes(wf.draftNodes);
+    res.json({ valid: validation.valid, errors: validation.errors, issues: validation.issues });
   } catch (err) {
     console.error("[workflows] validate error:", err);
     res.status(500).json({ error: "internal server error" });
@@ -296,11 +329,12 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
       return;
     }
 
-    const validation = validateNodeGraph(wf.draftNodes);
+    const validation = validateWorkflowNodes(wf.draftNodes);
     if (!validation.valid) {
       res.status(422).json({
         error: "workflow has validation errors",
         validationErrors: validation.errors,
+        validationIssues: validation.issues,
       });
       return;
     }
@@ -476,6 +510,22 @@ router.post("/:id/launch", async (req: Request, res: Response) => {
     const latestVersion = await findLatestVersion(wf.id);
     if (!latestVersion) {
       res.status(422).json({ error: "no published version to launch" });
+      return;
+    }
+
+    // Launch-time validation gate (Phase 17). The published version's graph was
+    // validated at publish, but we re-check here as a safety net — this also
+    // protects versions published before graph validation existed. A broken
+    // graph must never start executing.
+    const launchValidation = validateWorkflowNodes(latestVersion.nodeGraph, {
+      structuralOnly: true,
+    });
+    if (!launchValidation.valid) {
+      res.status(422).json({
+        error: "published workflow graph is invalid — cannot launch",
+        validationErrors: launchValidation.errors,
+        validationIssues: launchValidation.issues,
+      });
       return;
     }
 
