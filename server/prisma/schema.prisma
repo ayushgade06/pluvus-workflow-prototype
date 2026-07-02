@@ -180,6 +180,17 @@ model Campaign {
   /// The AI states it only when present, and never invents one when absent.
   timeline String?
 
+  /// Free-text description of a product/sample the brand gives the creator as
+  /// part of the reward (e.g. "a free pair of our running shoes"). Stamped into
+  /// every node's config as `rewardDescription` so outreach/negotiation/reward
+  /// copy can mention it. Nullable: cash-only campaigns leave it blank.
+  rewardDescription String?
+
+  /// Whether the reward includes a physical product that must be shipped. When
+  /// true, the hosted Payment Info form also collects a shipping address.
+  /// Stamped into every node's config as `shipsPhysicalProduct`.
+  shipsPhysicalProduct Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

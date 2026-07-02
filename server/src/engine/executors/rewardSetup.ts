@@ -105,6 +105,12 @@ export async function executeRewardSetup(
     config["timeline"],
     negotiationConfig["timeline"],
   );
+  // Product/sample reward blurb — also a campaign-level stamped field; rendered
+  // as its own bullet in the confirmation only when present.
+  const rewardDescription = firstString(
+    config["rewardDescription"],
+    negotiationConfig["rewardDescription"],
+  );
 
   // Draft the "Campaign Agreement Confirmation" email. The confirmation copy is
   // a fixed template (renderRewardConfirmationEmail); we still offer the AI draft
@@ -123,6 +129,7 @@ export async function executeRewardSetup(
     commissionRate,
     deliverables,
     timeline,
+    rewardDescription,
   });
   const aiDraft = await agent.draftEmail("reward_confirmation", creator, config, {
     ...(agreedFee !== undefined ? { proposedTerms: { rate: agreedFee } } : {}),

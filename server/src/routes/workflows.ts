@@ -38,6 +38,8 @@ function restampBrand(
   brandDescription?: string | null,
   deliverables?: string | null,
   timeline?: string | null,
+  rewardDescription?: string | null,
+  shipsPhysicalProduct?: boolean,
 ): unknown {
   if (!Array.isArray(nodes)) return nodes;
   return nodes.map((node) => {
@@ -55,15 +57,13 @@ function restampBrand(
     // builder's per-node forms round-trip a config that dropped them.
     const hasDeliverables = typeof config["deliverables"] === "string" && config["deliverables"] !== "";
     const hasTimeline = typeof config["timeline"] === "string" && config["timeline"] !== "";
-    if (
-      hasBrand &&
-      hasSender &&
-      (hasDesc || !brandDescription) &&
-      (hasDeliverables || !deliverables) &&
-      (hasTimeline || !timeline)
-    ) {
-      return node;
-    }
+    // rewardDescription is a free-text blurb mentioned across the email copy;
+    // preserve-if-present like the other campaign fields. shipsPhysicalProduct
+    // is a boolean flag that gates the payment form's shipping-address section;
+    // it is authoritative from the campaign, so it OVERWRITES every save (a node
+    // can't meaningfully override "does this campaign ship a product").
+    const hasReward =
+      typeof config["rewardDescription"] === "string" && config["rewardDescription"] !== "";
     return {
       ...n,
       config: {
@@ -73,6 +73,8 @@ function restampBrand(
         ...(hasDesc || !brandDescription ? {} : { brandDescription }),
         ...(hasDeliverables || !deliverables ? {} : { deliverables }),
         ...(hasTimeline || !timeline ? {} : { timeline }),
+        ...(hasReward || !rewardDescription ? {} : { rewardDescription }),
+        ...(shipsPhysicalProduct ? { shipsPhysicalProduct: true } : { shipsPhysicalProduct: false }),
       },
     };
   });
@@ -233,6 +235,8 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
           campaign.brandDescription,
           campaign.deliverables,
           campaign.timeline,
+          campaign.rewardDescription,
+          campaign.shipsPhysicalProduct,
         );
     }
     // Mirror the brand's negotiation commission onto the Reward Setup node so the
@@ -315,6 +319,8 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
           campaign.brandDescription,
           campaign.deliverables,
           campaign.timeline,
+          campaign.rewardDescription,
+          campaign.shipsPhysicalProduct,
         ) as Prisma.InputJsonValue;
       }
     }

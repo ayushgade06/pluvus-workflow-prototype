@@ -13,6 +13,9 @@ export interface PaymentRequestInput {
   senderName: string;
   /** The absolute link to the hosted payout form, including the token. */
   formLink: string;
+  /** When true, the form also collects a shipping address, so the email tells
+   *  the creator to expect that. Off → payout-only copy, unchanged. */
+  collectShippingAddress?: boolean;
 }
 
 /**
@@ -42,9 +45,13 @@ export function renderPaymentRequestEmail(input: PaymentRequestInput): EmailDraf
     ``,
     `Thank you for confirming your collaboration with ${input.brandName}.`,
     ``,
-    `Before we begin the campaign, we need your payout information.`,
+    input.collectShippingAddress
+      ? `Before we begin the campaign, we need your payout information and the shipping address for your product.`
+      : `Before we begin the campaign, we need your payout information.`,
     ``,
-    `Please complete the secure payout information form below.`,
+    input.collectShippingAddress
+      ? `Please complete the secure form below — it collects both your payout details and where we should ship your product.`
+      : `Please complete the secure payout information form below.`,
     ``,
     input.formLink,
     ``,

@@ -42,6 +42,10 @@ export class MockEmailProvider implements IEmailProvider {
       typeof config["brandName"] === "string" ? config["brandName"] : senderName;
     const platform =
       typeof creator.platform === "string" ? creator.platform : "social media";
+    // Free-text product/sample reward blurb stamped from the campaign. Empty
+    // when the campaign is cash-only, so {{rewardDescription}} resolves to "".
+    const rewardDescription =
+      typeof config["rewardDescription"] === "string" ? config["rewardDescription"] : "";
 
     const subjectTemplate =
       typeof config["subjectTemplate"] === "string" ? config["subjectTemplate"] : "";
@@ -52,7 +56,8 @@ export class MockEmailProvider implements IEmailProvider {
         .replace(/\{\{brandName\}\}/g, brandName)
         .replace(/\{\{senderName\}\}/g, senderName)
         .replace(/\{\{platform\}\}/g, platform)
-        .replace(/\{\{niche\}\}/g, creator.niche ?? "your niche");
+        .replace(/\{\{niche\}\}/g, creator.niche ?? "your niche")
+        .replace(/\{\{rewardDescription\}\}/g, rewardDescription);
 
     // Use node config template when provided; fall back to generic body.
     const body = template.trim()

@@ -47,6 +47,7 @@ export async function executeContentBrief(
   const briefFileName = str(config, "briefFileName") || "campaign-brief.pdf";
   const referralLink = str(config, "referralLink");
   const creatorNotes = str(config, "creatorNotes");
+  const rewardDescription = str(config, "rewardDescription");
 
   // The Campaign Brief PDF is required (enforced at publish/launch validation);
   // fail loudly if it's somehow missing at runtime rather than sending a brief
@@ -76,6 +77,7 @@ export async function executeContentBrief(
       brandName,
       referralLink,
       creatorNotes,
+      rewardDescription,
     }),
     attachments: [attachment],
   };

@@ -82,6 +82,24 @@ test("timeline line is omitted when absent", () => {
   assert.match(noTimeline.body, /• Commission: None/);
 });
 
+test("reward line is included when a reward is present", () => {
+  const withReward = renderRewardConfirmationEmail({
+    creatorName: "Ayush Gade",
+    brandName: "Pluvus",
+    senderName: "Pluvus",
+    fixedFee: 425,
+    commissionRate: 10,
+    deliverables: "1 Reel",
+    rewardDescription: "a free pair of our running shoes",
+  });
+  assert.match(withReward.body, /• Reward: a free pair of our running shoes/);
+});
+
+test("reward line is omitted when absent (cash-only)", () => {
+  // `full` above was rendered without a rewardDescription.
+  assert.doesNotMatch(full.body, /• Reward:/);
+});
+
 test("missing fee falls back to a safe phrase (never blank)", () => {
   const noFee = renderRewardConfirmationEmail({
     creatorName: "Dana",

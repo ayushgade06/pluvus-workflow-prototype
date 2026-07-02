@@ -85,6 +85,11 @@ function shell(title: string, inner: string): string {
     .ok { background: rgba(63,185,80,0.15); color: var(--success); }
     .info { background: rgba(56,139,253,0.15); color: var(--accent); }
     .foot { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--dim); text-align: center; }
+    .section-head {
+      margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--border);
+      font-size: 12px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted); font-weight: 600;
+    }
+    .section-sub { margin: -4px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -100,6 +105,9 @@ export interface PaymentFormPageInput {
   token: string;
   creatorName: string;
   brandName: string;
+  /** When true, render the shipping-address section (campaign ships a physical
+   *  product). Off by default → the form is payout-only, exactly as before. */
+  showShippingAddress?: boolean | undefined;
   /** A validation error to surface above the form (e.g. after a bad POST). */
   error?: string | undefined;
   /** Previously-entered values to re-populate the form after a validation error. */
@@ -108,6 +116,14 @@ export interface PaymentFormPageInput {
     accountIdentifier?: string;
     country?: string;
     notes?: string;
+    // Shipping address (only meaningful when showShippingAddress is true).
+    shipName?: string;
+    shipLine1?: string;
+    shipLine2?: string;
+    shipCity?: string;
+    shipRegion?: string;
+    shipPostalCode?: string;
+    shipCountry?: string;
   };
 }
 
@@ -119,6 +135,42 @@ export function renderPaymentFormPage(input: PaymentFormPageInput): string {
       `<option value="${m.value}"${v.method === m.value ? " selected" : ""}>${esc(m.label)}</option>`,
   ).join("");
   const errBlock = input.error ? `<div class="err">${esc(input.error)}</div>` : "";
+
+  // Shipping-address section — rendered only when the campaign ships a physical
+  // product. The field `name`s must match the POST parser in payment.ts.
+  const shippingBlock = input.showShippingAddress
+    ? `
+      <div class="section-head">Shipping address</div>
+      <p class="section-sub">You're receiving a product for this collaboration — tell us where to ship it.</p>
+      <div>
+        <label for="shipName">Recipient full name</label>
+        <input id="shipName" name="shipName" type="text" value="${esc(v.shipName ?? "")}" placeholder="e.g. Alex Rivera" required />
+      </div>
+      <div>
+        <label for="shipLine1">Address line 1</label>
+        <input id="shipLine1" name="shipLine1" type="text" value="${esc(v.shipLine1 ?? "")}" placeholder="Street address" required />
+      </div>
+      <div>
+        <label for="shipLine2">Address line 2 <span class="opt">(optional)</span></label>
+        <input id="shipLine2" name="shipLine2" type="text" value="${esc(v.shipLine2 ?? "")}" placeholder="Apartment, suite, unit, etc." />
+      </div>
+      <div>
+        <label for="shipCity">City</label>
+        <input id="shipCity" name="shipCity" type="text" value="${esc(v.shipCity ?? "")}" placeholder="e.g. Austin" required />
+      </div>
+      <div>
+        <label for="shipRegion">State / Province <span class="opt">(optional)</span></label>
+        <input id="shipRegion" name="shipRegion" type="text" value="${esc(v.shipRegion ?? "")}" placeholder="e.g. Texas" />
+      </div>
+      <div>
+        <label for="shipPostalCode">Postal code</label>
+        <input id="shipPostalCode" name="shipPostalCode" type="text" value="${esc(v.shipPostalCode ?? "")}" placeholder="e.g. 78701" required />
+      </div>
+      <div>
+        <label for="shipCountry">Country</label>
+        <input id="shipCountry" name="shipCountry" type="text" value="${esc(v.shipCountry ?? "")}" placeholder="e.g. United States" required />
+      </div>`
+    : "";
 
   const inner = `
     <div class="head">
@@ -142,6 +194,7 @@ export function renderPaymentFormPage(input: PaymentFormPageInput): string {
         <label for="country">Country <span class="opt">(optional)</span></label>
         <input id="country" name="country" type="text" value="${esc(v.country ?? "")}" placeholder="e.g. United States" />
       </div>
+      ${shippingBlock}
       <div>
         <label for="notes">Additional notes <span class="opt">(optional)</span></label>
         <textarea id="notes" name="notes" placeholder="Anything else we should know?">${esc(v.notes ?? "")}</textarea>

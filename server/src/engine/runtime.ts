@@ -418,6 +418,9 @@ export class WorkflowRuntime {
       accountIdentifier: string;
       country?: string | null;
       notes?: string | null;
+      /** Extra payout/fulfillment data preserved verbatim on PaymentInfo.extra
+       *  (e.g. the shipping address when the campaign ships a physical product). */
+      extra?: Prisma.InputJsonValue;
     },
     opts: {
       source?: TransitionSource;
@@ -442,6 +445,7 @@ export class WorkflowRuntime {
       accountIdentifier: submission.accountIdentifier,
       country: submission.country ?? null,
       notes: submission.notes ?? null,
+      ...(submission.extra !== undefined ? { extra: submission.extra } : {}),
     });
 
     // Step the node — dispatch sees PAYMENT_PENDING and runs

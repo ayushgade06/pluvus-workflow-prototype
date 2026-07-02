@@ -178,6 +178,8 @@ export class AgentProviderAdapter implements IAgentProvider {
       brandDescription: typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined,
       deliverables: typeof config["deliverables"] === "string" ? config["deliverables"] : undefined,
       timeline: typeof config["timeline"] === "string" ? config["timeline"] : undefined,
+      rewardDescription:
+        typeof config["rewardDescription"] === "string" ? config["rewardDescription"] : undefined,
       round: extra?.round,
       proposedTerms: extra?.proposedTerms,
       creatorReply: extra?.creatorReply,

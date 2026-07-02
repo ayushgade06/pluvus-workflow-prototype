@@ -146,6 +146,14 @@ export class MockNegotiationProvider implements NegotiationProvider {
         : typeof ctx["timeline"] === "string" && (ctx["timeline"] as string).trim()
           ? (ctx["timeline"] as string).trim()
           : null;
+    // Product/sample reward blurb — same threading as deliverables/timeline.
+    // Mentioned in the copy only when the campaign supplied one.
+    const reward =
+      typeof req.rewardDescription === "string" && req.rewardDescription.trim()
+        ? req.rewardDescription.trim()
+        : typeof ctx["rewardDescription"] === "string" && (ctx["rewardDescription"] as string).trim()
+          ? (ctx["rewardDescription"] as string).trim()
+          : null;
 
     const budgetRange = minBudget !== null && maxBudget !== null
       ? `$${minBudget}–$${maxBudget}`
@@ -161,6 +169,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
             `We've been following your ${platform} ${niche} content and love what you're building.`,
             ``,
             `${brand} is looking for creators like you for an upcoming campaign${budgetRange ? ` — we're offering ${budgetRange}${commissionRate ? ` + ${commissionRate}% commission` : ""}` : ""}.`,
+            ...(reward ? [``, `We'd also love to send you ${reward} to feature.`] : []),
             ``,
             `Would you be open to a quick conversation about the details?`,
             ``,
@@ -179,6 +188,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
             `Just following up on our ${brand} partnership offer${n > 1 ? ` (note #${n})` : ""}.`,
             ``,
             budgetRange ? `We have ${budgetRange} budgeted for the right creator in the ${niche} space — we think that's you.` : `We'd love to hear from you when you have a moment.`,
+            ...(reward ? [``, `You'd also receive ${reward} as part of the collaboration.`] : []),
             ``,
             `Best,`,
             `${brand} Team`,
@@ -199,7 +209,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
             ``,
             `Thanks for getting back to us! We've reviewed your request and here's our revised offer:`,
             ``,
-            `• Fee: ${offerAmount}${commissionRate ? `\n• Commission: ${commissionRate}% on all sales driven by your content` : ""}`,
+            `• Fee: ${offerAmount}${commissionRate ? `\n• Commission: ${commissionRate}% on all sales driven by your content` : ""}${reward ? `\n• Reward: ${reward}` : ""}`,
             ``,
             `This is for a dedicated ${platform} post showcasing ${brand}. Our team handles the brief and creative direction — we just need your authentic voice.`,
             ``,
@@ -222,6 +232,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
             [
               budgetRange ? `• Compensation: ${budgetRange}` : null,
               commissionRate ? `• Commission: ${commissionRate}% on sales` : null,
+              reward ? `• Reward: ${reward}` : null,
               `• Platform: ${platform}`,
             ].filter(Boolean).join("\n"),
             ``,
@@ -249,6 +260,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
             `• Agreement: we'll send a short partnership agreement for you to review and sign.`,
             `• Deliverables & timeline: we'll finalize the content and posting schedule together so it fits your workflow.`,
             `• Payment: ${rateLine} will be processed per the agreement once your deliverables are approved.`,
+            ...(reward ? [`• Reward: you'll receive ${reward}.`] : []),
             ``,
             `Reply to this email with any questions — we're here to help and excited to create something great together.`,
             ``,
@@ -274,6 +286,7 @@ export class MockNegotiationProvider implements NegotiationProvider {
           commissionRate: commissionRate ?? undefined,
           deliverables: deliverables ?? undefined,
           timeline: timeline ?? undefined,
+          rewardDescription: reward ?? undefined,
         });
       }
     }

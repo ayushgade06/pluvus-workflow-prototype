@@ -32,6 +32,8 @@ import { WorkflowRuntime } from "./runtime.js";
 import { MockEmailProvider, MockAgentProvider } from "./providers.js";
 import type { NodeSnapshot } from "./types.js";
 import { paymentFormLink } from "./executors/paymentEmail.js";
+import { renderPaymentFormPage } from "../routes/paymentPage.js";
+import { shipsPhysicalProductOf } from "../routes/payment.js";
 
 const NODES: NodeSnapshot[] = [
   { id: "node-import", type: "IMPORT_CREATOR_LIST", order: 0, config: {} },
@@ -199,6 +201,94 @@ async function main(): Promise<void> {
     const unchanged = await findPaymentInfoByInstance(instance.id);
     assert.equal(unchanged!.method, "PAYPAL", "payout method must not be overwritten by a late submission");
     console.log("  ✓ second submission rejected; stored payout unchanged");
+
+    // ── Physical-product graph: shipping address collected on the form ────────
+    // A separate version whose PAYMENT_INFO node is stamped with
+    // shipsPhysicalProduct + a reward blurb. Proves: the payout email nudges the
+    // creator about shipping; the hosted page renders the address section; and a
+    // submitted address persists into PaymentInfo.extra.shipping.
+    const shipNodes: NodeSnapshot[] = NODES.map((n) =>
+      n.type === "PAYMENT_INFO"
+        ? {
+            ...n,
+            config: {
+              ...n.config,
+              shipsPhysicalProduct: true,
+              rewardDescription: "a free pair of our running shoes",
+            },
+          }
+        : n,
+    );
+    const shipVersion = await prisma.workflowVersion.create({
+      data: { workflowId: workflow.id, version: 3, nodeGraph: shipNodes as unknown as object },
+    });
+    const shipInstance = await prisma.executionInstance.create({
+      data: {
+        workflowVersionId: shipVersion.id,
+        creatorId: creator.id,
+        currentState: "REWARD_CONFIRMED",
+        currentNodeId: "node-reward-setup",
+      },
+    });
+    try {
+      // Auto-run Payment Info → PAYMENT_PENDING; the payout email mentions shipping.
+      await runtime.stepInstance(shipInstance.id);
+      assert.equal(await state(shipInstance.id), "PAYMENT_PENDING");
+      const shipMsgs = await listMessagesByInstance(shipInstance.id);
+      const shipReq = shipMsgs.find(
+        (m) => m.direction === "OUTBOUND" && (m.subject ?? "") === "Payment Information Required",
+      );
+      assert.ok(shipReq, "a payout-request email must be sent");
+      assert.match(shipReq!.body, /shipping address/i, "email nudges the creator about shipping");
+      console.log("  ✓ physical product: payout email nudges the creator about shipping");
+
+      // The hosted page gate reads shipsPhysicalProduct off the version's nodeGraph.
+      const shipPayment = await findPaymentInfoByInstance(shipInstance.id);
+      const resolvedShip = await findPaymentInfoByToken(shipPayment!.token);
+      assert.equal(
+        shipsPhysicalProductOf(resolvedShip),
+        true,
+        "the page gate must read shipsPhysicalProduct from the nodeGraph",
+      );
+      assert.match(
+        renderPaymentFormPage({
+          token: shipPayment!.token,
+          creatorName: "Casey Creator",
+          brandName: "Acme",
+          showShippingAddress: shipsPhysicalProductOf(resolvedShip),
+        }),
+        /name="shipLine1"/,
+        "the rendered form must include the shipping-address section",
+      );
+      console.log("  ✓ physical product: form gate + rendered shipping section");
+
+      // Submit with a shipping address → persisted under extra.shipping.
+      const shipping = {
+        name: "Casey Creator",
+        line1: "500 Marathon Rd",
+        line2: "Apt 4",
+        city: "Austin",
+        region: "Texas",
+        postalCode: "78701",
+        country: "United States",
+      };
+      await runtime.handlePaymentSubmission(shipInstance.id, {
+        method: "PAYPAL",
+        accountIdentifier: "casey@paypal.me",
+        extra: { shipping },
+      });
+      assert.equal(await state(shipInstance.id), "PAYMENT_RECEIVED");
+      const shipSubmitted = await findPaymentInfoByInstance(shipInstance.id);
+      const extra = shipSubmitted!.extra as { shipping?: Record<string, string> } | null;
+      assert.deepEqual(extra?.shipping, shipping, "shipping address must persist in extra.shipping");
+      console.log("  ✓ physical product: shipping address persisted in PaymentInfo.extra");
+    } finally {
+      await prisma.paymentInfo.deleteMany({ where: { instanceId: shipInstance.id } });
+      await prisma.event.deleteMany({ where: { instanceId: shipInstance.id } });
+      await prisma.message.deleteMany({ where: { instanceId: shipInstance.id } });
+      await prisma.executionInstance.delete({ where: { id: shipInstance.id } });
+      await prisma.workflowVersion.delete({ where: { id: shipVersion.id } });
+    }
 
     // ── Legacy graph: no PAYMENT_INFO node → REWARD_CONFIRMED stays terminal ──
     const legacyVersion = await prisma.workflowVersion.create({

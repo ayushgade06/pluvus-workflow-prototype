@@ -83,6 +83,9 @@ export interface DraftRequest {
   deliverables?: string | undefined;
   /** Brand-supplied go-live timeline; stated only when present, never invented. */
   timeline?: string | undefined;
+  /** Free-text product/sample reward blurb (e.g. "a free pair of our running
+   *  shoes"). Mentioned in the copy only when present. */
+  rewardDescription?: string | undefined;
 }
 
 export interface DraftResponse {

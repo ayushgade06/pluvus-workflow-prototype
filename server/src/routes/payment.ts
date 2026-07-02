@@ -41,6 +41,30 @@ function brandNameOf(
   return payment?.instance.workflowVersion.workflow.campaign?.brand ?? "Your brand";
 }
 
+// Whether this campaign ships a physical product — read off the (stamped)
+// PAYMENT_INFO node config in the immutable version's nodeGraph. This is the
+// authoritative gate for the shipping-address section: the flag is stamped into
+// every node by restampBrand, and reading it from the version (not the mutable
+// campaign) keeps the hosted form pinned to what was published. Exported so the
+// verification harness can assert the gate against a real payment row.
+export function shipsPhysicalProductOf(
+  payment: Awaited<ReturnType<typeof findPaymentInfoByToken>>,
+): boolean {
+  const graph = payment?.instance.workflowVersion.nodeGraph;
+  if (!Array.isArray(graph)) return false;
+  for (const n of graph) {
+    if (!n || typeof n !== "object" || Array.isArray(n)) continue;
+    const node = n as Record<string, unknown>;
+    if (node["type"] !== "PAYMENT_INFO") continue;
+    const config =
+      node["config"] && typeof node["config"] === "object"
+        ? (node["config"] as Record<string, unknown>)
+        : {};
+    return config["shipsPhysicalProduct"] === true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // GET /payment/:token — render the form
 // ---------------------------------------------------------------------------
@@ -65,7 +89,10 @@ router.get("/:token", async (req: Request, res: Response) => {
       return;
     }
 
-    res.type("html").send(renderPaymentFormPage({ token, creatorName, brandName }));
+    const showShippingAddress = shipsPhysicalProductOf(payment);
+    res
+      .type("html")
+      .send(renderPaymentFormPage({ token, creatorName, brandName, showShippingAddress }));
   } catch (err) {
     console.error("[payment] get error:", err);
     res.status(500).type("html").send(renderPaymentInvalidPage());
@@ -96,22 +123,58 @@ router.post("/:token", async (req: Request, res: Response) => {
       return;
     }
 
+    const showShippingAddress = shipsPhysicalProductOf(payment);
+
     // ── Validate the submission ────────────────────────────────────────────
     const body = req.body as Record<string, unknown>;
-    const method = typeof body["method"] === "string" ? body["method"].trim() : "";
-    const accountIdentifier =
-      typeof body["accountIdentifier"] === "string" ? body["accountIdentifier"].trim() : "";
-    const country =
-      typeof body["country"] === "string" && body["country"].trim() ? body["country"].trim() : null;
-    const notes =
-      typeof body["notes"] === "string" && body["notes"].trim() ? body["notes"].trim() : null;
+    const str = (key: string): string =>
+      typeof body[key] === "string" ? (body[key] as string).trim() : "";
+    const method = str("method");
+    const accountIdentifier = str("accountIdentifier");
+    const country = str("country") || null;
+    const notes = str("notes") || null;
 
-    const values = { method, accountIdentifier, country: country ?? "", notes: notes ?? "" };
+    // Shipping fields are only read when the campaign ships a product. When the
+    // flag is off we ignore any submitted address fields (anti-spoof).
+    const ship = showShippingAddress
+      ? {
+          name: str("shipName"),
+          line1: str("shipLine1"),
+          line2: str("shipLine2"),
+          city: str("shipCity"),
+          region: str("shipRegion"),
+          postalCode: str("shipPostalCode"),
+          country: str("shipCountry"),
+        }
+      : null;
+
+    const values = {
+      method,
+      accountIdentifier,
+      country: country ?? "",
+      notes: notes ?? "",
+      shipName: ship?.name ?? "",
+      shipLine1: ship?.line1 ?? "",
+      shipLine2: ship?.line2 ?? "",
+      shipCity: ship?.city ?? "",
+      shipRegion: ship?.region ?? "",
+      shipPostalCode: ship?.postalCode ?? "",
+      shipCountry: ship?.country ?? "",
+    };
     const rejectWith = (error: string) =>
       res
         .status(400)
         .type("html")
-        .send(renderPaymentFormPage({ token, creatorName, brandName, error, values }));
+        .send(
+          renderPaymentFormPage({
+            token,
+            creatorName,
+            brandName,
+            showShippingAddress,
+            error,
+            values,
+          }),
+        );
 
     if (!VALID_METHODS.has(method)) {
       rejectWith("Please choose a payout method.");
@@ -120,6 +183,16 @@ router.post("/:token", async (req: Request, res: Response) => {
     if (!accountIdentifier) {
       rejectWith("Please enter your account identifier or email.");
       return;
+    }
+    // Require the minimum shippable set when collecting an address. line2/region
+    // are optional (not every locale uses them).
+    if (ship) {
+      if (!ship.name || !ship.line1 || !ship.city || !ship.postalCode || !ship.country) {
+        rejectWith(
+          "Please complete your shipping address (name, address, city, postal code, and country).",
+        );
+        return;
+      }
     }
 
     // ── Hand control back to the workflow engine ───────────────────────────
@@ -136,6 +209,9 @@ router.post("/:token", async (req: Request, res: Response) => {
           accountIdentifier,
           country,
           notes,
+          // Persist the shipping address under PaymentInfo.extra (no schema
+          // change) only when we actually collected one.
+          ...(ship ? { extra: { shipping: ship } } : {}),
         },
         { source: "payment-form", worker: "payment-route" },
       );

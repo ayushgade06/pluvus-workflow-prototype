@@ -39,8 +39,10 @@ export async function createPaymentInfo(data: {
 }
 
 /** Resolve a payout token back to its PaymentInfo row (with the instance +
- *  creator, so the hosted page can greet the creator by name). Null when the
- *  token is unknown. */
+ *  creator, so the hosted page can greet the creator by name). The workflow
+ *  version's `nodeGraph` is included so the route can read the (stamped)
+ *  `shipsPhysicalProduct` flag off the PAYMENT_INFO node and decide whether to
+ *  render the shipping-address section. Null when the token is unknown. */
 export async function findPaymentInfoByToken(
   token: string,
 ): Promise<
@@ -49,7 +51,10 @@ export async function findPaymentInfoByToken(
         id: string;
         currentState: string;
         creator: { name: string; email: string };
-        workflowVersion: { workflow: { campaign: { brand: string } | null } };
+        workflowVersion: {
+          nodeGraph: Prisma.JsonValue;
+          workflow: { campaign: { brand: string } | null };
+        };
       };
     })
   | null
@@ -63,7 +68,10 @@ export async function findPaymentInfoByToken(
           currentState: true,
           creator: { select: { name: true, email: true } },
           workflowVersion: {
-            select: { workflow: { select: { campaign: { select: { brand: true } } } } },
+            select: {
+              nodeGraph: true,
+              workflow: { select: { campaign: { select: { brand: true } } } },
+            },
           },
         },
       },

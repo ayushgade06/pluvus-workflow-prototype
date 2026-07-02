@@ -19,6 +19,9 @@ export interface RewardConfirmationInput {
   /** Brand-supplied go-live timeline (e.g. "Content live by July 20, 2026").
    *  Stated as its own line only when present — never invented. */
   timeline?: string | undefined;
+  /** Free-text product/sample reward blurb (e.g. "a free pair of our running
+   *  shoes"). Rendered as its own bullet only when present. */
+  rewardDescription?: string | undefined;
 }
 
 /** Split brand-supplied free-text deliverables into individual bullet lines.
@@ -43,6 +46,10 @@ export function renderRewardConfirmationEmail(input: RewardConfirmationInput): E
   const timeline = typeof input.timeline === "string" && input.timeline.trim()
     ? input.timeline.trim()
     : undefined;
+  const reward =
+    typeof input.rewardDescription === "string" && input.rewardDescription.trim()
+      ? input.rewardDescription.trim()
+      : undefined;
 
   const body = [
     `Hi ${input.creatorName},`,
@@ -57,7 +64,8 @@ export function renderRewardConfirmationEmail(input: RewardConfirmationInput): E
     `• Commission: ${commissionLine}`,
     `• Deliverables:`,
     deliverablesBlock,
-    // Timeline is an optional line, appended only when the brand supplied one.
+    // Reward + Timeline are optional lines, appended only when supplied.
+    ...(reward ? [`• Reward: ${reward}`] : []),
     ...(timeline ? [`• Timeline: ${timeline}`] : []),
     ``,
     `If everything looks correct, simply reply:`,

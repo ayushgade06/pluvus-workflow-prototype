@@ -17,12 +17,15 @@ export interface ContentBriefInput {
   referralLink: string;
   /** Optional brand-authored notes, shown in the body. Empty string when none. */
   creatorNotes: string;
+  /** Optional product/sample reward blurb. Empty string for cash-only deals. */
+  rewardDescription?: string;
 }
 
 /** Render the "Your Campaign Brief" email body + subject. */
 export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
   const referral = input.referralLink.trim();
   const notes = input.creatorNotes.trim();
+  const reward = (input.rewardDescription ?? "").trim();
 
   const lines: string[] = [
     `Hi ${input.creatorName},`,
@@ -33,6 +36,11 @@ export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
     ``,
     `Attached is your campaign brief containing all campaign requirements, deliverables, timelines, and content guidelines.`,
   ];
+
+  // Product/sample reward reminder — only when the brand configured a reward.
+  if (reward) {
+    lines.push(``, `As part of this collaboration, you'll receive ${reward}.`);
+  }
 
   // Referral link — only stated when the brand configured one (it's optional).
   if (referral) {

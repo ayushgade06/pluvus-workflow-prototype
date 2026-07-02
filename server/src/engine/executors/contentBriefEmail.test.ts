@@ -83,6 +83,23 @@ test("body omits notes cleanly when none are provided (no empty gap markers)", (
   assert.match(body, /Please review the attached document/);
 });
 
+// ── Product/sample reward ────────────────────────────────────────────────────
+test("body mentions the reward when a rewardDescription is provided", () => {
+  const { body } = renderContentBriefEmail({
+    creatorName: "Ada",
+    brandName: "Pluvus",
+    referralLink: "",
+    creatorNotes: "",
+    rewardDescription: "a free pair of our running shoes",
+  });
+  assert.match(body, /you'll receive a free pair of our running shoes\./);
+});
+
+test("body omits the reward sentence when no reward is configured", () => {
+  // full() is built without a rewardDescription.
+  assert.doesNotMatch(full().body, /you'll receive/);
+});
+
 // ── No attachment bytes here (that's the executor's job) ─────────────────────
 test("renderer returns only subject + body (attachment is added by the executor)", () => {
   const draft = full();

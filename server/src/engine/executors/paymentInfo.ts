@@ -89,11 +89,15 @@ export async function executePaymentInfo(
     typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
+  // Physical-product campaigns collect a shipping address on the same form, so
+  // the request email tells the creator to expect it. Stamped by restampBrand.
+  const collectShippingAddress = config["shipsPhysicalProduct"] === true;
   const draft = renderPaymentRequestEmail({
     creatorName: creator.name,
     brandName,
     senderName,
     formLink,
+    collectShippingAddress,
   });
 
   // 3. Idempotent send keyed on (instance, payment_request) — a re-run of the

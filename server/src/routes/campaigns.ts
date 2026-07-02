@@ -28,6 +28,11 @@ router.get("/", async (_req: Request, res: Response) => {
         objective: c.objective,
         notes: c.notes,
         notifyEmail: c.notifyEmail,
+        brandDescription: c.brandDescription,
+        deliverables: c.deliverables,
+        timeline: c.timeline,
+        rewardDescription: c.rewardDescription,
+        shipsPhysicalProduct: c.shipsPhysicalProduct,
         createdAt: c.createdAt.toISOString(),
         updatedAt: c.updatedAt.toISOString(),
         workflowCount: c._count.workflows,
@@ -48,17 +53,29 @@ function isEmailish(value: string): boolean {
 
 // POST /campaigns — create a campaign
 router.post("/", async (req: Request, res: Response) => {
-  const { name, brand, objective, notes, notifyEmail, brandDescription, deliverables, timeline } =
-    req.body as {
-      name?: string;
-      brand?: string;
-      objective?: string;
-      notes?: string;
-      notifyEmail?: string;
-      brandDescription?: string;
-      deliverables?: string;
-      timeline?: string;
-    };
+  const {
+    name,
+    brand,
+    objective,
+    notes,
+    notifyEmail,
+    brandDescription,
+    deliverables,
+    timeline,
+    rewardDescription,
+    shipsPhysicalProduct,
+  } = req.body as {
+    name?: string;
+    brand?: string;
+    objective?: string;
+    notes?: string;
+    notifyEmail?: string;
+    brandDescription?: string;
+    deliverables?: string;
+    timeline?: string;
+    rewardDescription?: string;
+    shipsPhysicalProduct?: boolean;
+  };
 
   if (!name || typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
@@ -85,6 +102,9 @@ router.post("/", async (req: Request, res: Response) => {
       brandDescription: typeof brandDescription === "string" ? brandDescription.trim() || null : null,
       deliverables: typeof deliverables === "string" ? deliverables.trim() || null : null,
       timeline: typeof timeline === "string" ? timeline.trim() || null : null,
+      rewardDescription:
+        typeof rewardDescription === "string" ? rewardDescription.trim() || null : null,
+      shipsPhysicalProduct: shipsPhysicalProduct === true,
     });
     res.status(201).json({
       id: campaign.id,
@@ -96,6 +116,8 @@ router.post("/", async (req: Request, res: Response) => {
       brandDescription: campaign.brandDescription,
       deliverables: campaign.deliverables,
       timeline: campaign.timeline,
+      rewardDescription: campaign.rewardDescription,
+      shipsPhysicalProduct: campaign.shipsPhysicalProduct,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {
@@ -122,6 +144,8 @@ router.get("/:id", async (req: Request, res: Response) => {
       brandDescription: campaign.brandDescription,
       deliverables: campaign.deliverables,
       timeline: campaign.timeline,
+      rewardDescription: campaign.rewardDescription,
+      shipsPhysicalProduct: campaign.shipsPhysicalProduct,
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       workflows: campaign.workflows.map((w) => ({
@@ -181,6 +205,8 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
           ...(campaign.brandDescription ? { brandDescription: campaign.brandDescription } : {}),
           ...(campaign.deliverables ? { deliverables: campaign.deliverables } : {}),
           ...(campaign.timeline ? { timeline: campaign.timeline } : {}),
+          ...(campaign.rewardDescription ? { rewardDescription: campaign.rewardDescription } : {}),
+          ...(campaign.shipsPhysicalProduct ? { shipsPhysicalProduct: true } : {}),
           ...node.config,
         },
       }),
@@ -210,13 +236,24 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
 
 // PATCH /campaigns/:id — update editable campaign fields (notifyEmail, etc.)
 router.patch("/:id", async (req: Request, res: Response) => {
-  const { notifyEmail, objective, notes, brandDescription, deliverables, timeline } = req.body as {
+  const {
+    notifyEmail,
+    objective,
+    notes,
+    brandDescription,
+    deliverables,
+    timeline,
+    rewardDescription,
+    shipsPhysicalProduct,
+  } = req.body as {
     notifyEmail?: string | null;
     objective?: string | null;
     notes?: string | null;
     brandDescription?: string | null;
     deliverables?: string | null;
     timeline?: string | null;
+    rewardDescription?: string | null;
+    shipsPhysicalProduct?: boolean;
   };
 
   const patch: Parameters<typeof updateCampaign>[1] = {};
@@ -244,6 +281,13 @@ router.patch("/:id", async (req: Request, res: Response) => {
   if (timeline !== undefined) {
     patch.timeline = typeof timeline === "string" ? timeline.trim() || null : null;
   }
+  if (rewardDescription !== undefined) {
+    patch.rewardDescription =
+      typeof rewardDescription === "string" ? rewardDescription.trim() || null : null;
+  }
+  if (shipsPhysicalProduct !== undefined) {
+    patch.shipsPhysicalProduct = shipsPhysicalProduct === true;
+  }
 
   try {
     const existing = await findCampaignById(req.params["id"]!);
@@ -262,6 +306,8 @@ router.patch("/:id", async (req: Request, res: Response) => {
       brandDescription: campaign.brandDescription,
       deliverables: campaign.deliverables,
       timeline: campaign.timeline,
+      rewardDescription: campaign.rewardDescription,
+      shipsPhysicalProduct: campaign.shipsPhysicalProduct,
       updatedAt: campaign.updatedAt.toISOString(),
     });
   } catch (err) {

@@ -81,6 +81,52 @@ test("shows a validation error when provided and re-populates prior values", () 
   assert.ok(html.includes('value="UK"'));
 });
 
+// ── Shipping-address section (physical product) ──────────────────────────────
+test("no shipping-address fields by default (payout-only form)", () => {
+  const html = renderPaymentFormPage({ token: "t", creatorName: "Ada", brandName: "Pluvus" });
+  assert.doesNotMatch(html, /name="shipLine1"/);
+  assert.doesNotMatch(html, /Shipping address/i);
+});
+
+test("renders the shipping-address section when showShippingAddress is true", () => {
+  const html = renderPaymentFormPage({
+    token: "t",
+    creatorName: "Ada",
+    brandName: "Pluvus",
+    showShippingAddress: true,
+  });
+  assert.match(html, /Shipping address/i);
+  // Required address fields.
+  for (const name of ["shipName", "shipLine1", "shipCity", "shipPostalCode", "shipCountry"]) {
+    assert.match(html, new RegExp(`name="${name}"[^>]*required`), `missing required ${name}`);
+  }
+  // Optional address fields present but not required.
+  assert.match(html, /name="shipLine2"/);
+  assert.match(html, /name="shipRegion"/);
+});
+
+test("re-populates shipping values after a validation error", () => {
+  const html = renderPaymentFormPage({
+    token: "t",
+    creatorName: "Ada",
+    brandName: "Pluvus",
+    showShippingAddress: true,
+    error: "Please complete your shipping address.",
+    values: {
+      method: "PAYPAL",
+      accountIdentifier: "ada@x.io",
+      shipName: "Ada Lovelace",
+      shipLine1: "12 Analytical Ave",
+      shipCity: "London",
+      shipPostalCode: "EC1A",
+      shipCountry: "UK",
+    },
+  });
+  assert.ok(html.includes('value="Ada Lovelace"'));
+  assert.ok(html.includes('value="12 Analytical Ave"'));
+  assert.ok(html.includes('value="EC1A"'));
+});
+
 // ── Notice pages ───────────────────────────────────────────────────────────
 test("thank-you page confirms receipt and mentions the content brief", () => {
   const html = renderPaymentThankYouPage({ creatorName: "Ada", brandName: "Pluvus" });
