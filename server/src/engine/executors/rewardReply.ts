@@ -1,6 +1,9 @@
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
-import { listMessagesByInstance } from "../../db/index.js";
+import { listEventsByInstance, listMessagesByInstance } from "../../db/index.js";
+import { sendOnce } from "./idempotentSend.js";
+import { resolveAgreedFee } from "./rewardSetup.js";
+import { renderRateFixedEmail } from "./rateFixedEmail.js";
 
 // ---------------------------------------------------------------------------
 // Reward Setup reply handling
@@ -37,9 +40,37 @@ const AGREEMENT_PATTERNS: RegExp[] = [
   /^\s*yes\b/, // a leading "yes" (bare affirmative)
 ];
 
-/** True when the reply text explicitly agrees, by deterministic phrase match. */
+// Signals that the reply is trying to RE-OPEN the price rather than agree, even
+// when it also contains an affirmative word ("yes, but can you do $600?"). If any
+// of these appear, the deterministic agreement fast-path is suppressed so the
+// reply is NOT auto-confirmed at the old rate — it falls through to the "rate is
+// fixed" auto-reply instead. Matched on the lower-cased reply.
+const RENEGOTIATION_PATTERNS: RegExp[] = [
+  /\$\s*\d/, // an explicit dollar amount ("$600", "$ 600")
+  /\bcan\s+(?:you|we)\s+(?:do|go|make\s+it)\b/,
+  /\bhow\s+about\b/,
+  /\binstead\b/,
+  /\bmore\s+than\b/,
+  /\b(?:bump|raise|increase)\b/,
+  /\bhigher\b/,
+  /\bnegotiat/,
+  /\bcounter\b/,
+];
+
+/** True when the reply appears to re-open the fee (a counter, not an agreement). */
+export function looksLikeRenegotiation(text: string | undefined): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return RENEGOTIATION_PATTERNS.some((re) => re.test(lower));
+}
+
+/** True when the reply text explicitly agrees, by deterministic phrase match.
+ *  A reply that also tries to re-open the fee (see looksLikeRenegotiation) is
+ *  NOT treated as a deterministic agreement, so "yes, but $600?" no longer
+ *  silently confirms the deal at the already-agreed rate. */
 export function isDeterministicAgreement(text: string | undefined): boolean {
   if (!text) return false;
+  if (looksLikeRenegotiation(text)) return false;
   const lower = text.toLowerCase();
   return AGREEMENT_PATTERNS.some((re) => re.test(lower));
 }
@@ -59,6 +90,12 @@ export async function isAgreementReply(
   if (isDeterministicAgreement(text)) {
     return { confirmed: true, intent: "AGREEMENT", confidence: 1 };
   }
+  // A reply that tries to re-open the fee is never a confirmation, even if the
+  // classifier reads its affirmative tone as POSITIVE ("yes, but can you do
+  // $600?"). Flag it explicitly so the caller sends the "rate is fixed" reply.
+  if (looksLikeRenegotiation(text)) {
+    return { confirmed: false, intent: "RENEGOTIATION", confidence: 1 };
+  }
   const { intent, confidence } = await agent.classify(text);
   return { confirmed: intent === "POSITIVE", intent, confidence };
 }
@@ -73,10 +110,11 @@ export async function isAgreementReply(
  */
 export async function executeRewardReply(
   ctx: ExecutionContext,
-  _email: IEmailProvider,
+  email: IEmailProvider,
   agent: IAgentProvider,
 ): Promise<NodeResult> {
-  const { instance, node } = ctx;
+  const { instance, node, nodeGraph, creator } = ctx;
+  const config = node.config;
 
   if (instance.currentState !== "REWARD_PENDING") {
     throw new Error(
@@ -106,8 +144,34 @@ export async function executeRewardReply(
     };
   }
 
-  // Not a confirmation (a question, a clarification, or an unclear reply). Stay
-  // in REWARD_PENDING at the same node and keep waiting — no AI negotiation here.
+  // Not a confirmation. The deal is already closed at a fixed fee, so there is no
+  // further negotiation here — send a polite deterministic auto-reply stating the
+  // rate is finalized and redirecting the creator to the one action left at this
+  // stage: confirm the agreement (or ask brief questions). Stay in REWARD_PENDING.
+  //
+  // The send is keyed on the inbound message id (unique per reply) so a creator
+  // who emails several times each gets a response — not just the first — and a
+  // worker retry of THIS reply never double-sends.
+  const negotiationConfig =
+    nodeGraph.find((n) => n.type === "NEGOTIATION")?.config ?? {};
+  const events = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
+  const agreedFee = resolveAgreedFee(events, negotiationConfig, config);
+  const brandName =
+    typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
+  const senderName =
+    typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
+
+  const autoReply = renderRateFixedEmail("reward", {
+    creatorName: creator.name,
+    brandName,
+    senderName,
+    agreedFee,
+  });
+  const replyKey = latestInbound
+    ? `reward:rate-fixed:${instance.id}:${latestInbound.id}`
+    : `reward:rate-fixed:${instance.id}`;
+  await sendOnce(email, instance.id, creator, autoReply, replyKey);
+
   return {
     nextState: "REWARD_PENDING",
     nextNodeId: node.id,
@@ -115,6 +179,7 @@ export async function executeRewardReply(
     eventPayload: {
       intent,
       confidence,
+      rateFixedReplySent: true,
       ...(latestInbound ? { messageId: latestInbound.id } : {}),
     },
   };

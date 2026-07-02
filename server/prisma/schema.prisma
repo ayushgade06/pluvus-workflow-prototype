@@ -130,6 +130,10 @@ enum EventType {
   REWARD_REPLY_UNCONFIRMED
   // Payment Info: the payout-information request email was sent to the creator.
   PAYMENT_INFO_SENT
+  // Payment Info: an inbound email reply arrived while awaiting the payout form
+  // (often a re-negotiation attempt); a "rate is fixed" auto-reply was sent and
+  // the instance stayed in PAYMENT_PENDING.
+  PAYMENT_REPLY_UNRESOLVED
   // Payment Info: the creator submitted their payout information via the form.
   PAYMENT_RECEIVED
   // Content Brief: the campaign-brief email (PDF attachment + referral link) was

@@ -7,7 +7,11 @@
 
 import assert from "node:assert/strict";
 import type { Creator } from "@prisma/client";
-import { isDeterministicAgreement, isAgreementReply } from "./rewardReply.js";
+import {
+  isDeterministicAgreement,
+  isAgreementReply,
+  looksLikeRenegotiation,
+} from "./rewardReply.js";
 import type { IAgentProvider } from "../providers.js";
 import type { ClassifyResult, EmailDraft, NegotiateResult } from "../types.js";
 
@@ -82,6 +86,41 @@ test("standalone 'Confirmed' still matches", () => {
 test("empty / undefined → false", () => {
   assert.equal(isDeterministicAgreement(""), false);
   assert.equal(isDeterministicAgreement(undefined), false);
+});
+
+// ── Post-acceptance re-negotiation must NOT be treated as agreement ────────
+// The deal is closed at a fixed fee; a reply that says "yes" AND tries to re-open
+// the price must fall through to the "rate is fixed" auto-reply, never confirm.
+test("'yes, but can you do $600?' does NOT deterministically agree", () => {
+  assert.equal(isDeterministicAgreement("yes, but can you do $600?"), false);
+});
+test("'I agree if you can bump it to $700' does NOT agree", () => {
+  assert.equal(isDeterministicAgreement("I agree if you can bump it to $700"), false);
+});
+test("'looks good, how about $500 instead' does NOT agree", () => {
+  assert.equal(isDeterministicAgreement("looks good, how about $500 instead"), false);
+});
+test("looksLikeRenegotiation flags a dollar amount", () => {
+  assert.equal(looksLikeRenegotiation("can we do $600"), true);
+});
+test("looksLikeRenegotiation flags 'increase'/'higher'", () => {
+  assert.equal(looksLikeRenegotiation("can we increase it a bit"), true);
+  assert.equal(looksLikeRenegotiation("I was hoping for something higher"), true);
+});
+test("a plain 'I Agree' is NOT flagged as renegotiation", () => {
+  assert.equal(looksLikeRenegotiation("I Agree, let's go"), false);
+});
+test("a plain agreement still matches after the tightening", () => {
+  // Guards against the renegotiation filter being over-broad.
+  assert.equal(isDeterministicAgreement("Yes, sounds perfect — I Agree"), true);
+});
+
+// isAgreementReply: a "yes + counter" is reported as RENEGOTIATION, not confirmed,
+// even when the classifier would read the affirmative tone as POSITIVE.
+await runAsync("'yes but $600' is not confirmed even if classifier says POSITIVE", async () => {
+  const r = await isAgreementReply("yes, but can you do $600?", stubAgent("POSITIVE"));
+  assert.equal(r.confirmed, false);
+  assert.equal(r.intent, "RENEGOTIATION");
 });
 
 // ── isAgreementReply: deterministic wins without calling the classifier ────

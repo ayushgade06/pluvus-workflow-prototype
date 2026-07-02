@@ -6,5 +6,6 @@ export { executeNegotiation } from "./negotiation.js";
 export { executeRewardSetup } from "./rewardSetup.js";
 export { executeRewardReply } from "./rewardReply.js";
 export { executePaymentInfo, executePaymentSubmission } from "./paymentInfo.js";
+export { executePaymentReply } from "./paymentReply.js";
 export { executeContentBrief } from "./contentBrief.js";
 export { executeEnd } from "./end.js";

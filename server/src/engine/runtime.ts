@@ -23,6 +23,7 @@ import {
   executeRewardReply,
   executePaymentInfo,
   executePaymentSubmission,
+  executePaymentReply,
   executeContentBrief,
   executeEnd,
 } from "./executors/index.js";
@@ -143,6 +144,11 @@ export class WorkflowRuntime {
       source?: TransitionSource;
       worker?: string | undefined;
       queueJobId?: string | undefined;
+      // Disambiguates the Payment Info waiting phase: a hosted-form submission
+      // (default) finalizes the payout and advances; an inbound email "reply"
+      // triggers the "rate is fixed" auto-reply and stays in PAYMENT_PENDING.
+      // Ignored by every other node type.
+      phase?: "submission" | "reply";
     },
   ): Promise<ExecutionContext> {
     const ctx = await this.loadContext(instanceId);
@@ -155,7 +161,7 @@ export class WorkflowRuntime {
     }
 
     // Dispatch to the correct executor
-    const result = await this.dispatch(ctx);
+    const result = await this.dispatch(ctx, opts?.phase);
 
     // Validate the proposed transition
     assertTransition(instance.currentState, result.nextState);
@@ -398,6 +404,78 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // handlePaymentReply
+  // -------------------------------------------------------------------------
+  // An inbound EMAIL reply arrived while the instance is in PAYMENT_PENDING
+  // (Payment Info waiting on the creator's payout FORM submission). The expected
+  // action here is the hosted form, not an email — so an email is usually a
+  // question or a re-negotiation attempt. The deal is already closed at a fixed
+  // fee, so this does NOT negotiate: it persists the inbound message and steps the
+  // Payment Info node in the "reply" phase, which sends the "rate is fixed"
+  // auto-reply (redirecting the creator to the payout form) and stays in
+  // PAYMENT_PENDING.
+  //
+  // Kept separate from handlePaymentSubmission (a form submission, no Message row)
+  // and from injectReply (which forces REPLY_RECEIVED, invalid from PAYMENT_PENDING).
+
+  async handlePaymentReply(
+    instanceId: string,
+    opts: {
+      subject: string;
+      body: string;
+      threadId?: string;
+      externalMessageId?: string;
+      source?: TransitionSource;
+      worker?: string | undefined;
+      queueJobId?: string | undefined;
+    },
+  ): Promise<ExecutionContext> {
+    const instance = await findInstanceById(instanceId);
+    if (!instance) {
+      throw new Error(`Instance not found: ${instanceId}`);
+    }
+    if (instance.currentState !== "PAYMENT_PENDING") {
+      throw new Error(
+        `handlePaymentReply expects PAYMENT_PENDING state, got ${instance.currentState}`,
+      );
+    }
+
+    const now = new Date();
+    const externalMessageId =
+      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
+
+    // Persist the inbound reply so executePaymentReply can read it (same contract
+    // as handleRewardReply → executeRewardReply).
+    await createMessage({
+      instance: { connect: { id: instanceId } },
+      direction: "INBOUND",
+      subject: opts.subject,
+      body: opts.body,
+      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
+      externalMessageId,
+      receivedAt: now,
+    });
+
+    await appendEvent({
+      instance: { connect: { id: instanceId } },
+      type: "INBOUND_REPLY_RECEIVED",
+      nodeId: instance.currentNodeId ?? null,
+      payload: { subject: opts.subject, externalMessageId, paymentReply: true },
+      occurredAt: now,
+    });
+
+    // Step the node in the "reply" phase — dispatch runs executePaymentReply
+    // (sends the "rate is fixed" auto-reply, stays PAYMENT_PENDING), reusing the
+    // standard OCC + event-writing path in stepInstance.
+    return this.stepInstance(instanceId, {
+      source: opts.source ?? "inbound-email",
+      worker: opts.worker,
+      queueJobId: opts.queueJobId,
+      phase: "reply",
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // handlePaymentSubmission
   // -------------------------------------------------------------------------
   // The creator submitted the hosted payout form while the instance is in
@@ -561,7 +639,10 @@ export class WorkflowRuntime {
   // Private: dispatch to executor
   // -------------------------------------------------------------------------
 
-  private async dispatch(ctx: ExecutionContext) {
+  private async dispatch(
+    ctx: ExecutionContext,
+    phase: "submission" | "reply" = "submission",
+  ) {
     const { node } = ctx;
 
     switch (node.type) {
@@ -586,14 +667,20 @@ export class WorkflowRuntime {
         }
         return executeRewardSetup(ctx, this.email, this.agent);
       case "PAYMENT_INFO":
-        // The Payment Info node has two phases keyed on state:
-        //   REWARD_CONFIRMED → send the payout-form email, enter waiting
-        //   PAYMENT_PENDING   → the creator submitted the form; finalize + advance
-        // The submission phase is normally driven via handlePaymentSubmission (the
-        // hosted payment route); dispatching on state keeps a direct
-        // stepInstance() correct too.
+        // The Payment Info node has three phases:
+        //   REWARD_CONFIRMED            → send the payout-form email, enter waiting
+        //   PAYMENT_PENDING + submission → the creator submitted the form; finalize + advance
+        //   PAYMENT_PENDING + reply      → an inbound EMAIL arrived (often a
+        //                                  re-negotiation attempt); send the "rate
+        //                                  is fixed" auto-reply and stay waiting.
+        // The submission phase is driven via handlePaymentSubmission (the hosted
+        // payment route); the reply phase via handlePaymentReply (inbound worker).
+        // The phase defaults to "submission" so a direct stepInstance() is
+        // unchanged from before.
         if (ctx.instance.currentState === "PAYMENT_PENDING") {
-          return executePaymentSubmission(ctx, this.email, this.agent);
+          return phase === "reply"
+            ? executePaymentReply(ctx, this.email, this.agent)
+            : executePaymentSubmission(ctx, this.email, this.agent);
         }
         return executePaymentInfo(ctx, this.email, this.agent);
       case "CONTENT_BRIEF":

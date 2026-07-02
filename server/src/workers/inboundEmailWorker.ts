@@ -137,6 +137,35 @@ async function handleInboundEmail(
       return;
     }
 
+    // ── Payment Info reply branch ──────────────────────────────────────────
+    // A reply that arrives while the instance is in PAYMENT_PENDING is an email
+    // sent while we're waiting on the creator's hosted payout FORM — usually a
+    // question or a re-negotiation attempt, NOT the form. Route it to the payment
+    // reply handler, which sends the "rate is fixed" auto-reply (redirecting to
+    // the form) and keeps the instance in PAYMENT_PENDING. This bypasses
+    // injectReply's forced REPLY_RECEIVED transition, which is invalid here.
+    if (instance.currentState === "PAYMENT_PENDING") {
+      try {
+        await runtime.handlePaymentReply(instanceId, {
+          subject,
+          body,
+          threadId,
+          externalMessageId,
+          worker: "inbound-email",
+          queueJobId: job.id,
+        });
+      } catch (err) {
+        if (err instanceof StaleInstanceError) {
+          console.log(
+            `[inbound-email] OCC conflict on handlePaymentReply — ${err.message} (job ${job.id})`,
+          );
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+
     try {
       await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
     } catch (err) {
