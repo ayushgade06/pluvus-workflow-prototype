@@ -93,13 +93,24 @@ export function createCampaign(data: {
   brandDescription?: string;
   deliverables?: string;
   timeline?: string;
+  rewardDescription?: string;
+  shipsPhysicalProduct?: boolean;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }
 
 export function updateCampaign(
   id: string,
-  data: { notifyEmail?: string | null; objective?: string | null; notes?: string | null },
+  data: {
+    notifyEmail?: string | null;
+    objective?: string | null;
+    notes?: string | null;
+    brandDescription?: string | null;
+    deliverables?: string | null;
+    timeline?: string | null;
+    rewardDescription?: string | null;
+    shipsPhysicalProduct?: boolean;
+  },
 ) {
   return apiFetch<{ id: string; notifyEmail: string | null }>(`/api/campaigns/${id}`, {
     method: "PATCH",
@@ -187,6 +198,26 @@ export function useCreators() {
  * ["creators"] query afterward (see useBuilderInvalidator.invalidateCreators). */
 export function importCreators(rows: CreatorImportRow[]) {
   return postJson<CreatorImportResponse>("/api/creators/import", { rows });
+}
+
+// ---------------------------------------------------------------------------
+// Uploads (Phase 16 — Content Brief PDF)
+// ---------------------------------------------------------------------------
+
+export interface UploadResponse {
+  /** The stored reference to persist in node config. */
+  reference: string;
+  /** The original filename, for display + the email attachment. */
+  originalName: string;
+  size: number;
+}
+
+/** Upload a single PDF file. Returns the stored reference to persist in config. */
+export async function uploadFile(file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  // Note: do NOT set Content-Type — the browser sets the multipart boundary.
+  return apiFetch<UploadResponse>("/api/uploads", { method: "POST", body: form });
 }
 
 // ---------------------------------------------------------------------------

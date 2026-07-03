@@ -134,18 +134,22 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
 
   return (
     <div
+      className="ds-fade-in"
       style={{
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        padding: "20px 24px",
-        gap: 16,
+        padding: "24px 28px",
+        gap: 18,
         overflow: "hidden",
+        maxWidth: 1080,
+        margin: "0 auto",
+        width: "100%",
       }}
     >
       {/* Summary tiles */}
-      <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
-        <StatTile label="Already Enrolled" value={enrolledCount} color={colors.accent} />
+      <div style={{ display: "flex", gap: 14, flexShrink: 0 }}>
+        <StatTile label="Already Enrolled" value={enrolledCount} color={enrolledCount > 0 ? colors.accent : undefined} />
         <StatTile label="Selected" value={selected.size} color={selected.size > 0 ? colors.success : undefined} />
         <StatTile label="Total Creators" value={creators?.length ?? 0} />
       </div>
@@ -221,7 +225,8 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           overflow: "auto",
           border: `1px solid ${colors.border}`,
           borderRadius: radii.md,
-          background: colors.bg,
+          background: colors.panel,
+          boxShadow: "0 1px 2px rgba(0,0,0,0.4)",
           minHeight: 0,
         }}
       >
@@ -244,21 +249,50 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
       </div>
 
       {/* Enroll action */}
-      <Button
-        variant="primary"
-        fullWidth
-        disabled={selected.size === 0 || submitting}
-        onClick={() => void handleEnroll()}
-        style={{ height: 40, flexShrink: 0 }}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          flexShrink: 0,
+          paddingBottom: 4,
+        }}
       >
-        {submitting
-          ? "Enrolling…"
-          : selected.size === 0
-          ? "Select creators to enroll"
-          : `Enroll ${selected.size} creator${selected.size !== 1 ? "s" : ""}`}
-      </Button>
+        <span style={{ fontSize: font.size.sm, color: colors.textDim, flex: 1 }}>
+          {selected.size === 0
+            ? "Select creators above to enroll them into this workflow."
+            : `${selected.size} creator${selected.size !== 1 ? "s" : ""} selected`}
+        </span>
+        <Button
+          variant="primary"
+          disabled={selected.size === 0 || submitting}
+          onClick={() => void handleEnroll()}
+          style={{ height: 40, padding: "0 22px", flexShrink: 0 }}
+        >
+          {submitting
+            ? "Enrolling…"
+            : selected.size === 0
+            ? "Select creators to enroll"
+            : `Enroll ${selected.size} creator${selected.size !== 1 ? "s" : ""}`}
+        </Button>
+      </div>
     </div>
   );
+}
+
+// Deterministic avatar tint per creator (pure presentation — derived from the
+// name we already render).
+const AVATAR_COLORS = ["#6e7cf5", "#a78bfa", "#57d9a3", "#d9a03f", "#e0784a", "#8b96f8"];
+function avatarColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length]!;
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0]?.[0] ?? "?";
+  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
+  return (first + last).toUpperCase();
 }
 
 function CreatorRow({
@@ -270,17 +304,19 @@ function CreatorRow({
   selected: boolean;
   onToggle: () => void;
 }) {
+  const tint = avatarColor(creator.name);
   return (
     <label
       className="ds-row"
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "10px 14px",
+        gap: 14,
+        padding: "12px 16px",
         borderBottom: `1px solid ${colors.border}`,
         cursor: "pointer",
-        background: selected ? "rgba(56,139,253,0.06)" : "transparent",
+        background: selected ? `${colors.accent}0f` : "transparent",
+        boxShadow: selected ? `inset 2px 0 0 ${colors.accent}` : "none",
       }}
     >
       <input
@@ -291,20 +327,70 @@ function CreatorRow({
         aria-label={`Select ${creator.name}`}
         style={{ width: 16, height: 16, accentColor: colors.accent, cursor: "pointer", flexShrink: 0 }}
       />
+      <span
+        aria-hidden
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: "50%",
+          background: `${tint}1c`,
+          border: `1px solid ${tint}33`,
+          color: tint,
+          fontSize: 11,
+          fontWeight: font.weight.semibold,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          letterSpacing: 0.3,
+        }}
+      >
+        {initials(creator.name)}
+      </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: font.size.md, fontWeight: font.weight.semibold, color: colors.text }}>
+        <div style={{ fontSize: font.size.md, fontWeight: font.weight.medium, color: colors.text }}>
           {creator.name}
           {creator.handle && (
-            <span style={{ fontSize: font.size.md, fontWeight: font.weight.regular, color: colors.textMuted, marginLeft: 6 }}>
+            <span style={{ fontSize: font.size.sm, fontWeight: font.weight.regular, color: colors.textDim, marginLeft: 7 }}>
               @{creator.handle}
             </span>
           )}
         </div>
-        <div style={{ fontSize: font.size.sm, color: colors.textDim }}>{creator.email}</div>
+        <div style={{ fontSize: font.size.sm, color: colors.textDim, marginTop: 1 }}>{creator.email}</div>
       </div>
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        {creator.platform && <div style={{ fontSize: font.size.sm, color: colors.textMuted }}>{creator.platform}</div>}
-        {creator.niche && <div style={{ fontSize: font.size.sm, color: colors.textDim }}>{creator.niche}</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {creator.platform && (
+          <span
+            style={{
+              fontSize: font.size.xs,
+              fontWeight: font.weight.medium,
+              color: colors.textMuted,
+              background: colors.panelAlt,
+              border: `1px solid ${colors.border}`,
+              borderRadius: radii.pill,
+              padding: "2px 9px",
+              lineHeight: 1.5,
+            }}
+          >
+            {creator.platform}
+          </span>
+        )}
+        {creator.niche && (
+          <span
+            style={{
+              fontSize: font.size.xs,
+              fontWeight: font.weight.medium,
+              color: colors.textDim,
+              background: colors.panelAlt,
+              border: `1px solid ${colors.border}`,
+              borderRadius: radii.pill,
+              padding: "2px 9px",
+              lineHeight: 1.5,
+            }}
+          >
+            {creator.niche}
+          </span>
+        )}
       </div>
     </label>
   );
@@ -313,13 +399,15 @@ function CreatorRow({
 function Banner({ children, color }: { children: React.ReactNode; color: string }) {
   return (
     <div
+      className="ds-fade-in"
       style={{
-        padding: "10px 14px",
-        background: `${color}1a`,
-        border: `1px solid ${color}`,
+        padding: "12px 16px",
+        background: `${color}12`,
+        border: `1px solid ${color}40`,
         borderRadius: radii.md,
         fontSize: font.size.md,
         color,
+        lineHeight: 1.55,
         flexShrink: 0,
       }}
     >

@@ -1,4 +1,4 @@
-import { useState, useEffect, useId } from "react";
+import { useState, useEffect, useId, useRef } from "react";
 import { colors, radii, font } from "../../theme";
 import {
   Button,
@@ -10,7 +10,9 @@ import {
   FormField,
   IconButton,
   ConfirmDialog,
+  Badge,
 } from "../ds";
+import { stateColor, stateLabel } from "../../theme";
 import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "./nodeMeta";
 import type {
   DraftNode,
@@ -18,7 +20,10 @@ import type {
   FollowUpConfig,
   ReplyDetectionConfig,
   NegotiationConfig,
+  RewardSetupConfig,
+  ContentBriefConfig,
 } from "../../api/builderTypes";
+import { uploadFile } from "../../api/builderClient";
 
 interface Props {
   node: DraftNode;
@@ -50,6 +55,7 @@ export function NodeConfigPanel({
 
   return (
     <div
+      className="ds-slide-in-right"
       style={{
         display: "flex",
         flexDirection: "column",
@@ -60,7 +66,7 @@ export function NodeConfigPanel({
       {/* Panel header */}
       <div
         style={{
-          padding: "14px 18px",
+          padding: "16px 20px",
           borderBottom: `1px solid ${colors.border}`,
           flexShrink: 0,
         }}
@@ -68,22 +74,24 @@ export function NodeConfigPanel({
         <div
           style={{
             fontSize: font.size.xs,
+            fontWeight: font.weight.semibold,
             color: colors.textDim,
             textTransform: "uppercase",
-            letterSpacing: 0.5,
-            marginBottom: 8,
+            letterSpacing: 0.8,
+            marginBottom: 10,
           }}
         >
           Step Configuration
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
           <span
             aria-hidden
             style={{
-              width: 30,
-              height: 30,
-              borderRadius: radii.sm,
-              background: `${color}1f`,
+              width: 34,
+              height: 34,
+              borderRadius: 9,
+              background: `${color}1c`,
+              border: `1px solid ${color}26`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -94,23 +102,30 @@ export function NodeConfigPanel({
             {nodeIcon(node.type)}
           </span>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text }}>
+            <div
+              style={{
+                fontSize: font.size.lg,
+                fontWeight: font.weight.semibold,
+                color: colors.text,
+                letterSpacing: -0.2,
+              }}
+            >
               {nodeLabel(node.type)}
             </div>
-            <div className="mono" style={{ fontSize: 10.5, color: colors.textDim }}>
+            <div className="mono" style={{ fontSize: 10.5, color: colors.textDim, marginTop: 2 }}>
               {node.id}
             </div>
           </div>
         </div>
         {nodeDescription(node.type) && (
-          <div style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.5, marginTop: 10 }}>
+          <div style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.55, marginTop: 12 }}>
             {nodeDescription(node.type)}
           </div>
         )}
       </div>
 
       {/* Config form */}
-      <div style={{ flex: 1, overflow: "auto", padding: "18px" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "20px" }}>
         <NodeForm node={node} onUpdate={onUpdate} />
       </div>
 
@@ -167,11 +182,11 @@ export function NodeConfigPanel({
           style={{ border: `1px solid ${isLast ? colors.border : colors.borderStrong}` }}
         />
         <div style={{ flex: 1 }} />
-        {node.type !== "END" && (
-          <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
-            Delete step
-          </Button>
-        )}
+        {/* Every node type is deletable — graph validation guarantees the flow
+            still has a valid terminal + phase order before it can be published. */}
+        <Button variant="danger" size="sm" onClick={() => setConfirmDelete(true)}>
+          Delete step
+        </Button>
       </div>
 
       {confirmDelete && (
@@ -236,6 +251,18 @@ function NodeForm({
           onUpdate={onUpdate}
         />
       );
+    case "REWARD_SETUP":
+      return <RewardSetupInfo config={node.config as RewardSetupConfig} />;
+    case "PAYMENT_INFO":
+      return <PaymentInfoInfo config={node.config as Record<string, unknown>} />;
+    case "CONTENT_BRIEF":
+      return (
+        <ContentBriefForm
+          nodeId={node.id}
+          config={node.config as ContentBriefConfig}
+          onUpdate={onUpdate}
+        />
+      );
     case "END":
       return <EndNodeInfo />;
     default:
@@ -283,7 +310,9 @@ function InitialOutreachForm({
     <FormStack>
       <InfoBox>
         The first email sent to each creator. Supports template variables:{" "}
-        <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>.
+        <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>,{" "}
+        <Code>{"{{rewardDescription}}"}</Code> (the campaign's product/sample reward, blank when
+        none).
       </InfoBox>
       <Section title="Message">
         <FormField label="Subject Line" htmlFor={subjectId}>
@@ -670,6 +699,381 @@ function NegotiationForm({
 }
 
 // ---------------------------------------------------------------------------
+// Reward Setup node (read-only summary)
+// ---------------------------------------------------------------------------
+// Finalizes the commercial agreement after a successful negotiation. The final
+// fixed fee is resolved at runtime (the rate the negotiation closed on), so it
+// is shown as "resolved from the closed deal" here; commission and deliverables
+// come from the campaign / negotiation config. Mirrors the runtime node display:
+// Final Fixed Fee · Commission · Deliverables · Status.
+
+function RewardSetupInfo({ config }: { config: RewardSetupConfig }) {
+  const commission =
+    typeof config.commissionRate === "number" && config.commissionRate > 0
+      ? config.commissionRate
+      : null;
+  const deliverablesRaw =
+    typeof config.deliverables === "string" ? config.deliverables.trim() : "";
+  const deliverableItems = deliverablesRaw
+    ? deliverablesRaw
+        .split(/\r?\n|,/)
+        .map((d) => d.trim())
+        .filter(Boolean)
+    : [];
+
+  return (
+    <FormStack>
+      <InfoBox>
+        Runs after a successful negotiation. Records the agreed fee, commission,
+        and deliverables, then emails the creator a{" "}
+        <strong>Campaign Agreement Confirmation</strong> and waits for them to
+        reply <Code>I Agree</Code> before advancing.
+      </InfoBox>
+
+      <Section title="Final Fixed Fee">
+        <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: colors.text }}>
+          Agreed rate
+        </div>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 4 }}>
+          Resolved at runtime from the rate the negotiation closed on.
+        </div>
+      </Section>
+
+      <Section title="Commission">
+        <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: colors.text }}>
+          {commission !== null ? `${commission}%` : "None"}
+        </div>
+      </Section>
+
+      <Section title="Deliverables">
+        {deliverableItems.length > 0 ? (
+          <ul style={{ margin: 0, paddingLeft: 18, color: colors.text, lineHeight: 1.7 }}>
+            {deliverableItems.map((d, i) => (
+              <li key={i} style={{ fontSize: font.size.md }}>
+                {d}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{ fontSize: font.size.sm, color: colors.textMuted }}>
+            Set on the campaign; shown to the creator in the confirmation email.
+          </div>
+        )}
+      </Section>
+
+      <Section title="Status">
+        <Badge color={stateColor["REWARD_PENDING"]} dot>
+          {stateLabel["REWARD_PENDING"]}
+        </Badge>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 8 }}>
+          Each creator waits here until they confirm. On confirmation the instance
+          moves to <strong>{stateLabel["REWARD_CONFIRMED"]}</strong>.
+        </div>
+      </Section>
+    </FormStack>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Payment Info node (read-only summary)
+// ---------------------------------------------------------------------------
+// Collects the creator's payout information after they confirm the agreement.
+// The node emails a link to a hosted payout form and waits for the submission
+// before resuming the workflow. No builder configuration today — the form link
+// and email are derived at runtime — so this mirrors the runtime node display:
+// Payment Method · Submission Status · Collected Fields.
+
+function PaymentInfoInfo({ config }: { config: Record<string, unknown> }) {
+  // The campaign's "ships a physical product" flag is stamped into every node's
+  // config; when on, the hosted form also collects a shipping address.
+  const shipsProduct = config["shipsPhysicalProduct"] === true;
+  // The fields the hosted payout form collects, with the two required ones
+  // marked. "Verified" is a placeholder only (no verification is performed).
+  const fields: Array<{ label: string; required: boolean }> = [
+    { label: "Preferred Method", required: true },
+    { label: "Account Identifier", required: true },
+    { label: "Country", required: false },
+    { label: "Notes", required: false },
+    ...(shipsProduct ? [{ label: "Shipping Address", required: true }] : []),
+  ];
+
+  return (
+    <FormStack>
+      <InfoBox>
+        Runs after the creator confirms the agreement. Emails a secure link to a{" "}
+        <strong>hosted payout form</strong> and waits for the creator to submit
+        their payout details. On submission the workflow resumes automatically —
+        this node does not send payments or verify anything.
+        {shipsProduct && (
+          <>
+            {" "}
+            This campaign ships a physical product, so the form also collects a{" "}
+            <strong>shipping address</strong>.
+          </>
+        )}
+      </InfoBox>
+
+      <Section title="Payout Methods">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {["PayPal", "Wise", "Bank Transfer"].map((m) => (
+            <span
+              key={m}
+              style={{
+                fontSize: font.size.sm,
+                color: colors.text,
+                background: colors.panelAlt,
+                border: `1px solid ${colors.border}`,
+                borderRadius: radii.pill,
+                padding: "3px 10px",
+              }}
+            >
+              {m}
+            </span>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Collected Fields">
+        <ul style={{ margin: 0, paddingLeft: 4, listStyle: "none", lineHeight: 1.9 }}>
+          {fields.map((f) => (
+            <li key={f.label} style={{ fontSize: font.size.md, color: colors.text }}>
+              <span style={{ color: colors.success, marginRight: 8 }}>✓</span>
+              {f.label}
+              {!f.required && (
+                <span style={{ color: colors.textDim, marginLeft: 6 }}>(optional)</span>
+              )}
+            </li>
+          ))}
+        </ul>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 4 }}>
+          Payout verification is not performed (placeholder for a future step).
+        </div>
+      </Section>
+
+      <Section title="Submission Status">
+        <Badge color={stateColor["PAYMENT_PENDING"]} dot>
+          {stateLabel["PAYMENT_PENDING"]}
+        </Badge>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 8 }}>
+          Each creator waits here until they submit the form. On submission the
+          instance moves to <strong>{stateLabel["PAYMENT_RECEIVED"]}</strong> and
+          the workflow continues to the next connected step.
+        </div>
+      </Section>
+    </FormStack>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content Brief form (configurable)
+// ---------------------------------------------------------------------------
+// Sends the campaign brief once payout info is collected. The brand uploads the
+// Campaign Brief PDF (required to launch) and optionally sets a referral link +
+// creator notes here, before launch. The PDF is uploaded to the server's local
+// storage on select; only its stored reference + original filename are persisted
+// in node config — never the bytes.
+
+function ContentBriefForm({
+  nodeId,
+  config,
+  onUpdate,
+}: {
+  nodeId: string;
+  config: ContentBriefConfig;
+  onUpdate: (id: string, cfg: Record<string, unknown>) => void;
+}) {
+  const [briefFileRef, setBriefFileRef] = useState(config.briefFileRef ?? "");
+  const [briefFileName, setBriefFileName] = useState(config.briefFileName ?? "");
+  const [referralLink, setReferralLink] = useState(config.referralLink ?? "");
+  const [creatorNotes, setCreatorNotes] = useState(config.creatorNotes ?? "");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const referralId = useId();
+  const notesId = useId();
+
+  useEffect(() => {
+    setBriefFileRef(config.briefFileRef ?? "");
+    setBriefFileName(config.briefFileName ?? "");
+    setReferralLink(config.referralLink ?? "");
+    setCreatorNotes(config.creatorNotes ?? "");
+    setUploadError(null);
+  }, [nodeId]);
+
+  // `over` lets us flush with values that haven't yet round-tripped through state
+  // (same idiom as the Follow-Up / Negotiation forms).
+  function flush(over?: Partial<ContentBriefConfig>) {
+    onUpdate(nodeId, {
+      ...config,
+      briefFileRef,
+      briefFileName,
+      referralLink,
+      creatorNotes,
+      ...over,
+    });
+  }
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input so selecting the same file again re-triggers onChange.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name)) {
+      setUploadError("Please choose a PDF file.");
+      return;
+    }
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const res = await uploadFile(file);
+      setBriefFileRef(res.reference);
+      setBriefFileName(res.originalName);
+      // Persist immediately (no blur to wait for on a file control).
+      flush({ briefFileRef: res.reference, briefFileName: res.originalName });
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removeBrief() {
+    setBriefFileRef("");
+    setBriefFileName("");
+    flush({ briefFileRef: "", briefFileName: "" });
+  }
+
+  const hasBrief = !!briefFileRef;
+
+  return (
+    <FormStack>
+      <InfoBox>
+        Runs after the creator submits their payout info. Emails the{" "}
+        <strong>campaign brief PDF</strong> with the referral link and any notes,
+        then completes — there is no creator acknowledgement or approval step.
+      </InfoBox>
+
+      <Section title="Campaign Brief PDF">
+        <FormField
+          label="Brief document"
+          hint="Required to launch. PDF only — attached to the creator's email."
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={(e) => void handleFile(e)}
+            style={{ display: "none" }}
+            aria-label="Upload campaign brief PDF"
+          />
+          {hasBrief ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 12px",
+                background: colors.bg,
+                border: `1px solid ${colors.border}`,
+                borderRadius: radii.md,
+              }}
+            >
+              <span aria-hidden>📄</span>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: font.size.md,
+                  color: colors.text,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={briefFileName || "campaign brief"}
+              >
+                {briefFileName || "campaign-brief.pdf"}
+              </span>
+              <Badge color={colors.success} dot>
+                Uploaded
+              </Badge>
+            </div>
+          ) : (
+            <div
+              style={{
+                fontSize: font.size.sm,
+                color: colors.textMuted,
+                marginBottom: 6,
+              }}
+            >
+              No file uploaded yet.
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? "Uploading…" : hasBrief ? "Replace PDF" : "Upload PDF"}
+            </Button>
+            {hasBrief && (
+              <Button variant="danger" size="sm" onClick={removeBrief} disabled={uploading}>
+                Remove
+              </Button>
+            )}
+          </div>
+          {uploadError && (
+            <div style={{ fontSize: font.size.sm, color: colors.danger, marginTop: 6 }}>
+              {uploadError}
+            </div>
+          )}
+        </FormField>
+      </Section>
+
+      <Section title="Referral Link">
+        <FormField label="Referral URL" htmlFor={referralId} hint="Optional. Shown in the email body.">
+          <Input
+            id={referralId}
+            value={referralLink}
+            onChange={(e) => setReferralLink(e.target.value)}
+            onBlur={() => flush()}
+            placeholder="https://example.com/referral/creator123"
+          />
+        </FormField>
+      </Section>
+
+      <Section title="Creator Notes">
+        <FormField
+          label="Notes"
+          htmlFor={notesId}
+          hint="Optional. Appended to the email body for the creator."
+        >
+          <Textarea
+            id={notesId}
+            value={creatorNotes}
+            onChange={(e) => setCreatorNotes(e.target.value)}
+            onBlur={() => flush()}
+            rows={5}
+            placeholder="e.g. Please tag us in your first post and use the hashtag #campaign."
+          />
+        </FormField>
+      </Section>
+
+      <Section title="Status">
+        <Badge color={hasBrief ? stateColor["CONTENT_BRIEF_SENT"] : colors.warning} dot>
+          {hasBrief ? "Ready to send on payout" : "Brief PDF required"}
+        </Badge>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 8 }}>
+          The brief email sends automatically once payout info is received, moving
+          the creator to <strong>{stateLabel["CONTENT_BRIEF_SENT"]}</strong>.
+        </div>
+      </Section>
+    </FormStack>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // End node (read-only)
 // ---------------------------------------------------------------------------
 
@@ -689,7 +1093,7 @@ function EndNodeInfo() {
 // ---------------------------------------------------------------------------
 
 function FormStack({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>{children}</div>;
+  return <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>{children}</div>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -697,13 +1101,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div
         style={{
-          fontSize: font.size.sm,
-          fontWeight: font.weight.bold,
+          fontSize: font.size.xs,
+          fontWeight: font.weight.semibold,
           textTransform: "uppercase",
-          letterSpacing: 0.6,
-          color: colors.textMuted,
-          paddingBottom: 8,
-          borderBottom: `1px solid ${colors.border}`,
+          letterSpacing: 0.8,
+          color: colors.textDim,
         }}
       >
         {title}
@@ -717,13 +1119,13 @@ function InfoBox({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
-        padding: "10px 12px",
+        padding: "12px 14px",
         background: colors.bg,
         border: `1px solid ${colors.border}`,
         borderRadius: radii.md,
         fontSize: font.size.sm,
         color: colors.textMuted,
-        lineHeight: 1.55,
+        lineHeight: 1.6,
       }}
     >
       {children}

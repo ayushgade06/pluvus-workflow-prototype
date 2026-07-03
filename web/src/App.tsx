@@ -6,9 +6,12 @@
 //   builder    — workflow builder (canvas, config, enroll, launch, monitor)
 //   observe    — observability dashboard (Phase 9, lazy-loaded)
 //
-// Routing is state-based (no react-router dependency).
+// Routing is state-based (no react-router dependency) but MIRRORED TO THE URL
+// HASH so a page refresh (or a shared link) restores the same view — e.g.
+// `#/builder/<workflowId>` reopens that workflow instead of dumping the user
+// back on the campaign list.
 
-import { Suspense, lazy, useState } from "react";
+import { Suspense, lazy, useState, useEffect, useCallback } from "react";
 import { CampaignList } from "./components/builder/CampaignList";
 import { WorkflowBuilder } from "./components/builder/WorkflowBuilder";
 import { ToastProvider } from "./components/ds";
@@ -20,19 +23,58 @@ const ObservabilityView = lazy(() => import("./components/ObservabilityView"));
 
 type View = "campaigns" | "builder" | "observe";
 
+interface Route {
+  view: View;
+  activeWorkflowId: string | null;
+}
+
+// -- URL hash <-> route serialization ---------------------------------------
+// Formats: `#/campaigns`, `#/observe`, `#/builder/<workflowId>`.
+function parseHash(): Route {
+  const raw = (typeof window !== "undefined" ? window.location.hash : "").replace(/^#\/?/, "");
+  const [view, id] = raw.split("/");
+  if (view === "builder" && id) return { view: "builder", activeWorkflowId: decodeURIComponent(id) };
+  if (view === "observe") return { view: "observe", activeWorkflowId: null };
+  return { view: "campaigns", activeWorkflowId: null };
+}
+
+function routeToHash(r: Route): string {
+  if (r.view === "builder" && r.activeWorkflowId) {
+    return `#/builder/${encodeURIComponent(r.activeWorkflowId)}`;
+  }
+  if (r.view === "observe") return "#/observe";
+  return "#/campaigns";
+}
+
 export default function App() {
-  const [view, setView] = useState<View>("campaigns");
-  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [{ view, activeWorkflowId }, setRoute] = useState<Route>(parseHash);
 
-  function openWorkflow(id: string) {
-    setActiveWorkflowId(id);
-    setView("builder");
-  }
+  // Keep the URL hash in sync with the current route (so refresh restores it).
+  useEffect(() => {
+    const target = routeToHash({ view, activeWorkflowId });
+    if (window.location.hash !== target) {
+      window.history.replaceState(null, "", target);
+    }
+  }, [view, activeWorkflowId]);
 
-  function backToCampaigns() {
-    setView("campaigns");
-    setActiveWorkflowId(null);
-  }
+  // Respond to browser back/forward + manual hash edits.
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const setView = useCallback((v: View) => {
+    setRoute((prev) => ({ view: v, activeWorkflowId: v === "builder" ? prev.activeWorkflowId : null }));
+  }, []);
+
+  const openWorkflow = useCallback((id: string) => {
+    setRoute({ view: "builder", activeWorkflowId: id });
+  }, []);
+
+  const backToCampaigns = useCallback(() => {
+    setRoute({ view: "campaigns", activeWorkflowId: null });
+  }, []);
 
   return (
     <ToastProvider>
@@ -69,52 +111,73 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
       style={{
         display: "flex",
         alignItems: "center",
+        gap: 24,
         borderBottom: `1px solid ${colors.border}`,
         background: colors.panel,
         flexShrink: 0,
-        height: 44,
+        height: 48,
+        padding: "0 20px",
       }}
     >
       <div
         style={{
-          padding: "0 18px",
-          fontSize: font.size.md,
-          fontWeight: font.weight.bold,
-          color: colors.text,
-          borderRight: `1px solid ${colors.border}`,
-          height: "100%",
           display: "flex",
           alignItems: "center",
+          gap: 9,
+          fontSize: font.size.md,
+          fontWeight: font.weight.semibold,
+          color: colors.text,
           letterSpacing: -0.2,
         }}
       >
+        <span
+          aria-hidden
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            background: `linear-gradient(135deg, ${colors.accent}, ${colors.accentDim})`,
+            boxShadow: `0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#fff",
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          P
+        </span>
         Pluvus
       </div>
-      {tabs.map((tab) => {
-        const activeView = view === tab.key || (tab.key === "campaigns" && view === "builder");
-        return (
-          <button
-            key={tab.key}
-            onClick={() => onChangeView(tab.key)}
-            role="tab"
-            aria-selected={activeView}
-            className="ds-focusable"
-            style={{
-              height: "100%",
-              padding: "0 18px",
-              background: "none",
-              border: "none",
-              borderBottom: `2px solid ${activeView ? colors.accent : "transparent"}`,
-              color: activeView ? colors.accent : colors.textMuted,
-              fontSize: font.size.md,
-              fontWeight: activeView ? font.weight.semibold : font.weight.regular,
-              cursor: "pointer",
-            }}
-          >
-            {tab.label}
-          </button>
-        );
-      })}
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }} role="tablist">
+        {tabs.map((tab) => {
+          const activeView = view === tab.key || (tab.key === "campaigns" && view === "builder");
+          return (
+            <button
+              key={tab.key}
+              onClick={() => onChangeView(tab.key)}
+              role="tab"
+              aria-selected={activeView}
+              className="ds-focusable"
+              style={{
+                height: 30,
+                padding: "0 12px",
+                background: activeView ? colors.panelAlt : "none",
+                border: "1px solid transparent",
+                borderColor: activeView ? colors.border : "transparent",
+                borderRadius: 7,
+                color: activeView ? colors.text : colors.textMuted,
+                fontSize: font.size.md,
+                fontWeight: activeView ? font.weight.semibold : font.weight.medium,
+                cursor: "pointer",
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

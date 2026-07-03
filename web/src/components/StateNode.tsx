@@ -27,14 +27,16 @@ export function StateNode({ data }: NodeProps<StateNodeData>) {
       style={{
         width: 196,
         background: selected ? colors.panelAlt : colors.panel,
-        border: `1.5px solid ${selected ? accent : colors.border}`,
-        borderLeft: `4px solid ${accent}`,
-        borderRadius: 8,
-        padding: "10px 12px",
+        border: `1px solid ${selected ? accent : colors.borderStrong}`,
+        borderLeft: `3px solid ${accent}`,
+        borderRadius: 10,
+        padding: "11px 13px",
         opacity: empty ? 0.55 : 1,
-        boxShadow: selected ? `0 0 0 1px ${accent}, 0 4px 14px rgba(0,0,0,0.4)` : "0 1px 3px rgba(0,0,0,0.3)",
+        boxShadow: selected
+          ? `0 0 0 3px ${accent}26, 0 8px 24px rgba(0,0,0,0.35)`
+          : "0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.2)",
         cursor: "pointer",
-        transition: "border-color 120ms, box-shadow 120ms, background 120ms",
+        transition: "border-color 140ms, box-shadow 140ms, background 140ms",
       }}
     >
       <Handle type="target" position={Position.Top} style={{ opacity: 0, pointerEvents: "none" }} />
@@ -63,7 +65,16 @@ export function StateNode({ data }: NodeProps<StateNodeData>) {
 
       {/* Big count */}
       <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-        <span style={{ fontSize: 28, fontWeight: 700, color: empty ? colors.textDim : colors.text, lineHeight: 1 }}>
+        <span
+          className="nums"
+          style={{
+            fontSize: 28,
+            fontWeight: 600,
+            color: empty ? colors.textDim : colors.text,
+            lineHeight: 1,
+            letterSpacing: -0.5,
+          }}
+        >
           {summary.count}
         </span>
         <span style={{ fontSize: 11, color: colors.textMuted }}>
@@ -76,7 +87,7 @@ export function StateNode({ data }: NodeProps<StateNodeData>) {
         {!summary.terminal && summary.active > 0 && (
           <Chip label={`${summary.active} active`} color={colors.accent} />
         )}
-        {summary.waiting > 0 && <Chip label={`${summary.waiting} waiting`} color="#388bfd" />}
+        {summary.waiting > 0 && <Chip label={`${summary.waiting} waiting`} color="#8b96f8" />}
         {hasStuck && <Chip label={`⚠ ${summary.stuck} stuck`} color={colors.warning} solid />}
       </div>
 
@@ -97,13 +108,14 @@ function Chip({ label, color, solid }: { label: string; color: string; solid?: b
     <span
       style={{
         fontSize: 10,
-        fontWeight: 600,
+        fontWeight: 500,
         color: solid ? "#1a1205" : color,
-        background: solid ? color : `${color}1f`,
-        border: `1px solid ${solid ? color : `${color}55`}`,
-        borderRadius: 5,
-        padding: "1px 5px",
+        background: solid ? color : `${color}17`,
+        border: `1px solid ${solid ? color : `${color}2e`}`,
+        borderRadius: 999,
+        padding: "1px 7px",
         whiteSpace: "nowrap",
+        lineHeight: 1.6,
       }}
     >
       {label}

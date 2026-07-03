@@ -86,27 +86,27 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 10,
+                  gap: 11,
                   minWidth: 240,
                   maxWidth: 380,
-                  padding: "10px 14px",
-                  background: colors.panel,
-                  border: `1px solid ${colors.border}`,
-                  borderLeft: `3px solid ${meta.color}`,
+                  padding: "12px 16px",
+                  background: colors.panelAlt,
+                  border: `1px solid ${colors.borderStrong}`,
                   borderRadius: radii.md,
-                  boxShadow: shadow.md,
+                  boxShadow: shadow.lg,
                   cursor: "pointer",
                 }}
               >
                 <span
                   aria-hidden
                   style={{
-                    width: 18,
-                    height: 18,
+                    width: 20,
+                    height: 20,
                     borderRadius: "50%",
-                    background: `${meta.color}22`,
+                    background: `${meta.color}20`,
                     color: meta.color,
                     fontSize: 11,
+                    fontWeight: 700,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",

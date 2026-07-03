@@ -47,8 +47,9 @@ export function Toggle({ checked, onChange, label, disabled }: Props) {
             width: 34,
             height: 20,
             borderRadius: radii.pill,
-            background: checked ? colors.accent : colors.border,
-            transition: "background 0.15s ease",
+            background: checked ? colors.accent : colors.borderStrong,
+            boxShadow: checked ? "none" : "inset 0 1px 2px rgba(0,0,0,0.25)",
+            transition: "background 0.16s ease",
             display: "inline-block",
             flexShrink: 0,
           }}
@@ -63,7 +64,8 @@ export function Toggle({ checked, onChange, label, disabled }: Props) {
             height: 16,
             borderRadius: "50%",
             background: "#fff",
-            transition: "left 0.15s ease",
+            boxShadow: "0 1px 2px rgba(0,0,0,0.35)",
+            transition: "left 0.16s cubic-bezier(0.3, 1, 0.5, 1)",
           }}
         />
       </span>

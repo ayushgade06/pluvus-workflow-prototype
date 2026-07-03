@@ -63,10 +63,13 @@ export function Modal({ title, subtitle, onClose, children, footer, width = 560 
 
   return createPortal(
     <div
+      className="ds-backdrop"
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "rgba(5,6,9,0.68)",
+        backdropFilter: "blur(5px)",
+        WebkitBackdropFilter: "blur(5px)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -99,7 +102,7 @@ export function Modal({ title, subtitle, onClose, children, footer, width = 560 
         {title && (
           <div
             style={{
-              padding: "18px 22px 14px",
+              padding: "20px 24px 16px",
               borderBottom: `1px solid ${colors.border}`,
               display: "flex",
               alignItems: "flex-start",
@@ -109,11 +112,16 @@ export function Modal({ title, subtitle, onClose, children, footer, width = 560 
             }}
           >
             <div>
-              <div id={titleId} style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>
+              <div
+                id={titleId}
+                style={{ fontSize: 16, fontWeight: 600, color: colors.text, letterSpacing: -0.2 }}
+              >
                 {title}
               </div>
               {subtitle && (
-                <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 3 }}>{subtitle}</div>
+                <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                  {subtitle}
+                </div>
               )}
             </div>
             <IconButton label="Close dialog" icon="✕" onClick={onClose} />
@@ -123,8 +131,9 @@ export function Modal({ title, subtitle, onClose, children, footer, width = 560 
         {footer && (
           <div
             style={{
-              padding: "14px 22px",
+              padding: "16px 24px",
               borderTop: `1px solid ${colors.border}`,
+              background: "rgba(255,255,255,0.015)",
               display: "flex",
               justifyContent: "flex-end",
               gap: 10,

@@ -42,6 +42,14 @@ const LAYOUT: Record<InstanceState, Placement> = {
   REPLY_RECEIVED: { x: COL_MAIN, y: ROW_H * 3 },
   NEGOTIATING: { x: COL_MAIN, y: ROW_H * 4 },
   ACCEPTED: { x: COL_MAIN, y: ROW_H * 5 },
+  // Reward Setup runs down the main column after ACCEPTED.
+  REWARD_PENDING: { x: COL_MAIN, y: ROW_H * 6 },
+  REWARD_CONFIRMED: { x: COL_MAIN, y: ROW_H * 7 },
+  // Payment Info continues down the main column after Reward Setup.
+  PAYMENT_PENDING: { x: COL_MAIN, y: ROW_H * 8 },
+  PAYMENT_RECEIVED: { x: COL_MAIN, y: ROW_H * 9 },
+  // Content Brief continues down the main column after Payment Info (terminal).
+  CONTENT_BRIEF_SENT: { x: COL_MAIN, y: ROW_H * 10 },
   // Branch / terminal states to the right.
   REJECTED: { x: COL_BRANCH, y: ROW_H * 3 },
   MANUAL_REVIEW: { x: COL_TERMINAL, y: ROW_H * 3.5 },
@@ -64,6 +72,14 @@ const EDGES: Array<[InstanceState, InstanceState, boolean?]> = [
   ["NEGOTIATING", "ACCEPTED"],
   ["NEGOTIATING", "REJECTED"],
   ["NEGOTIATING", "MANUAL_REVIEW"],
+  ["ACCEPTED", "REWARD_PENDING"], // auto-chain into Reward Setup
+  ["REWARD_PENDING", "REWARD_PENDING", true], // self-loop (non-confirming reply)
+  ["REWARD_PENDING", "REWARD_CONFIRMED"], // creator confirms
+  ["REWARD_PENDING", "MANUAL_REVIEW"],
+  ["REWARD_CONFIRMED", "PAYMENT_PENDING"], // auto-chain into Payment Info
+  ["PAYMENT_PENDING", "PAYMENT_RECEIVED"], // creator submits the payout form
+  ["PAYMENT_PENDING", "MANUAL_REVIEW"],
+  ["PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT"], // auto-chain into Content Brief
 ];
 
 interface Props {
@@ -105,7 +121,7 @@ export function WorkflowCanvas({ nodes, selectedState, onSelectState }: Props) {
     ).map(([from, to, loop]) => {
       // Highlight an edge when either endpoint is the selected node.
       const active = selectedState === from || selectedState === to;
-      const color = active ? stateColor[to] : colors.border;
+      const color = active ? stateColor[to] : colors.borderStrong;
       return {
         id: `${from}->${to}`,
         source: from,
@@ -134,8 +150,18 @@ export function WorkflowCanvas({ nodes, selectedState, onSelectState }: Props) {
       panOnScroll
       style={{ background: colors.bg }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#21262d" />
-      <Controls showInteractive={false} position="bottom-left" />
+      <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#22242c" />
+      <Controls
+        showInteractive={false}
+        position="bottom-left"
+        style={{
+          background: colors.panel,
+          border: `1px solid ${colors.borderStrong}`,
+          borderRadius: 10,
+          overflow: "hidden",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.28)",
+        }}
+      />
     </ReactFlow>
   );
 }

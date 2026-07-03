@@ -10,11 +10,11 @@ import { colors, formatTimestamp } from "../theme";
 import { Empty } from "./ui";
 
 const intentColor: Record<ReplyIntent, string> = {
-  POSITIVE: "#3fb950",
-  NEGATIVE: "#f85149",
-  QUESTION: "#58a6ff",
-  OPT_OUT: "#db6d28",
-  UNKNOWN: "#d29922",
+  POSITIVE: "#3ecf8e",
+  NEGATIVE: "#f2555f",
+  QUESTION: "#8b96f8",
+  OPT_OUT: "#e0784a",
+  UNKNOWN: "#d9a03f",
 };
 
 export function MessageThread({ messages }: { messages: MessageDTO[] }) {
@@ -31,7 +31,7 @@ export function MessageThread({ messages }: { messages: MessageDTO[] }) {
 
 function Bubble({ m }: { m: MessageDTO }) {
   const outbound = m.direction === "OUTBOUND";
-  const accent = outbound ? colors.accentDim : "#2ea043";
+  const accent = outbound ? colors.accentDim : "#2eb67d";
   const ts = m.sentAt ?? m.receivedAt ?? m.createdAt;
 
   return (

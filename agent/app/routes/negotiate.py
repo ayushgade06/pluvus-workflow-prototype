@@ -125,6 +125,9 @@ class DraftRequest(BaseModel):
     # present; never invented when absent.
     deliverables: str | None = None
     timeline: str | None = None
+    # Free-text product/sample reward blurb (e.g. "a free pair of our running
+    # shoes"). Mentioned as a perk of the collaboration only when present.
+    rewardDescription: str | None = None
     # Personalization context (threaded by the executor for counter/onboarding):
     #   creatorReply  — the creator's most recent message, so the email can
     #                   reference what they actually said (e.g. their requested
@@ -656,33 +659,60 @@ has been talking with us about a partnership and we are now presenting our offer
 This email is sent BY {sender} and represents ONLY {sender}.
 {extra}
 
-Goal of the email:
-- Warmly respond to the creator{ack_clause}.
-- If the creator asked about the product or brand, answer using the "About {sender}"
-  description above (1-2 sentences max). Do NOT invent facts.
-- PRESENT OUR OFFER clearly. You MUST state the fixed fee of {offer_rate} in the
-  body — this is the entire purpose of the email; do not omit it or replace it
-  with vague wording like "a competitive fee".
-{commission_goal}
-- Invite the creator to reply to move forward or discuss.
+The creator has asked specific questions. Your email MUST address EACH of the
+points below in its own clearly separated section — do not answer only the fee
+and skip the rest. Cover, in this order:
 
-Formatting (REQUIRED — multi-line, not one paragraph):
+1. Base fee — state the fixed fee of {offer_rate}. This is required; never
+   replace it with vague wording like "a competitive fee".
+{deal_goal}{deliverables_goal}{brand_goal}Only address topics the creator ACTUALLY raised in their message above, plus the
+offer points listed. Do NOT proactively bring up, list, or volunteer any topic
+the creator did not ask about (for example cookie/attribution windows, usage
+rights, whitelisting, or category exclusivity). If — and ONLY if — the creator
+explicitly asked about such a specific we have NOT been given details on, then in
+one short honest sentence say those specifics haven't been finalized yet and
+you'll confirm them together on the next step; never fake a number or term. If
+the creator did not ask about any such topic, do not mention these subjects at
+all.
+
+After addressing the points, warmly invite the creator to reply to confirm the
+offer or ask any remaining questions. Do NOT ask them to schedule a call or share
+their availability/preferred time — the ask is to confirm the terms.
+
+Formatting (REQUIRED — a well-structured, multi-paragraph email, NOT one block):
 - Greeting line on its own: "Hi {name},"
-- Blank line, then a short warm opening.
-- Blank line, then the offer as bullet points, one per line starting with "- ":
-  a bullet stating the fixed fee of {offer_rate}{commission_bullet_hint}.
-- Blank line, then a short call to action.
+- Blank line, then a short warm opening that{ack_clause_fmt} responds to their message.
+- Blank line, then the OFFER as bullet points — one point per line, each starting
+  with "- ". Give EACH topic its own bullet: the fixed fee of {offer_rate}{commission_bullet_hint}{deliverables_bullet_hint}. Keep each bullet to one clear sentence.
+- Blank line, then (only if needed) one short sentence deferring on any details
+  we don't have yet (see above).
+- Blank line, then a short call to action inviting the creator to confirm the
+  offer or ask questions (NOT to propose a time or schedule a call).
 - Blank line, then the sign-off.
-- Use real newline characters (\\n) in the JSON string.
+- Put a blank line between every section. Use real newline characters (\\n) in
+  the JSON string. The result must read as several separate paragraphs/bullets,
+  never a single run-on paragraph.
 
 Rules (strictly enforced):
 - State the fixed fee EXACTLY as {offer_rate} (same number, same "$"). Do NOT
   convert currency, round, or change it. Do NOT mention any budget range,
   minimum, maximum, or any other money figure — ONLY {offer_rate}{commission_rule}.
-- Do NOT invent facts, fake collaborations, names, or statistics.
+- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
+  accepted these terms. NEVER write "as agreed", "agreed", "confirmed", "as
+  discussed", or any wording implying the fee/terms are already settled. Present
+  the fee as our proposal (e.g. "our proposed base fee is {offer_rate}"), and
+  invite the creator to confirm.
+- Timeline: the go-live timeline is set by the brand and is fixed. If a timeline
+  is provided above, state it EXACTLY as given and present it as the schedule.
+  NEVER ask the creator for their preferred timing, availability, dates, or
+  "preferred time", and never imply the timeline is up to them.
+- Do NOT invent facts, fake collaborations, names, statistics, deliverable
+  counts, cookie windows, or usage/exclusivity terms. Only state what is given
+  above; for anything else, defer honestly as instructed.
 - The ONLY company/brand named is "{sender}" (never "Pluvus" or any other).
 - NEVER write [Your Name], [Name], [Brand], or ANY bracketed placeholder.
-- Keep it under 130 words. Sign off exactly as: "Best,\n{sender}"
+- Keep it concise and genuine — under 180 words. Sign off exactly as:
+  "Best,\n{sender}"
 
 Respond ONLY with valid JSON and nothing else:
 {{"subject": "<subject line>", "body": "<full email body with \\n line breaks>"}}
@@ -736,6 +766,7 @@ def _scope_lines(req: DraftRequest, ctx: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     deliverables = (req.deliverables or ctx.get("deliverables") or "").strip()
     timeline = (req.timeline or ctx.get("timeline") or "").strip()
+    reward = (req.rewardDescription or ctx.get("rewardDescription") or "").strip()
     if deliverables:
         lines.append(
             f"The agreed deliverables are: {deliverables}. State these as the "
@@ -743,8 +774,17 @@ def _scope_lines(req: DraftRequest, ctx: dict[str, Any]) -> list[str]:
         )
     if timeline:
         lines.append(
-            f"The timeline is: {timeline}. State this as the timeline; do not "
-            f"invent other dates."
+            f"The go-live timeline is set by the brand and is fixed: {timeline}. "
+            f"State it EXACTLY as given, on its OWN dedicated bullet line (a "
+            f'"Timeline:" bullet, separate from the deliverables bullet). Do NOT '
+            f"invent other dates, and NEVER ask the creator for their preferred "
+            f"timing, availability, or a call time — the timeline is not theirs to set."
+        )
+    if reward:
+        lines.append(
+            f"As part of this collaboration the creator also receives: {reward}. "
+            f"Mention this as a perk on its own bullet line. State it EXACTLY as "
+            f"given; do not embellish, add value claims, or invent other rewards."
         )
     return lines
 
@@ -778,6 +818,32 @@ def _commission_rate(ctx: dict[str, Any]) -> int | float | None:
     return None
 
 
+def _deal_label_without_commission(deal_description: str) -> str:
+    """A short deal-type label with the commission clause stripped out.
+
+    The server-built dealDescription for a hybrid deal reads like
+    "a hybrid partnership — you receive a fixed fee for your content, PLUS a 10%
+    commission on the sales you drive. (The exact fee is discussed once you
+    reply.)". When commission has its OWN bullet in the offer email, feeding that
+    whole sentence (which contains "10% commission") into the deal-structure point
+    makes the 7B model state the percentage twice. We keep only the leading
+    deal-type label — the text up to the first em dash / hyphen separator — so the
+    percentage lives solely on the commission bullet.
+
+    Falls back to a generic label if the description has no separator, and never
+    returns an empty string.
+    """
+    # Split on the first em dash or " - " separator that introduces the details.
+    for sep in ("—", " - ", " – "):
+        if sep in deal_description:
+            label = deal_description.split(sep, 1)[0].strip()
+            if label:
+                return label
+    # No separator: strip any trailing commission clause defensively.
+    label = re.split(r",?\s*(?:PLUS|plus|and)\b", deal_description, 1)[0].strip()
+    return label or "this partnership"
+
+
 def _build_offer_prompt(
     req: DraftRequest,
     sender: str,
@@ -785,32 +851,90 @@ def _build_offer_prompt(
     brand_context: str = "",
     scope_lines: list[str] | None = None,
 ) -> str:
-    """Prompt for counter_offer / acceptance: PRESENT the fixed fee (and, for a
-    hybrid deal, the commission). The fee is required in the body."""
+    """Prompt for counter_offer / acceptance: PRESENT the fixed fee, the deal
+    structure, the commission (hybrid), and the deliverables — answering each
+    point the creator raised. The fee is required in the body; the rest are
+    included only when we actually have that data (never invented)."""
     offer_rate = _format_rate((req.proposedTerms or {}).get("rate")) or "our proposed fee"
     commission = _commission_rate(ctx)
+    # Brand-supplied deliverables (from the explicit field or campaignContext).
+    # Stated as fact when present; omitted (deferred, never invented) when blank.
+    deliverables = (req.deliverables or ctx.get("deliverables") or "").strip()
 
     # If the creator named a number, acknowledge it; else just a warm response.
+    # ack_clause_fmt slots into the formatting section's opening-line instruction.
     req_rate_str = _format_rate(req.creatorRequestedRate)
     if req_rate_str is not None:
-        ack_clause = f", acknowledging their request of {req_rate_str}"
+        ack_clause_fmt = f" acknowledges their request of {req_rate_str} and"
     else:
-        ack_clause = ""
+        ack_clause_fmt = ""
+
+    # The deal structure sentence (hybrid / affiliate / fixed fee), number-free.
+    # Lets the email explain WHAT KIND of deal this is, not just quote a fee.
+    #
+    # Commission is stated in exactly ONE place — its own dedicated bullet (see
+    # commission_bullet_hint below). When a commission bullet exists, the deal
+    # description must NOT also spell out the commission percentage, or the 7B
+    # model emits the same fact twice (once here, once as the bullet). So we pass
+    # the model a commission-STRIPPED deal label (e.g. "a hybrid partnership")
+    # — the percentage lives only on the commission bullet.
+    if req.dealDescription:
+        if commission is not None:
+            deal_label = _deal_label_without_commission(req.dealDescription)
+            deal_goal = (
+                f"2. Deal structure — in one short phrase, name the kind of "
+                f"partnership this is: {deal_label}. Do NOT state the commission "
+                f"percentage here — it has its own dedicated bullet below, and "
+                f"repeating it reads as a duplicate.\n"
+            )
+        else:
+            deal_goal = (
+                f"2. Deal structure — briefly explain the kind of partnership this "
+                f"is, using this description: {req.dealDescription}\n"
+            )
+    else:
+        deal_goal = ""
 
     if commission is not None:
-        commission_goal = (
-            f"- ALSO state that the creator EARNS a {commission}% commission on the "
-            f"sales they drive (this is a hybrid deal — fixed fee PLUS commission "
-            f"the creator earns). Frame it as their earning, not our cut."
-        )
+        # Commission appears ONCE: a single dedicated bullet. (There is no
+        # separate numbered "Commission" point anymore — that duplicated the
+        # bullet and the deal-structure line.)
         commission_bullet_hint = (
-            f", and a second bullet stating the {commission}% commission the creator earns"
+            f", a single bullet stating the {commission}% commission the creator "
+            f"earns on the sales they drive (state this only once)"
         )
         commission_rule = f" and the {commission}% commission"
     else:
-        commission_goal = ""
         commission_bullet_hint = ""
         commission_rule = ""
+
+    # Numbered 3 so the points read 1 (fee), 2 (deal), 3 (deliverables) with no
+    # gap — commission is no longer a numbered point (it's a single bullet).
+    if deliverables:
+        deliverables_goal = (
+            f"3. Deliverables — state the agreed scope: {deliverables}. Present this "
+            f"as the deliverables; do not add or invent extra pieces or platforms.\n"
+        )
+        deliverables_bullet_hint = f", a bullet stating the deliverables ({deliverables})"
+    else:
+        # No deliverables on file — the creator asked, so acknowledge it will be
+        # confirmed rather than fabricating a count. Handled by the generic
+        # "defer honestly" instruction; no dedicated bullet.
+        deliverables_goal = (
+            "3. Deliverables — the creator asked about deliverables, but the exact "
+            "count/platforms are not finalized yet. Say plainly they'll be confirmed "
+            "together; do NOT invent a number or platforms.\n"
+        )
+        deliverables_bullet_hint = ""
+
+    # If the brand described itself, allow a one-line product answer; else skip.
+    if brand_context:
+        brand_goal = (
+            f"- If the creator asked about the product or brand, answer in ONE short "
+            f"sentence using the \"About {sender}\" description above. Do NOT invent facts.\n"
+        )
+    else:
+        brand_goal = ""
 
     extra_parts: list[str] = []
     if req.creatorReply:
@@ -827,10 +951,13 @@ def _build_offer_prompt(
         sender=sender,
         brand_context=brand_context,
         offer_rate=offer_rate,
-        ack_clause=ack_clause,
-        commission_goal=commission_goal,
+        ack_clause_fmt=ack_clause_fmt,
+        deal_goal=deal_goal,
         commission_bullet_hint=commission_bullet_hint,
         commission_rule=commission_rule,
+        deliverables_goal=deliverables_goal,
+        deliverables_bullet_hint=deliverables_bullet_hint,
+        brand_goal=brand_goal,
         extra="\n".join(extra_parts),
     )
 

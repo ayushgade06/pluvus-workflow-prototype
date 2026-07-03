@@ -14,27 +14,29 @@ interface Props {
 
 export function FormField({ label, htmlFor, hint, error, children }: Props) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <label
         htmlFor={htmlFor}
         style={{
           fontSize: font.size.sm,
-          fontWeight: font.weight.semibold,
-          color: colors.textMuted,
-          textTransform: "uppercase",
-          letterSpacing: 0.5,
+          fontWeight: font.weight.medium,
+          color: colors.text,
+          lineHeight: 1.4,
         }}
       >
         {label}
       </label>
       {children}
       {hint && !error && (
-        <span style={{ fontSize: font.size.xs, color: colors.textDim, lineHeight: 1.4 }}>
+        <span style={{ fontSize: font.size.xs, color: colors.textDim, lineHeight: 1.5 }}>
           {hint}
         </span>
       )}
       {error && (
-        <span style={{ fontSize: font.size.xs, color: colors.danger, lineHeight: 1.4 }}>
+        <span
+          role="alert"
+          style={{ fontSize: font.size.xs, color: colors.danger, lineHeight: 1.5 }}
+        >
           {error}
         </span>
       )}

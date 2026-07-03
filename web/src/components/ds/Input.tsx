@@ -11,13 +11,14 @@ import { colors, radii, font } from "../../theme";
 
 const base: React.CSSProperties = {
   width: "100%",
-  padding: "8px 10px",
+  padding: "8px 12px",
   background: colors.bg,
   border: `1px solid ${colors.border}`,
-  borderRadius: radii.sm,
+  borderRadius: radii.sm + 1,
   color: colors.text,
   fontSize: font.size.md,
   fontFamily: "inherit",
+  lineHeight: 1.45,
   outline: "none",
   boxSizing: "border-box",
 };

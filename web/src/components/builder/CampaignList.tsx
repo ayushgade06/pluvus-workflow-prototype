@@ -32,32 +32,42 @@ export function CampaignList({ onSelectWorkflow }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: colors.bg }}>
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "16px 24px",
-          borderBottom: `1px solid ${colors.border}`,
-          background: colors.panel,
-          flexShrink: 0,
-        }}
-      >
-        <div>
-          <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: colors.text }}>
-            Campaigns
+      <div style={{ flexShrink: 0, padding: "28px 32px 4px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            maxWidth: 1240,
+            margin: "0 auto",
+            width: "100%",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: font.weight.semibold,
+                color: colors.text,
+                letterSpacing: -0.4,
+              }}
+            >
+              Campaigns
+            </div>
+            <div style={{ fontSize: font.size.md, color: colors.textMuted, marginTop: 4 }}>
+              Create and manage creator outreach campaigns
+            </div>
           </div>
-          <div style={{ fontSize: font.size.md, color: colors.textMuted, marginTop: 2 }}>
-            Create and manage creator outreach campaigns
-          </div>
+          <Button variant="primary" onClick={() => setShowWizard(true)} leftIcon="+">
+            New Campaign
+          </Button>
         </div>
-        <Button variant="primary" onClick={() => setShowWizard(true)} leftIcon="+">
-          New Campaign
-        </Button>
       </div>
 
       {/* Body */}
-      <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
+      <div className="ds-fade-in" style={{ flex: 1, overflow: "auto", padding: "20px 32px 40px" }}>
+        <div style={{ maxWidth: 1240, margin: "0 auto", width: "100%" }}>
         {isLoading && <SkeletonRows count={4} height={76} />}
         {isError && (
           <EmptyState
@@ -88,7 +98,7 @@ export function CampaignList({ onSelectWorkflow }: Props) {
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
-              gap: 16,
+              gap: 20,
               alignItems: "start",
             }}
           >
@@ -102,6 +112,7 @@ export function CampaignList({ onSelectWorkflow }: Props) {
             ))}
           </div>
         )}
+        </div>
       </div>
 
       {showWizard && (
@@ -147,11 +158,18 @@ function CampaignCard({
   return (
     <Card style={{ overflow: "hidden", opacity: deleting ? 0.5 : 1 }}>
       {/* Card head */}
-      <div style={{ padding: "16px 18px" }}>
+      <div style={{ padding: "18px 20px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text }}>
+              <span
+                style={{
+                  fontSize: font.size.lg,
+                  fontWeight: font.weight.semibold,
+                  color: colors.text,
+                  letterSpacing: -0.2,
+                }}
+              >
                 {campaign.name}
               </span>
               <Badge color={colors.textMuted} small>
@@ -183,18 +201,26 @@ function CampaignCard({
         </div>
 
         {/* Stat row (derived from data we already have) */}
-        <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 14 }}>
-          <MiniMetric label="Workflows" value={campaign.workflowCount} accent={colors.accent} />
+        <div style={{ display: "flex", alignItems: "center", gap: 24, marginTop: 16 }}>
+          <MiniMetric label="Workflows" value={campaign.workflowCount} accent={colors.text} />
           <MiniMetric
             label="Published"
             value={publishedCount ?? "—"}
             accent={publishedCount && publishedCount > 0 ? colors.success : colors.textMuted}
           />
           <div style={{ marginLeft: "auto", textAlign: "right" }}>
-            <div style={{ fontSize: 10, color: colors.textDim, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: font.weight.medium,
+                color: colors.textDim,
+                textTransform: "uppercase",
+                letterSpacing: 0.6,
+              }}
+            >
               Created
             </div>
-            <div style={{ fontSize: font.size.sm, color: colors.textMuted }}>
+            <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 2 }}>
               {formatTimestamp(campaign.createdAt)}
             </div>
           </div>
@@ -301,10 +327,28 @@ function MiniMetric({
 }) {
   return (
     <div>
-      <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: accent, lineHeight: 1 }}>
+      <div
+        className="nums"
+        style={{
+          fontSize: font.size.xl,
+          fontWeight: font.weight.semibold,
+          color: accent,
+          lineHeight: 1,
+          letterSpacing: -0.3,
+        }}
+      >
         {value}
       </div>
-      <div style={{ fontSize: 10, color: colors.textDim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: font.weight.medium,
+          color: colors.textDim,
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          marginTop: 4,
+        }}
+      >
         {label}
       </div>
     </div>

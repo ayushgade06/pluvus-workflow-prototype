@@ -10,15 +10,16 @@ export function StateBadge({ state, small }: { state: InstanceState; small?: boo
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 5,
-        fontSize: small ? 10.5 : 11.5,
-        fontWeight: 600,
+        gap: 6,
+        fontSize: small ? 11 : 12,
+        fontWeight: 500,
         color: c,
-        background: `${c}1a`,
-        border: `1px solid ${c}55`,
-        borderRadius: 5,
-        padding: small ? "1px 6px" : "2px 8px",
+        background: `${c}17`,
+        border: `1px solid ${c}2e`,
+        borderRadius: 999,
+        padding: small ? "1.5px 8px" : "3px 10px",
         whiteSpace: "nowrap",
+        lineHeight: 1.5,
       }}
     >
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: c }} />
@@ -32,14 +33,15 @@ export function SourceBadge({ source }: { source: string | null }) {
   return (
     <span
       style={{
-        fontSize: 10,
-        fontWeight: 600,
+        fontSize: 10.5,
+        fontWeight: 500,
         color: info.color,
-        background: `${info.color}1a`,
-        border: `1px solid ${info.color}44`,
-        borderRadius: 4,
-        padding: "1px 5px",
+        background: `${info.color}17`,
+        border: `1px solid ${info.color}2e`,
+        borderRadius: 999,
+        padding: "1.5px 8px",
         whiteSpace: "nowrap",
+        lineHeight: 1.5,
       }}
     >
       {info.label}
@@ -50,7 +52,15 @@ export function SourceBadge({ source }: { source: string | null }) {
 export function Field({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: colors.textDim }}>
+      <span
+        style={{
+          fontSize: 10.5,
+          fontWeight: 500,
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          color: colors.textDim,
+        }}
+      >
         {label}
       </span>
       <span
@@ -71,11 +81,11 @@ export function SectionTitle({ children, count }: { children: ReactNode; count?:
         alignItems: "center",
         gap: 8,
         fontSize: 11,
-        fontWeight: 700,
+        fontWeight: 600,
         textTransform: "uppercase",
-        letterSpacing: 0.6,
-        color: colors.textMuted,
-        margin: "4px 0 10px",
+        letterSpacing: 0.8,
+        color: colors.textDim,
+        margin: "4px 0 12px",
       }}
     >
       {children}
@@ -98,7 +108,7 @@ export function SectionTitle({ children, count }: { children: ReactNode; count?:
 
 export function Empty({ children }: { children: ReactNode }) {
   return (
-    <div style={{ fontSize: 12.5, color: colors.textDim, padding: "12px 2px", fontStyle: "italic" }}>
+    <div style={{ fontSize: 12.5, color: colors.textDim, padding: "14px 2px", lineHeight: 1.5 }}>
       {children}
     </div>
   );

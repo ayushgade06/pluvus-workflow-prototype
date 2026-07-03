@@ -1,26 +1,27 @@
 // ---------------------------------------------------------------------------
 // Design tokens (Phase 9, Part 12)
 // ---------------------------------------------------------------------------
-// Operational visibility over marketing polish. A restrained dark palette,
-// one accent per state semantic-group, generous whitespace, monospace for ids.
-// Think: workflow runtime inspector, not a landing page.
+// Operational visibility over marketing polish. A restrained near-black
+// neutral palette with a single indigo accent, generous whitespace, and
+// monospace for ids. Think: Linear/Vercel-grade runtime inspector, not a
+// landing page.
 
 import type { InstanceState } from "./api/types";
 
 export const colors = {
-  bg: "#0d1117",
-  panel: "#161b22",
-  panelAlt: "#1c2230",
-  border: "#2d333b",
-  borderStrong: "#3d444d",
-  text: "#e6edf3",
-  textMuted: "#9198a1",
-  textDim: "#6e7681",
-  accent: "#388bfd",
-  accentDim: "#1f6feb",
-  warning: "#d29922",
-  danger: "#f85149",
-  success: "#3fb950",
+  bg: "#0b0c0f",
+  panel: "#131418",
+  panelAlt: "#1b1c22",
+  border: "#22242c",
+  borderStrong: "#32343e",
+  text: "#f2f3f5",
+  textMuted: "#9da3ae",
+  textDim: "#5f6470",
+  accent: "#6e7cf5",
+  accentDim: "#5a68e8",
+  warning: "#d9a03f",
+  danger: "#f2555f",
+  success: "#3ecf8e",
 };
 
 // ---------------------------------------------------------------------------
@@ -45,27 +46,29 @@ export const space = {
 } as const;
 
 export const radii = {
-  sm: 5,
-  md: 8,
-  lg: 12,
+  sm: 6,
+  md: 10,
+  lg: 14,
   pill: 999,
 } as const;
 
+// Layered, soft elevation — depth comes from shadow + surface tint, not from
+// heavier borders.
 export const shadow = {
-  sm: "0 1px 2px rgba(0,0,0,0.30)",
-  md: "0 4px 12px rgba(0,0,0,0.35)",
-  lg: "0 8px 28px rgba(0,0,0,0.45)",
-  focus: `0 0 0 3px ${colors.accent}33`,
+  sm: "0 1px 2px rgba(0,0,0,0.4)",
+  md: "0 2px 6px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.28)",
+  lg: "0 4px 16px rgba(0,0,0,0.4), 0 24px 64px rgba(0,0,0,0.5)",
+  focus: `0 0 0 3px ${"#6e7cf5"}40`,
 } as const;
 
 export const font = {
   size: {
-    xs: 10.5,
-    sm: 11.5,
+    xs: 11,
+    sm: 12,
     md: 13,
     lg: 15,
     xl: 18,
-    xxl: 24,
+    xxl: 26,
   },
   weight: {
     regular: 400,
@@ -109,20 +112,25 @@ export function statusKey(status: string): StatusKey {
   }
 }
 
-// Semantic colour per workflow state. Active states are blue-ish, positive
+// Semantic colour per workflow state. Active states are indigo, positive
 // terminals green, negative terminals red/grey, review amber.
 export const stateColor: Record<InstanceState, string> = {
-  ENROLLED: "#6e7681", // neutral — just entered
-  OUTREACH_SENT: "#58a6ff", // active blue
-  AWAITING_REPLY: "#388bfd", // active blue
-  FOLLOWED_UP: "#a371f7", // purple — re-engagement
-  REPLY_RECEIVED: "#56d364", // a reply came in
-  NEGOTIATING: "#d29922", // amber — in play
-  ACCEPTED: "#3fb950", // success
-  REJECTED: "#f85149", // failure
-  OPTED_OUT: "#db6d28", // opted out
-  NO_RESPONSE: "#6e7681", // timed out
-  MANUAL_REVIEW: "#e3b341", // needs a human
+  ENROLLED: "#6a7080", // neutral — just entered
+  OUTREACH_SENT: "#8b96f8", // active indigo (light)
+  AWAITING_REPLY: "#6e7cf5", // active indigo
+  FOLLOWED_UP: "#a78bfa", // purple — re-engagement
+  REPLY_RECEIVED: "#57d9a3", // a reply came in
+  NEGOTIATING: "#d9a03f", // amber — in play
+  ACCEPTED: "#3ecf8e", // success — negotiation agreed
+  REWARD_PENDING: "#6e7cf5", // active indigo — awaiting creator confirmation
+  REWARD_CONFIRMED: "#2eb67d", // deep green — agreement confirmed
+  PAYMENT_PENDING: "#6e7cf5", // active indigo — awaiting payout form submission
+  PAYMENT_RECEIVED: "#27a06c", // deep green — payout info received
+  CONTENT_BRIEF_SENT: "#34b378", // green — campaign brief sent (terminal success)
+  REJECTED: "#f2555f", // failure
+  OPTED_OUT: "#e0784a", // opted out
+  NO_RESPONSE: "#6a7080", // timed out
+  MANUAL_REVIEW: "#e5b454", // needs a human
 };
 
 export const stateLabel: Record<InstanceState, string> = {
@@ -133,6 +141,11 @@ export const stateLabel: Record<InstanceState, string> = {
   REPLY_RECEIVED: "Reply Received",
   NEGOTIATING: "Negotiating",
   ACCEPTED: "Accepted",
+  REWARD_PENDING: "Awaiting Confirmation",
+  REWARD_CONFIRMED: "Confirmed",
+  PAYMENT_PENDING: "Awaiting Payout Info",
+  PAYMENT_RECEIVED: "Payout Info Received",
+  CONTENT_BRIEF_SENT: "Brief Sent",
   REJECTED: "Rejected",
   OPTED_OUT: "Opted Out",
   NO_RESPONSE: "No Response",
@@ -147,7 +160,12 @@ export const stateDescription: Record<InstanceState, string> = {
   FOLLOWED_UP: "A follow-up nudge was sent; waiting on a response.",
   REPLY_RECEIVED: "A reply arrived and is being classified by the AI.",
   NEGOTIATING: "In an active back-and-forth on terms with the AI agent.",
-  ACCEPTED: "Deal accepted — terminal success state.",
+  ACCEPTED: "Negotiation agreed — finalizing the agreement in Reward Setup.",
+  REWARD_PENDING: "Agreement email sent; waiting on the creator to confirm.",
+  REWARD_CONFIRMED: "Creator confirmed — collecting payout info in Payment Info.",
+  PAYMENT_PENDING: "Payout form emailed; waiting on the creator to submit it.",
+  PAYMENT_RECEIVED: "Creator submitted payout info — sending the campaign brief.",
+  CONTENT_BRIEF_SENT: "Campaign brief emailed to the creator — terminal success state.",
   REJECTED: "Creator declined — terminal state.",
   OPTED_OUT: "Creator asked to stop being contacted — terminal state.",
   NO_RESPONSE: "All follow-ups exhausted with no reply — terminal state.",
@@ -184,14 +202,15 @@ export function relativeTime(iso: string | null): string {
 
 // Map a transition source string to a short, human label + colour.
 export const sourceMeta: Record<string, { label: string; color: string }> = {
-  scheduler: { label: "Scheduler", color: "#a371f7" },
-  "node-execution-worker": { label: "Worker", color: "#58a6ff" },
-  "inbound-email-worker": { label: "Inbound Worker", color: "#56d364" },
-  "inbound-email": { label: "Inbound Email", color: "#56d364" },
-  "classification-agent": { label: "Classifier AI", color: "#d29922" },
-  "negotiation-agent": { label: "Negotiator AI", color: "#e3b341" },
-  manual: { label: "Manual", color: "#9198a1" },
-  system: { label: "System", color: "#6e7681" },
+  scheduler: { label: "Scheduler", color: "#a78bfa" },
+  "node-execution-worker": { label: "Worker", color: "#8b96f8" },
+  "inbound-email-worker": { label: "Inbound Worker", color: "#57d9a3" },
+  "inbound-email": { label: "Inbound Email", color: "#57d9a3" },
+  "classification-agent": { label: "Classifier AI", color: "#d9a03f" },
+  "negotiation-agent": { label: "Negotiator AI", color: "#e5b454" },
+  "payment-form": { label: "Payout Form", color: "#3ecf8e" },
+  manual: { label: "Manual", color: "#9da3ae" },
+  system: { label: "System", color: "#6a7080" },
 };
 
 export function sourceInfo(source: string | null): { label: string; color: string } {

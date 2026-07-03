@@ -15,6 +15,9 @@ export type NodeType =
   | "FOLLOW_UP"
   | "REPLY_DETECTION"
   | "NEGOTIATION"
+  | "REWARD_SETUP"
+  | "PAYMENT_INFO"
+  | "CONTENT_BRIEF"
   | "END";
 
 export interface InitialOutreachConfig {
@@ -44,11 +47,46 @@ export interface NegotiationConfig {
   commissionRate?: number;
 }
 
+// Reward Setup finalizes the agreement after a successful negotiation. The final
+// fee is the rate the negotiation closed on (resolved at runtime); commission and
+// deliverables are stamped from the campaign / negotiation config.
+export interface RewardSetupConfig {
+  commissionRate?: number;
+  deliverables?: string;
+  timeline?: string;
+}
+
+// Payment Info collects the creator's payout details via a hosted form after
+// they confirm the agreement. It needs no builder config today (the form link +
+// email are derived at runtime); the interface exists so the node type is fully
+// modelled and future payout options can be added without a type change.
+export interface PaymentInfoConfig {
+  [key: string]: unknown;
+}
+
+// Content Brief sends the campaign brief (PDF + referral link + optional notes)
+// once payout info is collected, then completes. The brand configures it in the
+// builder before launch. Only the uploaded PDF's stored reference is persisted —
+// never the bytes; the original filename is kept for display + the attachment.
+export interface ContentBriefConfig {
+  /** Stored reference for the uploaded Campaign Brief PDF (required to launch). */
+  briefFileRef?: string;
+  /** Original filename of the uploaded PDF, for display + the email attachment. */
+  briefFileName?: string;
+  /** Optional referral link included in the email body. */
+  referralLink?: string;
+  /** Optional brand notes shown to the creator in the email body. */
+  creatorNotes?: string;
+}
+
 export type NodeConfig =
   | InitialOutreachConfig
   | FollowUpConfig
   | ReplyDetectionConfig
   | NegotiationConfig
+  | RewardSetupConfig
+  | PaymentInfoConfig
+  | ContentBriefConfig
   | Record<string, unknown>;
 
 export interface DraftNode {
@@ -72,6 +110,10 @@ export interface CampaignListItem {
   brandDescription: string | null;
   deliverables: string | null;
   timeline: string | null;
+  /** Free-text product/sample reward blurb woven into the email copy. */
+  rewardDescription: string | null;
+  /** When true, the payment form also collects a shipping address. */
+  shipsPhysicalProduct: boolean;
   createdAt: string;
   updatedAt: string;
   workflowCount: number;
@@ -96,6 +138,10 @@ export interface CampaignDetail {
   brandDescription: string | null;
   deliverables: string | null;
   timeline: string | null;
+  /** Free-text product/sample reward blurb woven into the email copy. */
+  rewardDescription: string | null;
+  /** When true, the payment form also collects a shipping address. */
+  shipsPhysicalProduct: boolean;
   createdAt: string;
   updatedAt: string;
   workflows: CampaignWorkflowItem[];
@@ -215,9 +261,22 @@ export interface LaunchResponse {
   totalInstances: number;
 }
 
+/** One structured validation issue as returned by the server. Mirrors the
+ * frontend ValidationIssue shape (web/src/workflow/graphValidation.ts) so
+ * publish/validate errors can stay tied to their node for click-to-focus. */
+export interface ServerValidationIssue {
+  code: string;
+  message: string;
+  nodeId?: string;
+  edgeId?: string;
+  severity: "error" | "warning";
+}
+
 export interface ValidationResponse {
   valid: boolean;
   errors: string[];
+  /** Structured issues (added Phase 17); `errors` kept for back-compat. */
+  issues?: ServerValidationIssue[];
 }
 
 // ---------------------------------------------------------------------------

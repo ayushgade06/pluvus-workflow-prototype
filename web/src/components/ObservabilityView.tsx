@@ -53,7 +53,10 @@ export default function ObservabilityView() {
           <CanvasHint visible={!selectedState && !summary.isLoading && !summary.isError} />
         </div>
         {selectedState && (
-          <div style={{ width: 340, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.bg }}>
+          <div
+            className="ds-slide-in-right"
+            style={{ width: 340, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.panel }}
+          >
             <NodeDrilldown
               state={selectedState}
               selectedInstanceId={selectedInstanceId}
@@ -62,7 +65,10 @@ export default function ObservabilityView() {
           </div>
         )}
         {selectedInstanceId && (
-          <div style={{ width: 420, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.bg }}>
+          <div
+            className="ds-slide-in-right"
+            style={{ width: 420, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.panel }}
+          >
             <InstanceInspector instanceId={selectedInstanceId} onClose={() => setSelectedInstanceId(null)} />
           </div>
         )}
@@ -124,12 +130,13 @@ function ObserveTopbar({
         ) : (
           <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: font.size.sm, color: colors.textMuted }}>
             <span
+              className={fetching ? undefined : "ds-pulse"}
               style={{
                 width: 7,
                 height: 7,
                 borderRadius: "50%",
                 background: fetching ? colors.warning : colors.success,
-                boxShadow: `0 0 6px ${fetching ? colors.warning : colors.success}`,
+                boxShadow: `0 0 8px ${fetching ? colors.warning : colors.success}66`,
               }}
             />
             live · {POLL_INTERVAL_MS / 1000}s
@@ -182,14 +189,15 @@ function CanvasHint({ visible }: { visible: boolean }) {
         bottom: 18,
         right: 18,
         background: colors.panel,
-        border: `1px solid ${colors.border}`,
-        borderRadius: 8,
-        padding: "9px 13px",
+        border: `1px solid ${colors.borderStrong}`,
+        borderRadius: 10,
+        padding: "10px 14px",
         fontSize: font.size.sm,
         color: colors.textMuted,
-        maxWidth: 230,
-        lineHeight: 1.5,
+        maxWidth: 240,
+        lineHeight: 1.55,
         pointerEvents: "none",
+        boxShadow: "0 2px 6px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.28)",
       }}
     >
       Click a state node to see the creators inside it, then a creator to inspect its full lifecycle.

@@ -37,3 +37,7 @@ npm-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Brand file uploads (Content Brief PDFs) — stored locally, never committed
+server/uploads/
+uploads/

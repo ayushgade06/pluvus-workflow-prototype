@@ -1,6 +1,6 @@
 // Card — unified panel surface. `interactive` adds hover lift + pointer.
 import type { HTMLAttributes, ReactNode } from "react";
-import { colors, radii } from "../../theme";
+import { colors, radii, shadow } from "../../theme";
 
 interface Props extends HTMLAttributes<HTMLDivElement> {
   interactive?: boolean;
@@ -17,6 +17,7 @@ export function Card({ interactive, padding = 0, children, style, className, ...
         background: colors.panel,
         border: `1px solid ${colors.border}`,
         borderRadius: radii.md,
+        boxShadow: shadow.sm,
         padding,
         cursor: interactive ? "pointer" : undefined,
         ...style,

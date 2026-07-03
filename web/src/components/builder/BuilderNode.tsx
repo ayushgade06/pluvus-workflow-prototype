@@ -8,15 +8,23 @@ import {
   nodeColor,
   configSummary,
   configChips,
-  nodeWarning,
   nodeTypeToState,
 } from "./nodeMeta";
+import {
+  dedupeIssues,
+  nodeValidity,
+  type ValidationIssue,
+} from "../../workflow/graphValidation";
 
 export interface BuilderNodeData {
   node: DraftNode;
   selected: boolean;
   executionCount?: Record<string, number> | undefined;
   published?: boolean | undefined;
+  /** Every validation issue attached to THIS node (config + structural), from
+   * the single validateGraph() pass. Drives the border ring AND the specific
+   * reason(s) shown in the card footer. Empty/undefined ⇒ node is valid. */
+  issues?: ValidationIssue[] | undefined;
 }
 
 const NODE_WIDTH = 300;
@@ -26,56 +34,94 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
 }: {
   data: BuilderNodeData;
 }) {
-  const { node, selected, executionCount, published } = data;
+  const { node, selected, executionCount, published, issues } = data;
   const typeColor = nodeColor(node.type);
   const icon = nodeIcon(node.type);
   const label = nodeLabel(node.type);
   const summary = configSummary(node);
   const chips = configChips(node);
-  const warning = nodeWarning(node);
-  const invalid = warning !== null;
+
+  // Single validity source: the issues threaded down from validateGraph().
+  const nodeIssues = issues && issues.length ? dedupeIssues(issues) : [];
+  const validity = nodeValidity(nodeIssues); // "ok" | "warning" | "error"
+  const invalid = validity !== "ok";
+  // Error → danger red; warning → amber. Used for the ring + footer text.
+  const issueColor = validity === "error" ? colors.danger : colors.warning;
 
   const stateName = nodeTypeToState(node.type);
   const liveCount = stateName && executionCount ? executionCount[stateName] ?? 0 : null;
   const hasLive = liveCount !== null && liveCount > 0;
 
   // Border/ring priority: selected > invalid > default.
-  const borderColor = selected ? colors.accent : invalid ? colors.danger : colors.border;
+  const borderColor = selected ? colors.accent : invalid ? issueColor : colors.borderStrong;
+  const baseShadow = "0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.25)";
   const ring = selected
-    ? `0 0 0 3px ${colors.accent}2e`
+    ? `0 0 0 3px ${colors.accent}30, ${baseShadow}`
     : invalid
-    ? `0 0 0 3px ${colors.danger}1f`
-    : "none";
+    ? `0 0 0 3px ${issueColor}22, ${baseShadow}`
+    : baseShadow;
 
   return (
     <div
       className="ds-card-interactive"
       style={{
         width: NODE_WIDTH,
-        background: selected ? "rgba(56,139,253,0.06)" : colors.panel,
-        border: `1.5px solid ${borderColor}`,
+        background: selected ? "#16171e" : colors.panel,
+        border: `1px solid ${borderColor}`,
         borderRadius: radii.lg,
         overflow: "hidden",
         boxShadow: ring,
         position: "relative",
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      {/* Connection handles — VISIBLE dots so drag-to-connect is discoverable.
+          Top = incoming (target), bottom = outgoing (source). Drag from a
+          node's bottom dot to another node's top dot to link them. The
+          .rf-handle CSS enlarges them on hover for an easy grab target. */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="rf-handle"
+        style={{
+          background: colors.panel,
+          border: `2px solid ${typeColor}`,
+          width: 11,
+          height: 11,
+          top: -6,
+        }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="rf-handle"
+        style={{
+          background: typeColor,
+          border: `2px solid ${colors.panel}`,
+          width: 11,
+          height: 11,
+          bottom: -6,
+        }}
+      />
 
-      {/* Accent rail */}
-      <div style={{ height: 3, background: typeColor }} />
+      {/* Accent rail — fades out so it reads as a highlight, not a border */}
+      <div
+        style={{
+          height: 2,
+          background: `linear-gradient(90deg, ${typeColor}, ${typeColor}00)`,
+        }}
+      />
 
-      <div style={{ padding: "11px 13px 12px" }}>
+      <div style={{ padding: "13px 15px 14px" }}>
         {/* Header: icon · name · status dot */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
             aria-hidden
             style={{
-              width: 24,
-              height: 24,
-              borderRadius: radii.sm,
-              background: `${typeColor}1f`,
+              width: 28,
+              height: 28,
+              borderRadius: 8,
+              background: `${typeColor}1c`,
+              border: `1px solid ${typeColor}26`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -85,7 +131,14 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
           >
             {icon}
           </span>
-          <span style={{ fontSize: font.size.md, fontWeight: font.weight.semibold, color: colors.text }}>
+          <span
+            style={{
+              fontSize: font.size.md,
+              fontWeight: font.weight.semibold,
+              color: colors.text,
+              letterSpacing: -0.1,
+            }}
+          >
             {label}
           </span>
           <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
@@ -100,14 +153,16 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
             {hasLive && (
               <span
                 title={`${liveCount} in this stage`}
+                className="nums"
                 style={{
                   background: typeColor,
                   color: "#fff",
                   borderRadius: radii.pill,
                   fontSize: 10.5,
                   fontWeight: font.weight.bold,
-                  padding: "1px 7px",
-                  lineHeight: 1.6,
+                  padding: "1px 8px",
+                  lineHeight: 1.7,
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.35)",
                 }}
               >
                 {liveCount}
@@ -116,36 +171,38 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
           </span>
         </div>
 
-        {/* Body: one-line summary */}
+        {/* Body: one-line summary. Stays the friendly "what this node does"
+            line even when invalid — the specific reason is shown in the footer
+            so the user sees both context and problem. */}
         <div
           style={{
             fontSize: font.size.sm,
-            color: invalid ? colors.danger : colors.textMuted,
-            lineHeight: 1.4,
-            marginTop: 8,
+            color: colors.textMuted,
+            lineHeight: 1.5,
+            marginTop: 9,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
         >
-          {warning ?? summary}
+          {summary}
         </div>
 
         {/* Body: config chips */}
         {chips.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 10 }}>
             {chips.map((c, i) => (
               <span
                 key={i}
                 style={{
-                  fontSize: 10,
+                  fontSize: 10.5,
                   fontWeight: font.weight.medium,
                   color: colors.textMuted,
                   background: colors.panelAlt,
                   border: `1px solid ${colors.border}`,
-                  borderRadius: radii.sm,
-                  padding: "1px 6px",
-                  lineHeight: 1.6,
+                  borderRadius: radii.pill,
+                  padding: "1px 8px",
+                  lineHeight: 1.7,
                   whiteSpace: "nowrap",
                 }}
               >
@@ -155,22 +212,42 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
           </div>
         )}
 
-        {/* Footer: invalid badge (only when something's wrong) */}
+        {/* Footer: the SPECIFIC reason(s) this node is invalid — no more generic
+            "Needs configuration". One row per distinct issue, color-coded by
+            severity so the user sees exactly what to fix, right on the node. */}
         {invalid && (
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
               marginTop: 10,
               paddingTop: 9,
               borderTop: `1px solid ${colors.border}`,
-              fontSize: 10.5,
-              color: colors.danger,
-              fontWeight: font.weight.semibold,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
             }}
           >
-            <span aria-hidden>⚠</span> Needs configuration
+            {nodeIssues.map((issue, i) => {
+              const color = issue.severity === "error" ? colors.danger : colors.warning;
+              return (
+                <div
+                  key={issue.code + i}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 5,
+                    fontSize: 10.5,
+                    color,
+                    fontWeight: font.weight.semibold,
+                    lineHeight: 1.35,
+                  }}
+                >
+                  <span aria-hidden style={{ flexShrink: 0 }}>
+                    {issue.severity === "error" ? "⚠" : "○"}
+                  </span>
+                  <span>{issue.message}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

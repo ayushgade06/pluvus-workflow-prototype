@@ -85,52 +85,58 @@ export function ManualQueueTab({ workflow }: Props) {
 
   return (
     <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "auto",
-          padding: "20px 24px",
-          gap: 18,
-        }}
-      >
+      <div className="ds-fade-in" style={{ flex: 1, overflow: "auto", minWidth: 0 }}>
+        <div
+          style={{
+            maxWidth: 960,
+            margin: "0 auto",
+            padding: "24px 28px 40px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 22,
+          }}
+        >
         {/* Live header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
+            className={queue.isFetching ? undefined : "ds-pulse"}
             style={{
               width: 8,
               height: 8,
               borderRadius: "50%",
               background: queue.isFetching ? colors.warning : colors.success,
-              boxShadow: `0 0 6px ${queue.isFetching ? colors.warning : colors.success}`,
+              boxShadow: `0 0 8px ${queue.isFetching ? colors.warning : colors.success}66`,
+              flexShrink: 0,
             }}
           />
-          <span style={{ fontSize: font.size.md, color: colors.textMuted }}>
-            Manual Queue · v{workflow.latestVersion?.version} · {POLL_INTERVAL_MS / 1000}s refresh
+          <span style={{ fontSize: font.size.md, fontWeight: font.weight.medium, color: colors.text }}>
+            Manual Queue
+          </span>
+          <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+            v{workflow.latestVersion?.version} · refreshes every {POLL_INTERVAL_MS / 1000}s
           </span>
           <span style={{ fontSize: font.size.sm, color: colors.textDim, marginLeft: "auto" }}>
-            {formatTimestamp(data.generatedAt)}
+            Updated {formatTimestamp(data.generatedAt)}
           </span>
         </div>
 
-        <p style={{ fontSize: font.size.md, color: colors.textMuted, margin: 0, lineHeight: 1.5 }}>
+        <p style={{ fontSize: font.size.md, color: colors.textMuted, margin: 0, lineHeight: 1.6, maxWidth: 640 }}>
           These creators were escalated out of the automated workflow because the AI could not
           safely proceed on its own. The brand contact is emailed for each escalation so a human can
           take over the conversation.
         </p>
 
         {/* Totals */}
-        <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ display: "flex", gap: 14 }}>
           <StatTile label="In Queue" value={data.total} color={colors.warning} />
           <StatTile label="Brand Notified" value={notifiedCount} color={colors.success} />
-          <StatTile label="Needs Attention" value={failedCount} color={colors.danger} />
+          <StatTile label="Needs Attention" value={failedCount} color={failedCount > 0 ? colors.danger : colors.textMuted} />
         </div>
 
         {/* Queue list */}
         <div>
-          <SectionHeader>Escalated Creators</SectionHeader>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <SectionHeader count={data.total}>Escalated Creators</SectionHeader>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {data.items.map((item) => (
               <QueueRow
                 key={item.instanceId}
@@ -143,11 +149,20 @@ export function ManualQueueTab({ workflow }: Props) {
             ))}
           </div>
         </div>
+        </div>
       </div>
 
       {/* Inspector panel */}
       {selectedInstanceId && (
-        <div style={{ width: 400, flexShrink: 0, borderLeft: `1px solid ${colors.border}` }}>
+        <div
+          className="ds-slide-in-right"
+          style={{
+            width: 400,
+            flexShrink: 0,
+            borderLeft: `1px solid ${colors.border}`,
+            background: colors.panel,
+          }}
+        >
           <InstanceInspector
             instanceId={selectedInstanceId}
             onClose={() => setSelectedInstanceId(null)}
@@ -179,11 +194,15 @@ function QueueRow({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 14,
-        padding: "12px 16px",
-        background: selected ? colors.panelAlt : colors.bg,
-        border: `1px solid ${selected ? colors.accent : colors.border}`,
+        gap: 16,
+        padding: "14px 18px",
+        background: selected ? "#16171e" : colors.panel,
+        border: `1px solid ${selected ? `${colors.accent}66` : colors.border}`,
         borderRadius: radii.md,
+        boxShadow: selected
+          ? `0 0 0 3px ${colors.accent}1f, 0 1px 2px rgba(0,0,0,0.4)`
+          : "0 1px 2px rgba(0,0,0,0.4)",
+        transition: "border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
       }}
     >
       {/* Creator + reason — clickable to open inspector */}
@@ -204,11 +223,18 @@ function QueueRow({
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text }}>
+          <span
+            style={{
+              fontSize: font.size.lg,
+              fontWeight: font.weight.semibold,
+              color: colors.text,
+              letterSpacing: -0.2,
+            }}
+          >
             {item.creatorName}
           </span>
           {item.creatorHandle && (
-            <span style={{ fontSize: font.size.sm, color: colors.textMuted }}>
+            <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
               @{item.creatorHandle}
             </span>
           )}
@@ -216,19 +242,20 @@ function QueueRow({
             <span style={{ fontSize: font.size.sm, color: colors.textDim }}>· {item.platform}</span>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
           <span
             style={{
               fontSize: font.size.xs,
-              fontWeight: font.weight.semibold,
-              color: "#e3b341",
-              background: "rgba(227,179,65,0.12)",
-              border: "1px solid rgba(227,179,65,0.4)",
+              fontWeight: font.weight.medium,
+              color: "#e5b454",
+              background: "rgba(229,180,84,0.12)",
+              border: "1px solid rgba(229,180,84,0.3)",
               borderRadius: radii.pill,
-              padding: "2px 8px",
+              padding: "2px 9px",
+              lineHeight: 1.5,
             }}
           >
-            {item.reasonLabel}
+            ⚠ {item.reasonLabel}
           </span>
           <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
             {item.escalatedAt
@@ -266,18 +293,18 @@ function QueueRow({
       <button
         onClick={onNotify}
         disabled={notifying}
-        className="ds-focusable"
+        className={`ds-focusable ds-btn ${notify?.status === "SENT" ? "ds-btn-secondary" : "ds-btn-primary"}`}
         style={{
           flexShrink: 0,
           fontSize: font.size.sm,
-          fontWeight: font.weight.semibold,
-          color: notify?.status === "SENT" ? colors.textMuted : "#fff",
-          background: notify?.status === "SENT" ? "transparent" : colors.accent,
-          border: `1px solid ${notify?.status === "SENT" ? colors.border : colors.accent}`,
-          borderRadius: radii.sm,
-          padding: "7px 12px",
+          fontWeight: notify?.status === "SENT" ? font.weight.medium : font.weight.semibold,
+          color: notify?.status === "SENT" ? colors.text : "#fff",
+          background: notify?.status === "SENT" ? colors.panel : colors.accent,
+          border: `1px solid ${notify?.status === "SENT" ? colors.borderStrong : "transparent"}`,
+          borderRadius: radii.sm + 1,
+          padding: "0 14px",
+          height: 32,
           cursor: notifying ? "default" : "pointer",
-          opacity: notifying ? 0.6 : 1,
           whiteSpace: "nowrap",
         }}
       >

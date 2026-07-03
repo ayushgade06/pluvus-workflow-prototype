@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
   useWorkflow,
   useWorkflowVersions,
@@ -9,7 +9,7 @@ import {
   useWorkflowExecution,
 } from "../../api/builderClient";
 import { colors, radii, font, formatTimestamp } from "../../theme";
-import { BuilderCanvas } from "./BuilderCanvas";
+import { GraphCanvas } from "./GraphCanvas";
 import { BuilderLeftSidebar } from "./BuilderLeftSidebar";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EnrollTab } from "./EnrollTab";
@@ -24,12 +24,30 @@ import {
   StatusBadge,
   EmptyState,
   Tooltip,
+  Skeleton,
+  SkeletonRows,
   useToast,
   useMediaQuery,
   bp,
   type Crumb,
 } from "../ds";
 import type { DraftNode } from "../../api/builderTypes";
+import {
+  linearNodesToGraph,
+  graphToLinearNodes,
+  topologicalOrder,
+  defaultPositionForIndex,
+  edgeId,
+  type WorkflowDefinition,
+  type GraphNode,
+} from "../../workflow/graphModel";
+import {
+  validateGraph,
+  issuesByNode,
+  dedupeIssues,
+  type ValidationIssue,
+} from "../../workflow/graphValidation";
+import { nodeLabel, nodeIcon } from "./nodeMeta";
 
 type Tab = "build" | "enroll" | "launch" | "monitor" | "queue";
 
@@ -47,116 +65,265 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
 
   const [activeTab, setActiveTab] = useState<Tab>("build");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [localNodes, setLocalNodes] = useState<DraftNode[] | null>(null);
+  // The workflow GRAPH is the editor's source of truth. It is derived from the
+  // server's draftNodes on load and serialized back to draftNodes on save.
+  const [localDef, setLocalDef] = useState<WorkflowDefinition | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
-  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  // Publish-attempt failures, kept as structured issues so each one stays
+  // clickable + tied to its node (not a flat string wall).
+  const [publishIssues, setPublishIssues] = useState<ValidationIssue[]>([]);
   const [showVersions, setShowVersions] = useState(false);
+  // Which node the canvas should pan to. Nonce bumps each request so clicking
+  // the same node twice still re-centers.
+  const [focusNode, setFocusNode] = useState<{ id: string; nonce: number } | null>(null);
+  const focusNonce = useRef(0);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const compact = useMediaQuery(bp.laptop);
 
   const wf = wfQuery.data;
-  // localNodes takes priority over server data (optimistic local editing)
-  const nodes = localNodes ?? wf?.draftNodes ?? [];
 
-  const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
-  const sorted = [...nodes].sort((a, b) => a.order - b.order);
-  const selectedIndex = selectedNode ? sorted.findIndex((n) => n.id === selectedNode.id) : -1;
+  // Remembers the last non-empty definition we rendered, so a transient query
+  // state (e.g. `wf` momentarily undefined during an invalidate→refetch) can
+  // never blank the canvas by falling back to an empty graph.
+  const lastGoodDefRef = useRef<WorkflowDefinition | null>(null);
 
-  // Debounced auto-save — fires 1s after last change
-  function scheduleSave(updated: DraftNode[]) {
+  // Seed the local graph from server draftNodes the first time they arrive. We
+  // DON'T continuously sync from server data — local edits take priority
+  // (mirrors the previous localNodes ?? draftNodes behaviour).
+  const serverNodes = wf?.draftNodes;
+  useEffect(() => {
+    if (localDef === null && serverNodes && serverNodes.length > 0) {
+      setLocalDef(linearNodesToGraph(serverNodes));
+    }
+  }, [localDef, serverNodes]);
+
+  // The definition currently being edited. Fallbacks, in priority order:
+  //   1. localDef (active edits, source of truth)
+  //   2. a live conversion of server draftNodes (first render before the effect)
+  //   3. the last non-empty def we held (guards against a transient empty server
+  //      response blanking the canvas — the disappearing-workflow bug)
+  const def: WorkflowDefinition = useMemo(() => {
+    if (localDef) return localDef;
+    const fromServer =
+      serverNodes && serverNodes.length > 0 ? linearNodesToGraph(serverNodes) : null;
+    if (fromServer) return fromServer;
+    if (lastGoodDefRef.current) return lastGoodDefRef.current;
+    return linearNodesToGraph([]);
+  }, [localDef, serverNodes]);
+
+  // Track the last non-empty def for the fallback above.
+  useEffect(() => {
+    if (def.nodes.length > 0) lastGoodDefRef.current = def;
+  }, [def]);
+
+  // Live client-side validation — drives inline error display + node red-rings.
+  const validation = useMemo(() => validateGraph(def), [def]);
+
+  // Per-node issue buckets, derived once and threaded to the canvas, sidebar,
+  // and issues panel — the SINGLE validity source (no more nodeWarning drift).
+  const nodeIssues = useMemo(() => issuesByNode(validation.errors), [validation.errors]);
+
+  // Select a node AND pan the canvas to it — used by the issues panel + publish
+  // banner for click-to-focus navigation.
+  const focusOnNode = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    focusNonce.current += 1;
+    setFocusNode({ id: nodeId, nonce: focusNonce.current });
+  }, []);
+
+  // Display-facing linear nodes (clean configs, derived order) for the sidebar +
+  // config panel, which speak DraftNode[]. Order comes from the topological walk.
+  const displayNodes: DraftNode[] = useMemo(
+    () =>
+      topologicalOrder(def).map((n, i) => ({
+        id: n.id,
+        type: n.type,
+        order: i,
+        config: n.config,
+      })),
+    [def],
+  );
+
+  const selectedNode = displayNodes.find((n) => n.id === selectedNodeId) ?? null;
+  const selectedIndex = selectedNode
+    ? displayNodes.findIndex((n) => n.id === selectedNode.id)
+    : -1;
+
+  // -- persistence ---------------------------------------------------------
+  function scheduleSave(nextDef: WorkflowDefinition) {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      void doSave(updated);
+      void doSave(nextDef);
     }, 1000);
   }
 
-  async function doSave(nodesToSave: DraftNode[]) {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await saveDraft(workflowId, nodesToSave);
-      await inv.invalidateWorkflow();
-      setSavedAt(res.updatedAt);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Save failed";
-      setSaveError(msg);
-      toast.error(`Couldn't save draft: ${msg}`);
-    } finally {
-      setSaving(false);
-    }
-  }
+  const doSave = useCallback(
+    async (defToSave: WorkflowDefinition) => {
+      // Guard: never persist an empty graph that only exists because the
+      // server data hadn't loaded yet (the `def` fallback is `[]`). Saving that
+      // would wipe a real draft. A genuine "user deleted every node" is
+      // vanishingly rare and still recoverable via re-publish, so we simply
+      // refuse to auto-save an empty graph.
+      if (defToSave.nodes.length === 0) {
+        setSaving(false);
+        return;
+      }
+      setSaving(true);
+      setSaveError(null);
+      try {
+        // Serialize the graph down to the runtime's linear ordered array (with
+        // graph metadata stashed in the runtime-ignored `_graph` sidecar).
+        const linear = graphToLinearNodes(defToSave);
+        const res = await saveDraft(workflowId, linear);
+        await inv.invalidateWorkflow();
+        setSavedAt(res.updatedAt);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Save failed";
+        setSaveError(msg);
+        toast.error(`Couldn't save draft: ${msg}`);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [workflowId, inv, toast],
+  );
 
+  // -- graph edits (from the canvas) ---------------------------------------
+  const handleGraphChange = useCallback(
+    (next: WorkflowDefinition) => {
+      setLocalDef(next);
+      scheduleSave(next);
+    },
+    // scheduleSave is stable enough (only reads refs); intentionally omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // -- config panel edits --------------------------------------------------
   function handleNodeUpdate(nodeId: string, config: Record<string, unknown>) {
-    const updated = nodes.map((n) =>
-      n.id === nodeId ? { ...n, config: config as DraftNode["config"] } : n,
-    );
-    setLocalNodes(updated);
-    scheduleSave(updated);
+    const next: WorkflowDefinition = {
+      ...def,
+      nodes: def.nodes.map((n) =>
+        n.id === nodeId ? { ...n, config: config as GraphNode["config"] } : n,
+      ),
+    };
+    setLocalDef(next);
+    scheduleSave(next);
   }
 
   function handleDeleteNode(nodeId: string) {
-    const updated = nodes.filter((n) => n.id !== nodeId).map((n, i) => ({ ...n, order: i }));
-    setLocalNodes(updated);
+    // Auto-heal the chain: if the deleted node sat between a single predecessor
+    // and a single successor, reconnect them so a mid-chain delete keeps the
+    // flow linear (instead of leaving two disconnected halves the user has to
+    // manually rewire). Branches/merges are left as-is for validation to flag.
+    const preds = def.edges.filter((e) => e.target === nodeId).map((e) => e.source);
+    const succs = def.edges.filter((e) => e.source === nodeId).map((e) => e.target);
+    const remainingEdges = def.edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
+    if (preds.length === 1 && succs.length === 1 && preds[0] !== succs[0]) {
+      const healId = edgeId(preds[0]!, succs[0]!);
+      if (!remainingEdges.some((e) => e.id === healId)) {
+        remainingEdges.push({ id: healId, source: preds[0]!, target: succs[0]! });
+      }
+    }
+    const next: WorkflowDefinition = {
+      ...def,
+      nodes: def.nodes.filter((n) => n.id !== nodeId),
+      edges: remainingEdges,
+    };
+    setLocalDef(next);
     setSelectedNodeId(null);
-    scheduleSave(updated);
+    scheduleSave(next);
   }
 
-  function handleMoveUp(nodeId: string) {
-    const s = [...nodes].sort((a, b) => a.order - b.order);
-    const idx = s.findIndex((n) => n.id === nodeId);
-    if (idx <= 0) return;
-    const swapped = [...s];
-    const a = swapped[idx - 1];
-    const b = swapped[idx];
-    if (!a || !b) return;
-    swapped[idx - 1] = b;
-    swapped[idx] = a;
-    const updated = swapped.map((n, i) => ({ ...n, order: i }));
-    setLocalNodes(updated);
-    scheduleSave(updated);
+  // Move up/down operate on the current linear order: reorder the chain, then
+  // rebuild the linear edges + re-layout positions to match. Keeps the config
+  // panel's existing ↑/↓ buttons meaningful in the graph world.
+  function reorderLinear(nodeId: string, dir: -1 | 1) {
+    const ordered = topologicalOrder(def);
+    const idx = ordered.findIndex((n) => n.id === nodeId);
+    const swapWith = idx + dir;
+    if (idx < 0 || swapWith < 0 || swapWith >= ordered.length) return;
+    const next = [...ordered];
+    const a = next[idx]!;
+    const b = next[swapWith]!;
+    next[idx] = b;
+    next[swapWith] = a;
+    relayoutLinear(next);
   }
 
-  function handleMoveDown(nodeId: string) {
-    const s = [...nodes].sort((a, b) => a.order - b.order);
-    const idx = s.findIndex((n) => n.id === nodeId);
-    if (idx < 0 || idx >= s.length - 1) return;
-    const swapped = [...s];
-    const a = swapped[idx];
-    const b = swapped[idx + 1];
-    if (!a || !b) return;
-    swapped[idx] = b;
-    swapped[idx + 1] = a;
-    const updated = swapped.map((n, i) => ({ ...n, order: i }));
-    setLocalNodes(updated);
-    scheduleSave(updated);
+  function relayoutLinear(orderedNodes: GraphNode[]) {
+    const nodes = orderedNodes.map((n, i) => ({ ...n, position: defaultPositionForIndex(i) }));
+    const edges = nodes.slice(0, -1).map((n, i) => {
+      const target = nodes[i + 1]!;
+      return { id: edgeId(n.id, target.id), source: n.id, target: target.id };
+    });
+    const next: WorkflowDefinition = { ...def, nodes, edges };
+    setLocalDef(next);
+    scheduleSave(next);
+  }
+
+  const handleMoveUp = (nodeId: string) => reorderLinear(nodeId, -1);
+  const handleMoveDown = (nodeId: string) => reorderLinear(nodeId, 1);
+
+  // "Tidy layout" — snap the current graph into a clean linear chain (positions
+  // + edges re-linked in topological order). Handy after free-form editing to
+  // normalize before publishing.
+  function handleAutoArrange() {
+    relayoutLinear(topologicalOrder(def));
+    toast.success("Tidied into a linear flow.");
   }
 
   async function handlePublish() {
     setPublishing(true);
     setPublishError(null);
-    setValidationErrors([]);
-    // Flush any pending save first
+    setPublishIssues([]);
+
+    // Client-side gate first — fast feedback, no round-trip if obviously invalid.
+    const local = validateGraph(def);
+    if (!local.valid) {
+      setPublishIssues(local.errors.filter((e) => e.severity === "error"));
+      setPublishing(false);
+      toast.error("Validation failed — fix the highlighted issues before publishing.");
+      return;
+    }
+
+    // Flush any pending save so the server validates + publishes the latest graph.
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
-      await doSave(nodes);
     }
+    await doSave(def);
+
     try {
-      const validation = await validateWorkflow(workflowId);
-      if (!validation.valid) {
-        setValidationErrors(validation.errors);
+      const remote = await validateWorkflow(workflowId);
+      if (!remote.valid) {
+        // Prefer the server's structured issues (node-tied → clickable). Fall
+        // back to wrapping the plain error strings as graph-level issues.
+        const issues: ValidationIssue[] =
+          remote.issues && remote.issues.length
+            ? remote.issues.filter((i) => i.severity === "error")
+            : remote.errors.map((message, i) => ({
+                code: `REMOTE_${i}`,
+                message,
+                severity: "error" as const,
+              }));
+        setPublishIssues(issues);
         setPublishing(false);
         toast.error("Validation failed — fix the highlighted issues before publishing.");
         return;
       }
       const res = await publishWorkflow(workflowId);
       await Promise.all([inv.invalidateWorkflow(), inv.invalidateVersions()]);
-      setLocalNodes(null);
+      // NOTE: we deliberately DO NOT reset localDef to null here. Publishing only
+      // creates an immutable version + flips status to PUBLISHED — it never
+      // changes draftNodes. The current `def` was just saved (doSave above) and is
+      // authoritative, so keeping it avoids a re-seed race where the graph briefly
+      // falls back to an empty definition (which made the canvas "disappear").
       toast.success(`Published version v${res.version}.`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Publish failed";
@@ -173,8 +340,25 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
   // -- loading / error states --------------------------------------------
   if (wfQuery.isLoading) {
     return (
-      <div style={centerStyle}>
-        <span style={{ color: colors.textMuted, fontSize: font.size.md }}>Loading workflow…</span>
+      <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 20px",
+            borderBottom: `1px solid ${colors.border}`,
+            background: colors.panel,
+          }}
+        >
+          <Skeleton width={26} height={26} radius={7} />
+          <Skeleton width={220} height={13} />
+          <div style={{ flex: 1 }} />
+          <Skeleton width={76} height={24} radius={999} />
+        </div>
+        <div style={{ flex: 1, padding: 24 }}>
+          <SkeletonRows count={4} height={64} />
+        </div>
       </div>
     );
   }
@@ -210,14 +394,14 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
           display: "flex",
           alignItems: "center",
           gap: 12,
-          padding: "10px 16px",
+          padding: "11px 20px",
           borderBottom: `1px solid ${colors.border}`,
           background: colors.panel,
           flexShrink: 0,
         }}
       >
         <IconButton label="Back to campaigns" icon="←" onClick={onBack} />
-        <div style={{ width: 1, height: 18, background: colors.border }} />
+        <div style={{ width: 1, height: 16, background: colors.borderStrong }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <Breadcrumbs items={crumbs} />
         </div>
@@ -276,56 +460,136 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
       {/* Versions drawer */}
       {showVersions && (
         <div
+          className="ds-fade-in"
           style={{
-            padding: "10px 16px",
+            padding: "12px 20px",
             borderBottom: `1px solid ${colors.border}`,
             background: colors.panelAlt,
             flexShrink: 0,
             display: "flex",
             alignItems: "center",
-            gap: 12,
+            gap: 10,
             flexWrap: "wrap",
           }}
         >
-          <span style={{ color: colors.textMuted, fontSize: font.size.sm, fontWeight: font.weight.semibold }}>
+          <span
+            style={{
+              color: colors.textDim,
+              fontSize: font.size.xs,
+              fontWeight: font.weight.semibold,
+              textTransform: "uppercase",
+              letterSpacing: 0.8,
+              marginRight: 4,
+            }}
+          >
             Version history
           </span>
           {versionsQuery.data?.length
-            ? versionsQuery.data.map((v) => (
-                <span
-                  key={v.id}
-                  style={{
-                    fontSize: font.size.sm,
-                    color: v.version === wf.latestVersion?.version ? colors.accent : colors.textDim,
-                  }}
-                >
-                  v{v.version} · {v.instanceCount} instances · {formatTimestamp(v.publishedAt)}
-                </span>
-              ))
+            ? versionsQuery.data.map((v) => {
+                const isCurrent = v.version === wf.latestVersion?.version;
+                return (
+                  <span
+                    key={v.id}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: font.size.sm,
+                      color: isCurrent ? colors.text : colors.textMuted,
+                      background: isCurrent ? `${colors.accent}17` : colors.panel,
+                      border: `1px solid ${isCurrent ? `${colors.accent}40` : colors.border}`,
+                      borderRadius: 999,
+                      padding: "3px 12px",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <span style={{ fontWeight: font.weight.semibold, color: isCurrent ? colors.accent : colors.text }}>
+                      v{v.version}
+                    </span>
+                    <span style={{ color: colors.textDim }}>
+                      {v.instanceCount} instance{v.instanceCount !== 1 ? "s" : ""} · {formatTimestamp(v.publishedAt)}
+                    </span>
+                  </span>
+                );
+              })
             : (
               <span style={{ fontSize: font.size.sm, color: colors.textDim }}>No published versions yet.</span>
             )}
         </div>
       )}
 
-      {/* Validation errors */}
-      {validationErrors.length > 0 && (
+      {/* Validation errors (publish attempt) — de-duped, and each row that maps
+          to a node is clickable to jump straight to it. */}
+      {publishIssues.length > 0 && (
         <div
+          className="ds-fade-in"
           style={{
-            padding: "9px 16px",
-            background: "rgba(248,81,73,0.08)",
-            borderBottom: `1px solid ${colors.danger}`,
+            padding: "10px 20px",
+            background: `${colors.danger}0f`,
+            borderBottom: `1px solid ${colors.danger}40`,
             flexShrink: 0,
           }}
         >
-          <div style={{ fontSize: font.size.md, color: colors.danger, fontWeight: font.weight.semibold, marginBottom: 4 }}>
-            Validation errors — fix before publishing:
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 4,
+            }}
+          >
+            <span style={{ fontSize: font.size.md, color: colors.danger, fontWeight: font.weight.semibold }}>
+              Can't publish yet — fix {dedupeIssues(publishIssues).length} issue
+              {dedupeIssues(publishIssues).length !== 1 ? "s" : ""}:
+            </span>
+            <IconButton
+              label="Dismiss"
+              icon="✕"
+              size={22}
+              onClick={() => setPublishIssues([])}
+            />
           </div>
-          {validationErrors.map((e, i) => (
-            <div key={i} style={{ fontSize: font.size.sm, color: colors.danger }}>
-              · {e}
-            </div>
-          ))}
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {dedupeIssues(publishIssues).map((issue, i) => {
+              const node = issue.nodeId
+                ? displayNodes.find((n) => n.id === issue.nodeId)
+                : undefined;
+              const clickable = !!node;
+              return (
+                <button
+                  key={issue.code + i}
+                  onClick={clickable ? () => focusOnNode(node!.id) : undefined}
+                  disabled={!clickable}
+                  className={clickable ? "ds-focusable" : undefined}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    textAlign: "left",
+                    background: "transparent",
+                    border: "none",
+                    padding: "2px 0",
+                    fontSize: font.size.sm,
+                    color: colors.danger,
+                    cursor: clickable ? "pointer" : "default",
+                  }}
+                >
+                  <span aria-hidden>·</span>
+                  {node && (
+                    <span style={{ fontWeight: font.weight.semibold }}>
+                      {nodeIcon(node.type)} {nodeLabel(node.type)}:
+                    </span>
+                  )}
+                  <span>{issue.message}</span>
+                  {clickable && (
+                    <span aria-hidden style={{ color: colors.textDim, fontSize: font.size.xs }}>
+                      → jump
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -338,42 +602,60 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
               <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${colors.border}` }}>
                 <BuilderLeftSidebar
                   workflow={wf}
-                  nodes={nodes}
+                  nodes={displayNodes}
                   selectedNodeId={selectedNodeId}
                   onSelectNode={setSelectedNodeId}
                   execution={execution.data}
                   versionCount={versionsQuery.data?.length ?? 0}
+                  nodeIssues={nodeIssues}
                 />
               </div>
             )}
 
             {/* Canvas */}
             <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
-              <BuilderCanvas
-                nodes={nodes}
+              <GraphCanvas
+                definition={def}
+                onChange={handleGraphChange}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
                 executionCounts={executionCounts}
                 published={isPublished}
+                issues={validation.errors}
+                focusNode={focusNode}
               />
 
-              {/* Publish bar */}
+              {/* Live validity pill + publish bar */}
               <div
                 style={{
                   position: "absolute",
-                  bottom: 18,
+                  bottom: 20,
                   left: "50%",
                   transform: "translateX(-50%)",
                   display: "flex",
                   alignItems: "center",
-                  gap: 12,
-                  background: colors.panel,
-                  border: `1px solid ${colors.border}`,
+                  gap: 14,
+                  background: "rgba(19,20,24,0.92)",
+                  backdropFilter: "blur(10px)",
+                  WebkitBackdropFilter: "blur(10px)",
+                  border: `1px solid ${colors.borderStrong}`,
                   borderRadius: radii.lg,
-                  padding: "8px 10px 8px 16px",
-                  boxShadow: "0 8px 28px rgba(0,0,0,0.45)",
+                  padding: "10px 12px 10px 18px",
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.4), 0 24px 64px rgba(0,0,0,0.5)",
+                  maxWidth: "min(760px, calc(100% - 48px))",
                 }}
               >
+                <IssuesPanel
+                  validation={validation}
+                  displayNodes={displayNodes}
+                  onFocusNode={focusOnNode}
+                />
+                <Tooltip content="Snap every step into a clean top-to-bottom flow and re-link them in order. Use it to tidy up after free-form editing.">
+                  <Button variant="secondary" size="sm" onClick={handleAutoArrange}>
+                    Tidy layout
+                  </Button>
+                </Tooltip>
+                <div style={{ width: 1, height: 20, background: colors.borderStrong }} />
                 <span style={{ fontSize: font.size.sm, color: colors.textMuted }}>
                   {isPublished ? "Re-publish to apply draft changes" : "Ready to go live?"}
                 </span>
@@ -404,7 +686,7 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
                   onMoveUp={handleMoveUp}
                   onMoveDown={handleMoveDown}
                   isFirst={selectedIndex === 0}
-                  isLast={selectedIndex === sorted.length - 1}
+                  isLast={selectedIndex === displayNodes.length - 1}
                   saving={saving}
                   saveError={saveError}
                   savedAt={savedAt}
@@ -414,7 +696,7 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
                   compact
                   icon="⚙"
                   title="No step selected"
-                  description="Select a step on the canvas or from the left panel to edit its configuration."
+                  description="Select a node on the canvas, drag a new one from the palette, or connect nodes to build your flow."
                 />
               )}
             </div>
@@ -440,6 +722,170 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
           <MonitorTab workflow={wf} />
         )}
       </div>
+    </div>
+  );
+}
+
+// Live-validity indicator in the publish bar. When valid it's a quiet green
+// check; when not, it's a button that opens a navigable list of every issue —
+// each node-tied row jumps the canvas straight to the offending node so a user
+// can walk the list and fix them one by one.
+function IssuesPanel({
+  validation,
+  displayNodes,
+  onFocusNode,
+}: {
+  validation: { valid: boolean; errors: ValidationIssue[] };
+  displayNodes: DraftNode[];
+  onFocusNode: (nodeId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const errors = useMemo(
+    () => dedupeIssues(validation.errors.filter((e) => e.severity === "error")),
+    [validation.errors],
+  );
+
+  // Auto-close the popover once everything is fixed.
+  useEffect(() => {
+    if (errors.length === 0) setOpen(false);
+  }, [errors.length]);
+
+  if (validation.valid) {
+    return (
+      <Tooltip content="This workflow passes all graph checks and is ready to publish.">
+        <span
+          style={{
+            fontSize: font.size.sm,
+            color: colors.success,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontWeight: font.weight.semibold,
+          }}
+        >
+          <span aria-hidden>✓</span> Valid
+        </span>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="ds-focusable"
+        style={{
+          fontSize: font.size.sm,
+          color: colors.danger,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          fontWeight: font.weight.semibold,
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
+        }}
+      >
+        <span aria-hidden>⚠</span> {errors.length} issue{errors.length !== 1 ? "s" : ""}
+        <span aria-hidden style={{ fontSize: 9, color: colors.textDim }}>
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+
+      {open && (
+        <div
+          role="list"
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 10px)",
+            left: 0,
+            width: 340,
+            maxHeight: 300,
+            overflowY: "auto",
+            background: colors.panel,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radii.md,
+            boxShadow: "0 8px 28px rgba(0,0,0,0.45)",
+            padding: 6,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
+          <div
+            style={{
+              fontSize: font.size.xs,
+              color: colors.textDim,
+              textTransform: "uppercase",
+              letterSpacing: 0.4,
+              fontWeight: font.weight.semibold,
+              padding: "4px 8px 6px",
+            }}
+          >
+            Fix these to publish
+          </div>
+          {errors.map((issue, i) => {
+            const node = issue.nodeId
+              ? displayNodes.find((n) => n.id === issue.nodeId)
+              : undefined;
+            const clickable = !!node;
+            return (
+              <button
+                key={issue.code + i}
+                role="listitem"
+                onClick={
+                  clickable
+                    ? () => {
+                        onFocusNode(node!.id);
+                        setOpen(false);
+                      }
+                    : undefined
+                }
+                disabled={!clickable}
+                className={clickable ? "ds-focusable ds-row" : undefined}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  textAlign: "left",
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: radii.sm,
+                  padding: "6px 8px",
+                  cursor: clickable ? "pointer" : "default",
+                }}
+              >
+                {node ? (
+                  <span
+                    style={{
+                      fontSize: font.size.xs,
+                      color: colors.textMuted,
+                      fontWeight: font.weight.semibold,
+                    }}
+                  >
+                    {nodeIcon(node.type)} {nodeLabel(node.type)}
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      fontSize: font.size.xs,
+                      color: colors.textDim,
+                      fontWeight: font.weight.semibold,
+                    }}
+                  >
+                    Workflow
+                  </span>
+                )}
+                <span style={{ fontSize: font.size.sm, color: colors.danger, lineHeight: 1.35 }}>
+                  {issue.message}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

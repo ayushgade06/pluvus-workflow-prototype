@@ -23,7 +23,7 @@ export function AgentDecisions({ decisions }: { decisions: AgentDecisionDTO[] })
 
 function Card({ d }: { d: AgentDecisionDTO }) {
   const isClassification = d.kind === "classification";
-  const accent = isClassification ? "#d29922" : "#e3b341";
+  const accent = isClassification ? "#d9a03f" : "#e5b454";
   const conf = d.confidence;
 
   return (

@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { createCampaign, createWorkflowForCampaign } from "../../api/builderClient";
 import { colors, radii, font } from "../../theme";
-import { Modal, Button, Input, Textarea, FormField, useToast } from "../ds";
+import { Modal, Button, Input, Textarea, Toggle, FormField, useToast } from "../ds";
 import type { TemplateKey } from "../../api/builderTypes";
 
 interface Props {
@@ -46,6 +46,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [brandDescription, setBrandDescription] = useState("");
   const [deliverables, setDeliverables] = useState("");
   const [timeline, setTimeline] = useState("");
+  const [rewardDescription, setRewardDescription] = useState("");
+  const [shipsPhysicalProduct, setShipsPhysicalProduct] = useState(false);
   const [objective, setObjective] = useState("");
   const [notes, setNotes] = useState("");
 
@@ -59,6 +61,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const brandDescId = useId();
   const deliverablesId = useId();
   const timelineId = useId();
+  const rewardId = useId();
   const objId = useId();
   const notesId = useId();
   const wfNameId = useId();
@@ -105,6 +108,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
       if (brandDescription.trim()) campaignData.brandDescription = brandDescription.trim();
       if (deliverables.trim()) campaignData.deliverables = deliverables.trim();
       if (timeline.trim()) campaignData.timeline = timeline.trim();
+      if (rewardDescription.trim()) campaignData.rewardDescription = rewardDescription.trim();
+      if (shipsPhysicalProduct) campaignData.shipsPhysicalProduct = true;
       if (objective.trim()) campaignData.objective = objective.trim();
       if (notes.trim()) campaignData.notes = notes.trim();
       const campaign = await createCampaign(campaignData);
@@ -157,7 +162,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
       }
     >
       {/* Step progress bar */}
-      <div style={{ padding: "14px 22px 0", display: "flex", gap: 8 }}>
+      <div style={{ padding: "16px 24px 0", display: "flex", gap: 8 }}>
         {[1, 2].map((s) => (
           <div
             key={s}
@@ -165,16 +170,16 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
               flex: 1,
               height: 3,
               borderRadius: 2,
-              background: s <= step ? colors.accent : colors.border,
-              transition: "background 0.2s",
+              background: s <= step ? colors.accent : colors.panelAlt,
+              transition: "background 0.25s ease",
             }}
           />
         ))}
       </div>
 
-      <div style={{ padding: "18px 22px" }}>
+      <div style={{ padding: "20px 24px 24px" }}>
         {step === 1 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             <FormField label="Campaign Name *" htmlFor={nameId}>
               <Input
                 id={nameId}
@@ -233,6 +238,29 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
               />
             </FormField>
             <FormField
+              label="Product / Sample Reward"
+              htmlFor={rewardId}
+              hint="Describe any product or free sample the creator receives. The AI mentions this across the outreach and negotiation emails. Leave blank for cash-only deals."
+            >
+              <Textarea
+                id={rewardId}
+                value={rewardDescription}
+                onChange={(e) => setRewardDescription(e.target.value)}
+                placeholder="e.g. a free pair of our latest running shoes (retail $140)"
+                rows={2}
+              />
+            </FormField>
+            <FormField
+              label="Ships a physical product"
+              hint="When on, the payment form also asks the creator for a shipping address so we can send the product."
+            >
+              <Toggle
+                checked={shipsPhysicalProduct}
+                onChange={setShipsPhysicalProduct}
+                label="Collect a shipping address on the payment form"
+              />
+            </FormField>
+            <FormField
               label="Escalation notification email"
               htmlFor={notifyId}
               hint="Where we email the brand when a creator is escalated to the manual review queue. Defaults to the workspace operator if left blank."
@@ -265,7 +293,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
             </FormField>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             <FormField label="Workflow Name" htmlFor={wfNameId}>
               <Input id={wfNameId} value={workflowName} onChange={(e) => setWorkflowName(e.target.value)} />
             </FormField>
@@ -287,14 +315,17 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
 
         {error && (
           <div
+            role="alert"
+            className="ds-fade-in"
             style={{
-              marginTop: 14,
-              padding: "9px 12px",
-              background: "rgba(248,81,73,0.1)",
-              border: `1px solid ${colors.danger}`,
+              marginTop: 16,
+              padding: "11px 14px",
+              background: `${colors.danger}0f`,
+              border: `1px solid ${colors.danger}40`,
               borderRadius: radii.md,
               fontSize: font.size.md,
               color: colors.danger,
+              lineHeight: 1.5,
             }}
           >
             {error}
@@ -321,10 +352,11 @@ function TemplateCard({
       onClick={onSelect}
       className="ds-focusable ds-card-interactive"
       style={{
-        padding: "13px 16px",
-        background: selected ? "rgba(56,139,253,0.08)" : colors.bg,
-        border: `1.5px solid ${selected ? colors.accent : colors.border}`,
+        padding: "15px 17px",
+        background: selected ? `${colors.accent}0f` : colors.bg,
+        border: `1px solid ${selected ? colors.accent : colors.border}`,
         borderRadius: radii.md,
+        boxShadow: selected ? `0 0 0 3px ${colors.accent}22` : "none",
         cursor: "pointer",
         display: "flex",
         gap: 14,
@@ -333,14 +365,29 @@ function TemplateCard({
         width: "100%",
       }}
     >
-      <div aria-hidden style={{ fontSize: 24, lineHeight: 1, marginTop: 2 }}>
+      <div
+        aria-hidden
+        style={{
+          width: 38,
+          height: 38,
+          borderRadius: 10,
+          background: colors.panelAlt,
+          border: `1px solid ${colors.border}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 18,
+          lineHeight: 1,
+          flexShrink: 0,
+        }}
+      >
         {template.icon}
       </div>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: font.size.md, fontWeight: font.weight.semibold, color: colors.text, marginBottom: 3 }}>
+        <div style={{ fontSize: font.size.md, fontWeight: font.weight.semibold, color: colors.text, marginBottom: 4 }}>
           {template.name}
         </div>
-        <div style={{ fontSize: font.size.md, color: colors.textMuted, lineHeight: 1.5 }}>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.55 }}>
           {template.description}
         </div>
       </div>

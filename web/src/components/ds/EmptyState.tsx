@@ -25,7 +25,26 @@ export function EmptyState({ icon, title, description, action, compact }: Props)
         height: compact ? undefined : "100%",
       }}
     >
-      {icon && <div style={{ fontSize: compact ? 28 : 40, lineHeight: 1 }}>{icon}</div>}
+      {icon && (
+        <div
+          aria-hidden
+          style={{
+            width: compact ? 44 : 56,
+            height: compact ? 44 : 56,
+            borderRadius: compact ? 12 : 16,
+            background: colors.panelAlt,
+            border: `1px solid ${colors.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: compact ? 20 : 26,
+            lineHeight: 1,
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+          }}
+        >
+          {icon}
+        </div>
+      )}
       <div>
         <div
           style={{
@@ -33,6 +52,7 @@ export function EmptyState({ icon, title, description, action, compact }: Props)
             fontWeight: font.weight.semibold,
             color: colors.text,
             marginBottom: 6,
+            letterSpacing: -0.2,
           }}
         >
           {title}
@@ -42,8 +62,8 @@ export function EmptyState({ icon, title, description, action, compact }: Props)
             style={{
               fontSize: font.size.md,
               color: colors.textMuted,
-              maxWidth: 340,
-              lineHeight: 1.5,
+              maxWidth: 360,
+              lineHeight: 1.6,
               margin: "0 auto",
             }}
           >

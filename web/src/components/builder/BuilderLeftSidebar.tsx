@@ -12,9 +12,13 @@ import {
   nodeIcon,
   nodeColor,
   nodeDescription,
-  nodeWarning,
   nodeTypeToState,
 } from "./nodeMeta";
+import {
+  dedupeIssues,
+  nodeValidity,
+  type ValidationIssue,
+} from "../../workflow/graphValidation";
 import type { DraftNode, WorkflowDetail, WorkflowExecutionSummary } from "../../api/builderTypes";
 
 interface Props {
@@ -24,6 +28,9 @@ interface Props {
   onSelectNode: (id: string | null) => void;
   execution: WorkflowExecutionSummary | undefined;
   versionCount: number;
+  /** Per-node validation issues from validateGraph() — the single validity
+   * source shared with the canvas + issues panel. */
+  nodeIssues: Map<string, ValidationIssue[]>;
 }
 
 export function BuilderLeftSidebar({
@@ -33,6 +40,7 @@ export function BuilderLeftSidebar({
   onSelectNode,
   execution,
   versionCount,
+  nodeIssues,
 }: Props) {
   const [query, setQuery] = useState("");
 
@@ -46,7 +54,11 @@ export function BuilderLeftSidebar({
     );
   }, [sorted, query]);
 
-  const invalidCount = useMemo(() => sorted.filter((n) => nodeWarning(n) !== null).length, [sorted]);
+  // A node counts as an "issue" if it carries any error-severity issue.
+  const invalidCount = useMemo(
+    () => sorted.filter((n) => nodeValidity(nodeIssues.get(n.id)) === "error").length,
+    [sorted, nodeIssues],
+  );
 
   const total = execution?.totalInstances ?? 0;
   const counts = execution?.stateCounts;
@@ -62,19 +74,27 @@ export function BuilderLeftSidebar({
       }}
     >
       {/* Overview */}
-      <div style={{ padding: "16px 16px 14px", borderBottom: `1px solid ${colors.border}` }}>
-        <div style={{ fontSize: font.size.lg, fontWeight: font.weight.bold, color: colors.text, lineHeight: 1.25 }}>
+      <div style={{ padding: "18px 18px 16px", borderBottom: `1px solid ${colors.border}` }}>
+        <div
+          style={{
+            fontSize: font.size.lg,
+            fontWeight: font.weight.semibold,
+            color: colors.text,
+            lineHeight: 1.3,
+            letterSpacing: -0.2,
+          }}
+        >
           {workflow.name}
         </div>
         {workflow.campaign && (
-          <div style={{ fontSize: font.size.sm, color: colors.textDim, marginTop: 3 }}>
+          <div style={{ fontSize: font.size.sm, color: colors.textDim, marginTop: 4 }}>
             {workflow.campaign.brand}
           </div>
         )}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
           <StatusBadge status={workflow.status} small />
           {workflow.latestVersion && (
-            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>
+            <span className="mono" style={{ fontSize: font.size.xs, color: colors.textDim }}>
               v{workflow.latestVersion.version}
             </span>
           )}
@@ -82,7 +102,7 @@ export function BuilderLeftSidebar({
       </div>
 
       {/* Quick stats */}
-      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${colors.border}` }}>
+      <div style={{ padding: "14px 18px", borderBottom: `1px solid ${colors.border}` }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <MiniStat label="Steps" value={sorted.length} />
           <MiniStat label="Versions" value={versionCount} />
@@ -96,7 +116,7 @@ export function BuilderLeftSidebar({
       </div>
 
       {/* Node search + index */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "14px 16px 8px" }}>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: "16px 18px 8px" }}>
         <SectionHeader count={sorted.length}>Steps</SectionHeader>
         <Input
           value={query}
@@ -107,7 +127,7 @@ export function BuilderLeftSidebar({
         />
         <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.length === 0 ? (
-            <div style={{ fontSize: font.size.sm, color: colors.textDim, padding: "8px 2px", fontStyle: "italic" }}>
+            <div style={{ fontSize: font.size.sm, color: colors.textDim, padding: "10px 2px", lineHeight: 1.5 }}>
               No steps match “{query}”.
             </div>
           ) : (
@@ -118,6 +138,7 @@ export function BuilderLeftSidebar({
                 index={sorted.indexOf(n)}
                 selected={n.id === selectedNodeId}
                 liveCount={liveCountFor(n, counts)}
+                issues={nodeIssues.get(n.id)}
                 onClick={() => onSelectNode(n.id === selectedNodeId ? null : n.id)}
                 isLast={i === filtered.length - 1 && !query}
               />
@@ -129,11 +150,11 @@ export function BuilderLeftSidebar({
       {/* Metadata footer */}
       <div
         style={{
-          padding: "10px 16px 12px",
+          padding: "12px 18px 14px",
           borderTop: `1px solid ${colors.border}`,
           display: "flex",
           flexDirection: "column",
-          gap: 4,
+          gap: 5,
         }}
       >
         <MetaRow label="Created" value={formatTimestamp(workflow.createdAt)} />
@@ -154,19 +175,39 @@ function NodeIndexItem({
   index,
   selected,
   liveCount,
+  issues,
   onClick,
 }: {
   node: DraftNode;
   index: number;
   selected: boolean;
   liveCount: number | null;
+  issues: ValidationIssue[] | undefined;
   onClick: () => void;
   isLast: boolean;
 }) {
   const color = nodeColor(node.type);
-  const warning = nodeWarning(node);
+  const nodeIssueList = issues && issues.length ? dedupeIssues(issues) : [];
+  const validity = nodeValidity(nodeIssueList); // "ok" | "warning" | "error"
+  const issueColor = validity === "error" ? colors.danger : colors.warning;
+  // Marker a11y label (native title/aria-label handle newlines fine).
+  const issueLabel = nodeIssueList.map((iss) => iss.message).join("\n");
+  // Tooltip content: the node's actual reason(s) when invalid (one line each,
+  // so multi-issue nodes read cleanly), else its plain description.
+  const tooltip =
+    nodeIssueList.length > 0 ? (
+      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {nodeIssueList.map((iss, i) => (
+          <span key={iss.code + i} style={{ color: issueColor }}>
+            {iss.message}
+          </span>
+        ))}
+      </span>
+    ) : (
+      nodeDescription(node.type)
+    );
   return (
-    <Tooltip content={nodeDescription(node.type)}>
+    <Tooltip content={tooltip}>
       <button
         onClick={onClick}
         aria-pressed={selected}
@@ -174,26 +215,30 @@ function NodeIndexItem({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 9,
+          gap: 10,
           width: "100%",
           textAlign: "left",
-          padding: "7px 9px",
-          background: selected ? "rgba(56,139,253,0.1)" : "transparent",
-          border: `1px solid ${selected ? colors.accent : "transparent"}`,
-          borderRadius: radii.sm,
+          padding: "8px 10px",
+          background: selected ? `${colors.accent}14` : "transparent",
+          border: `1px solid ${selected ? `${colors.accent}66` : "transparent"}`,
+          borderRadius: radii.sm + 1,
           cursor: "pointer",
         }}
       >
-        <span style={{ fontSize: 10, color: colors.textDim, width: 12, flexShrink: 0, textAlign: "right" }}>
+        <span
+          className="nums"
+          style={{ fontSize: 10.5, color: colors.textDim, width: 12, flexShrink: 0, textAlign: "right" }}
+        >
           {index + 1}
         </span>
         <span
           aria-hidden
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: radii.sm,
-            background: `${color}1f`,
+            width: 24,
+            height: 24,
+            borderRadius: 7,
+            background: `${color}1c`,
+            border: `1px solid ${color}26`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -209,7 +254,7 @@ function NodeIndexItem({
             minWidth: 0,
             fontSize: font.size.md,
             color: selected ? colors.text : colors.textMuted,
-            fontWeight: selected ? font.weight.semibold : font.weight.regular,
+            fontWeight: selected ? font.weight.semibold : font.weight.medium,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -217,20 +262,26 @@ function NodeIndexItem({
         >
           {nodeLabel(node.type)}
         </span>
-        {warning && (
-          <span title={warning} aria-label={warning} style={{ fontSize: 11, color: colors.danger, flexShrink: 0 }}>
-            ⚠
+        {validity !== "ok" && (
+          <span
+            title={issueLabel}
+            aria-label={issueLabel}
+            style={{ fontSize: 11, color: issueColor, flexShrink: 0 }}
+          >
+            {validity === "error" ? "⚠" : "○"}
           </span>
         )}
         {liveCount !== null && liveCount > 0 && (
           <span
+            className="nums"
             style={{
-              fontSize: 10,
-              fontWeight: font.weight.bold,
-              color: "#fff",
-              background: color,
+              fontSize: 10.5,
+              fontWeight: font.weight.semibold,
+              color,
+              background: `${color}1c`,
+              border: `1px solid ${color}33`,
               borderRadius: radii.pill,
-              padding: "0 6px",
+              padding: "0.5px 7px",
               flexShrink: 0,
             }}
           >
@@ -248,14 +299,32 @@ function MiniStat({ label, value, color }: { label: string; value: number; color
       style={{
         background: colors.bg,
         border: `1px solid ${colors.border}`,
-        borderRadius: radii.sm,
-        padding: "8px 10px",
+        borderRadius: radii.sm + 2,
+        padding: "10px 12px",
       }}
     >
-      <div style={{ fontSize: font.size.lg, fontWeight: font.weight.bold, color: color ?? colors.text, lineHeight: 1.1 }}>
+      <div
+        className="nums"
+        style={{
+          fontSize: font.size.lg,
+          fontWeight: font.weight.semibold,
+          color: color ?? colors.text,
+          lineHeight: 1.1,
+          letterSpacing: -0.3,
+        }}
+      >
         {value}
       </div>
-      <div style={{ fontSize: 9.5, color: colors.textDim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: font.weight.medium,
+          color: colors.textDim,
+          textTransform: "uppercase",
+          letterSpacing: 0.6,
+          marginTop: 4,
+        }}
+      >
         {label}
       </div>
     </div>

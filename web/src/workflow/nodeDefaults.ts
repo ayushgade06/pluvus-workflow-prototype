@@ -1,0 +1,100 @@
+// ---------------------------------------------------------------------------
+// Node defaults + palette catalog (Phase 17).
+// ---------------------------------------------------------------------------
+// When a user drags a NEW node from the palette we need (a) a fresh unique id
+// and (b) a sensible starting config so the node isn't gratuitously invalid.
+// These defaults mirror the shapes used in the server templates.
+// ---------------------------------------------------------------------------
+
+import type { NodeType, NodeConfig } from "../api/builderTypes";
+import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "../components/builder/nodeMeta";
+
+// Types a user may add from the palette. IMPORT_CREATOR_LIST is an implicit
+// entry concept (creators enroll into the first node) and END is legacy, so the
+// palette exposes the meaningful building blocks. Terminal nodes are addable so
+// users can build a complete pipeline from scratch.
+export const PALETTE_NODE_TYPES: NodeType[] = [
+  "INITIAL_OUTREACH",
+  "FOLLOW_UP",
+  "REPLY_DETECTION",
+  "NEGOTIATION",
+  "REWARD_SETUP",
+  "PAYMENT_INFO",
+  "CONTENT_BRIEF",
+];
+
+export interface PaletteItem {
+  type: NodeType;
+  label: string;
+  icon: string;
+  color: string;
+  description: string;
+}
+
+export function paletteItems(): PaletteItem[] {
+  return PALETTE_NODE_TYPES.map((type) => ({
+    type,
+    label: nodeLabel(type),
+    icon: nodeIcon(type),
+    color: nodeColor(type),
+    description: nodeDescription(type),
+  }));
+}
+
+// Default config for a freshly added node. Kept intentionally minimal — required
+// fields where a sensible default exists are pre-filled; genuinely user-specific
+// required fields (e.g. the Content Brief PDF) are left blank so validation nudges
+// the user to fill them in.
+export function defaultConfigFor(type: NodeType): NodeConfig {
+  switch (type) {
+    case "INITIAL_OUTREACH":
+      return {
+        subjectTemplate: "Partnership opportunity with {{brandName}}",
+        bodyTemplate:
+          "Hi {{creatorName}},\n\nWe'd love to work with you. Interested in learning more?\n\nBest,\n{{brandName}} Team",
+        delaySeconds: 0,
+      };
+    case "FOLLOW_UP":
+      return {
+        intervals: [3, 5],
+        intervalUnit: "days",
+        maxCount: 2,
+        bodyTemplate:
+          "Hi {{creatorName}},\n\nJust following up on our earlier message. Would love to connect!\n\nBest,\n{{brandName}} Team",
+        stopOnReply: true,
+      };
+    case "REPLY_DETECTION":
+      return {
+        lowConfidenceThreshold: 0.7,
+        manualReviewOnLowConfidence: true,
+      };
+    case "NEGOTIATION":
+      return {
+        minBudget: 0,
+        maxBudget: 500,
+        maxRounds: 3,
+        approvalMode: "auto",
+      };
+    case "REWARD_SETUP":
+    case "PAYMENT_INFO":
+    case "CONTENT_BRIEF":
+    case "END":
+    case "IMPORT_CREATOR_LIST":
+    default:
+      return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fresh node id — stable, collision-resistant, human-readable-ish.
+// ---------------------------------------------------------------------------
+// Not cryptographic; just unique within a graph. We include the type slug and a
+// short random suffix. Avoids Math.random reliance on any single call by mixing
+// a monotonic counter with a random tail.
+let _seq = 0;
+export function freshNodeId(type: NodeType): string {
+  _seq += 1;
+  const slug = type.toLowerCase().replace(/_/g, "-");
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `node-${slug}-${_seq}-${rand}`;
+}

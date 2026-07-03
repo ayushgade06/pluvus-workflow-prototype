@@ -16,8 +16,8 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const SIZES: Record<ButtonSize, { padding: string; fontSize: number; height: number }> = {
-  sm: { padding: "0 12px", fontSize: font.size.sm, height: 28 },
-  md: { padding: "0 18px", fontSize: font.size.md, height: 34 },
+  sm: { padding: "0 12px", fontSize: font.size.sm, height: 30 },
+  md: { padding: "0 16px", fontSize: font.size.md, height: 36 },
 };
 
 function variantStyle(variant: ButtonVariant): React.CSSProperties {
@@ -25,9 +25,13 @@ function variantStyle(variant: ButtonVariant): React.CSSProperties {
     case "primary":
       return { background: colors.accent, color: "#fff", border: "1px solid transparent" };
     case "secondary":
-      return { background: colors.panel, color: colors.text, border: `1px solid ${colors.border}` };
+      return { background: colors.panel, color: colors.text, border: `1px solid ${colors.borderStrong}` };
     case "danger":
-      return { background: "transparent", color: colors.danger, border: `1px solid ${colors.danger}` };
+      return {
+        background: `${colors.danger}14`,
+        color: colors.danger,
+        border: `1px solid ${colors.danger}40`,
+      };
     case "ghost":
     default:
       return { background: "transparent", color: colors.textMuted, border: "1px solid transparent" };
@@ -54,13 +58,13 @@ export function Button({
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        gap: 6,
+        gap: 7,
         padding: s.padding,
         height: s.height,
         width: fullWidth ? "100%" : undefined,
-        borderRadius: radii.sm,
+        borderRadius: radii.sm + 1,
         fontSize: s.fontSize,
-        fontWeight: font.weight.semibold,
+        fontWeight: variant === "primary" ? font.weight.semibold : font.weight.medium,
         lineHeight: 1,
         whiteSpace: "nowrap",
         ...variantStyle(variant),

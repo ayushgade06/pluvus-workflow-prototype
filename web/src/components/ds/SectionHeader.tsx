@@ -21,24 +21,27 @@ export function SectionHeader({ children, count, actions }: Props) {
     >
       <span
         style={{
-          fontSize: font.size.sm,
-          fontWeight: font.weight.bold,
+          fontSize: font.size.xs,
+          fontWeight: font.weight.semibold,
           textTransform: "uppercase",
-          letterSpacing: 0.6,
-          color: colors.textMuted,
+          letterSpacing: 0.8,
+          color: colors.textDim,
         }}
       >
         {children}
       </span>
       {count !== undefined && (
         <span
+          className="nums"
           style={{
             fontSize: font.size.xs,
-            color: colors.textDim,
+            fontWeight: font.weight.medium,
+            color: colors.textMuted,
             background: colors.panelAlt,
-            borderRadius: 10,
-            padding: "0 7px",
-            lineHeight: 1.6,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 999,
+            padding: "0 8px",
+            lineHeight: 1.7,
           }}
         >
           {count}

@@ -14,6 +14,9 @@ export const NODE_LABEL: Record<NodeType, string> = {
   FOLLOW_UP: "Follow-Up",
   REPLY_DETECTION: "Reply Detection",
   NEGOTIATION: "Negotiation",
+  REWARD_SETUP: "Reward Setup",
+  PAYMENT_INFO: "Payment Info",
+  CONTENT_BRIEF: "Content Brief",
   END: "End",
   IMPORT_CREATOR_LIST: "Import Creators",
 };
@@ -23,17 +26,23 @@ export const NODE_ICON: Record<NodeType, string> = {
   FOLLOW_UP: "🔔",
   REPLY_DETECTION: "🤖",
   NEGOTIATION: "💬",
+  REWARD_SETUP: "🤝",
+  PAYMENT_INFO: "💳",
+  CONTENT_BRIEF: "📄",
   END: "✓",
   IMPORT_CREATOR_LIST: "👥",
 };
 
 export const NODE_COLOR: Record<NodeType, string> = {
-  INITIAL_OUTREACH: "#388bfd",
-  FOLLOW_UP: "#a371f7",
-  REPLY_DETECTION: "#56d364",
-  NEGOTIATION: "#d29922",
-  END: "#3fb950",
-  IMPORT_CREATOR_LIST: "#6e7681",
+  INITIAL_OUTREACH: "#8b96f8",
+  FOLLOW_UP: "#a78bfa",
+  REPLY_DETECTION: "#57d9a3",
+  NEGOTIATION: "#d9a03f",
+  REWARD_SETUP: "#2eb67d",
+  PAYMENT_INFO: "#27a06c",
+  CONTENT_BRIEF: "#34b378",
+  END: "#3ecf8e",
+  IMPORT_CREATOR_LIST: "#6a7080",
 };
 
 // Plain-English description of what each node does (node tooltips / a11y).
@@ -43,6 +52,12 @@ export const NODE_DESCRIPTION: Record<NodeType, string> = {
   FOLLOW_UP: "Automated follow-up nudges sent at set intervals until a reply.",
   REPLY_DETECTION: "AI classifies each reply (positive, negative, question, opt-out).",
   NEGOTIATION: "AI negotiates terms within your budget, escalating when needed.",
+  REWARD_SETUP:
+    "Finalizes the agreement: confirms fee, commission & deliverables, and emails the creator to confirm.",
+  PAYMENT_INFO:
+    "Collects the creator's payout details via a secure hosted form, then resumes the workflow.",
+  CONTENT_BRIEF:
+    "Emails the campaign brief (PDF) with the referral link and optional notes, then completes.",
   END: "Terminal node — marks the creator's journey complete.",
 };
 
@@ -91,6 +106,20 @@ export function configSummary(node: DraftNode): string {
       }
       return "Not configured";
     }
+    case "REWARD_SETUP": {
+      const commission = cfg["commissionRate"] as number | undefined;
+      return commission && commission > 0
+        ? `Final fee + ${commission}% commission · awaits confirmation`
+        : "Final fee · awaits creator confirmation";
+    }
+    case "PAYMENT_INFO":
+      return "Collects payout details · awaits form submission";
+    case "CONTENT_BRIEF": {
+      const hasBrief = typeof cfg["briefFileRef"] === "string" && !!(cfg["briefFileRef"] as string);
+      return hasBrief
+        ? "Campaign brief PDF · referral link · sends on payout"
+        : "Upload a campaign brief PDF to launch";
+    }
     case "END":
       return "Terminal node";
     case "IMPORT_CREATOR_LIST":
@@ -138,36 +167,46 @@ export function configChips(node: DraftNode): string[] {
       if (commission && commission > 0) chips.push(`${commission}% commission`);
       return chips;
     }
+    case "REWARD_SETUP": {
+      // Suggested chips: Final Fee · Commission · Deliverables · Status.
+      const commission = cfg["commissionRate"] as number | undefined;
+      const deliverables = cfg["deliverables"] as string | undefined;
+      const chips = ["final fee"];
+      chips.push(commission && commission > 0 ? `${commission}% commission` : "no commission");
+      if (deliverables && deliverables.trim()) chips.push("deliverables");
+      chips.push("awaits confirmation");
+      return chips;
+    }
+    case "PAYMENT_INFO":
+      // Payout method + the fields the hosted form collects, then the wait state.
+      return ["payout method", "account id", "hosted form", "awaits submission"];
+    case "CONTENT_BRIEF": {
+      // Brief (Uploaded/Missing) · Referral (Configured/Missing) · Notes
+      // (Present/Empty) · Email (Pending in the builder — sent at runtime).
+      const hasBrief = typeof cfg["briefFileRef"] === "string" && !!(cfg["briefFileRef"] as string);
+      const hasReferral =
+        typeof cfg["referralLink"] === "string" && !!(cfg["referralLink"] as string).trim();
+      const hasNotes =
+        typeof cfg["creatorNotes"] === "string" && !!(cfg["creatorNotes"] as string).trim();
+      return [
+        hasBrief ? "brief uploaded" : "brief missing",
+        hasReferral ? "referral set" : "no referral",
+        hasNotes ? "notes" : "no notes",
+        "email pending",
+      ];
+    }
     default:
       return [];
   }
 }
 
-// Returns a warning string when a node is missing required configuration, else
-// null. Mirrors the "Not configured" signals already surfaced in the summary.
-export function nodeWarning(node: DraftNode): string | null {
-  const cfg = node.config as Record<string, unknown>;
-  switch (node.type) {
-    case "INITIAL_OUTREACH":
-      if (!cfg["subjectTemplate"]) return "Missing subject line";
-      if (!cfg["bodyTemplate"]) return "Missing email body";
-      return null;
-    case "FOLLOW_UP":
-      if (!cfg["bodyTemplate"]) return "Missing follow-up body";
-      if (!Array.isArray(cfg["intervals"]) || (cfg["intervals"] as unknown[]).length === 0)
-        return "No intervals set";
-      return null;
-    case "NEGOTIATION": {
-      const min = cfg["minBudget"] as number | undefined;
-      const max = cfg["maxBudget"] as number | undefined;
-      if (min === undefined || max === undefined) return "Budget not set";
-      if (max < min) return "Max budget below min";
-      return null;
-    }
-    default:
-      return null;
-  }
-}
+// NOTE: Per-node validity is NOT computed here anymore. It used to live in a
+// `nodeWarning(node)` heuristic that re-implemented the rules independently of
+// the real validator, which let a node's badge and the publish gate disagree
+// ("valid summary but Needs configuration"). The single source of truth is now
+// `validateGraph()` in web/src/workflow/graphValidation.ts — WorkflowBuilder
+// runs it once and threads the per-node ValidationIssue[] down to the card,
+// sidebar, and issues panel. This file stays purely presentational.
 
 // Execution state a node TYPE corresponds to (for live counts).
 const TYPE_TO_STATE: Record<string, string> = {
@@ -175,6 +214,12 @@ const TYPE_TO_STATE: Record<string, string> = {
   FOLLOW_UP: "FOLLOWED_UP",
   REPLY_DETECTION: "REPLY_RECEIVED",
   NEGOTIATION: "NEGOTIATING",
+  // Reward Setup surfaces creators currently awaiting their agreement confirmation.
+  REWARD_SETUP: "REWARD_PENDING",
+  // Payment Info surfaces creators currently awaiting their payout-form submission.
+  PAYMENT_INFO: "PAYMENT_PENDING",
+  // Content Brief surfaces creators whose campaign brief has been sent (terminal).
+  CONTENT_BRIEF: "CONTENT_BRIEF_SENT",
   END: "ACCEPTED",
 };
 
