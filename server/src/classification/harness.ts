@@ -8,7 +8,7 @@
  *   3. "Not interested"         → NEGATIVE  → REJECTED
  *   4. "What is the commission rate?" → QUESTION → NEGOTIATING
  *   5. Ambiguous / low-confidence    → UNKNOWN  → MANUAL_REVIEW
- *   6. Low-confidence override: any result below 0.70 → UNKNOWN → MANUAL_REVIEW
+ *   6. Low-confidence override: any result below 0.50 → UNKNOWN → MANUAL_REVIEW
  *
  * Strategy: the harness drives instances directly through the engine using
  * WorkflowRuntime.  Classification uses the MockClassificationProvider
@@ -257,17 +257,19 @@ async function test5Unknown(instanceId: string): Promise<void> {
 
 async function test6LowConfidence(instanceId: string): Promise<void> {
   section("Test 6: low-confidence override → UNKNOWN → MANUAL_REVIEW");
-  // FixedClassificationProvider returns POSITIVE at 0.60 — below the 0.70 threshold.
-  // The replyDetection executor must override this to UNKNOWN.
+  // M4: the real threshold is 0.50 (LOW_CONFIDENCE_THRESHOLD in replyDetection).
+  // The prior fixture declared POSITIVE @ 0.60 and expected UNKNOWN — but
+  // 0.60 is NOT < 0.50, so the override would NOT fire and this test asserted a
+  // behavior that never happens. Use 0.40 so it actually exercises the boundary.
   const result = await runScenario(
     instanceId,
     "Maybe, I'll think about it.",
     "UNKNOWN",
     "MANUAL_REVIEW",
-    new FixedClassificationProvider("POSITIVE", 0.60),
+    new FixedClassificationProvider("POSITIVE", 0.40),
   );
   log(`message:    "${result.message}"`);
-  log(`declared:   POSITIVE @ 0.60 (below 0.70 threshold)`);
+  log(`declared:   POSITIVE @ 0.40 (below 0.50 threshold)`);
   log(`actual intent on message: ${result.actualIntent} (confidence: ${result.confidence.toFixed(2)})`);
   log(`state:      ${result.actualState}`);
   if (result.actualIntent !== "UNKNOWN") {
@@ -276,7 +278,7 @@ async function test6LowConfidence(instanceId: string): Promise<void> {
   if (result.actualState !== "MANUAL_REVIEW") {
     fail(`Expected MANUAL_REVIEW after low-confidence, got ${result.actualState}`);
   }
-  pass("Low-confidence (0.60 < 0.70) → UNKNOWN override → MANUAL_REVIEW");
+  pass("Low-confidence (0.40 < 0.50) → UNKNOWN override → MANUAL_REVIEW");
 }
 
 async function test7EventCreation(instanceId: string): Promise<void> {

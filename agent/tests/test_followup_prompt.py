@@ -83,3 +83,39 @@ def test_followup_still_returns_a_valid_draft(monkeypatch):
     out = neg_mod._langgraph_draft(_followup_req())
     assert out.subject and out.body
     assert "following up" in out.body.lower()
+
+
+# ---------------------------------------------------------------------------
+# M3 — reward_confirmation purpose must be accepted (was a latent 422 on the
+# real provider) and routed through the onboarding-style prompt.
+# ---------------------------------------------------------------------------
+
+
+def test_reward_confirmation_is_a_valid_purpose():
+    # Previously "reward_confirmation" was not in DraftPurpose, so constructing a
+    # DraftRequest with it raised a pydantic ValidationError → 422 on the route.
+    req = DraftRequest(
+        purpose="reward_confirmation",
+        creatorName="Alex",
+        senderName="Acme",
+        proposedTerms={"rate": 500},
+    )
+    assert req.purpose == "reward_confirmation"
+
+
+def test_reward_confirmation_routes_through_onboarding_prompt(monkeypatch):
+    cap = CapturingLLM()
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7: cap)
+    req = DraftRequest(
+        purpose="reward_confirmation",
+        creatorName="Alex",
+        creatorPlatform="Instagram",
+        creatorNiche="fitness",
+        senderName="Acme",
+        proposedTerms={"rate": 500},
+    )
+    out = neg_mod._langgraph_draft(req)
+    # The onboarding prompt confirms the agreed rate and lays out next steps.
+    assert "CONFIRMED at an" in cap.prompt or "agreed rate" in cap.prompt
+    assert "$500" in cap.prompt
+    assert out.subject and out.body

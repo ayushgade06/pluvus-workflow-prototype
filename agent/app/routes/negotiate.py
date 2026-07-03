@@ -45,7 +45,13 @@ router = APIRouter()
 # don't burn the negotiation budget.
 NegotiationAction = Literal["ACCEPT", "COUNTER", "REJECT", "ESCALATE", "PRESENT_OFFER"]
 DraftPurpose = Literal[
-    "initial_outreach", "follow_up", "counter_offer", "acceptance", "onboarding"
+    "initial_outreach", "follow_up", "counter_offer", "acceptance", "onboarding",
+    # M3: the TS side calls draftEmail("reward_confirmation", ...) for the Reward
+    # Setup "Campaign Agreement Confirmation" email. It was missing from this
+    # literal, so a REAL draft provider (not the mock, which renders a template)
+    # would fail Pydantic validation with a 422. It is an onboarding-style
+    # agreement email, so it routes through the onboarding prompt below.
+    "reward_confirmation",
 ]
 
 
@@ -65,13 +71,21 @@ class NegotiationHistoryEntry(BaseModel):
 class CampaignConstraints(BaseModel):
     termFloor: NegotiationTerm
     termCeiling: NegotiationTerm
-    tone: str | None = None
+    # M5: `tone` was declared here but never populated by the TS side and never
+    # read by the prompt (which hardcodes the tone at _NEGOTIATE_PROMPT). Removed
+    # to kill the dead field. Pydantic ignores any stray `tone` still sent, so
+    # this is backward-compatible with older callers.
     senderName: str | None = None
     brandDescription: str | None = None
     # Brand-supplied scope + go-live timeline. The AI may state these as fact
     # when present; when absent it must not invent them (see the prompt).
     deliverables: str | None = None
     timeline: str | None = None
+    # M1: where in the [floor, ceiling] band the recommended opening offer sits,
+    # as a fraction 0..1. Default 0.5 = the band midpoint (the prior hardcoded
+    # behavior). Lets a campaign open lower (e.g. 0.3) or higher (0.7) without a
+    # code change. Out-of-range / missing values fall back to 0.5.
+    recommendedOfferPosition: float | None = None
 
 
 class NegotiateRequest(BaseModel):
@@ -497,8 +511,19 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     # marker so the model knows it must NOT invent one (see prompt guardrail).
     deliverables = (req.campaignConstraints.deliverables or "").strip() or "not specified yet"
     timeline = (req.campaignConstraints.timeline or "").strip() or "not specified yet"
-    # Recommended offer: midpoint, used as the natural offer to present
-    recommended_offer = round(floor_rate + (ceiling_rate - floor_rate) * 0.5, 2) if ceiling_rate != float("inf") else floor_rate
+    # Recommended offer: a configurable position within the [floor, ceiling]
+    # band (M1). Default 0.5 = the midpoint (unchanged behavior); a campaign can
+    # open lower/higher via recommendedOfferPosition. Clamped to [0, 1] so a bad
+    # value can never push the offer outside the band.
+    position = req.campaignConstraints.recommendedOfferPosition
+    if not isinstance(position, (int, float)) or isinstance(position, bool):
+        position = 0.5
+    position = max(0.0, min(1.0, float(position)))
+    recommended_offer = (
+        round(floor_rate + (ceiling_rate - floor_rate) * position, 2)
+        if ceiling_rate != float("inf")
+        else floor_rate
+    )
 
     # FIX-7: sanitize the untrusted creator reply before it reaches the prompt
     # (normalize, strip control chars, cap length). Delimiting is in the prompt
@@ -544,7 +569,25 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     # is the rate carried by our most recent ACCEPT/COUNTER turn in the history;
     # REJECT/ESCALATE turns and turns without a rate don't count. This is what
     # tells _decide_action whether an "I accept" has a real number behind it.
+    #
+    # M5: fall back to req.currentOffer.rate when the history carries no prior
+    # offer. currentOffer is the standing offer the executor threads in; before
+    # this it was sent but NEVER read, so a caller that (correctly) provided a
+    # real currentOffer but an empty/rate-less history would regress to the
+    # recommended midpoint. History still WINS when it has a real offer;
+    # currentOffer only fills the gap.
+    #
+    # IMPORTANT: buildNegotiationRequest defaults currentOffer to the FLOOR when
+    # there is no threaded prior offer (round 0 / no history). The floor default
+    # is NOT a genuine standing offer, so we must not treat it as one — doing so
+    # would start stepping from the floor instead of the recommended midpoint.
+    # Only accept currentOffer as a prior offer when it is strictly ABOVE the
+    # floor (i.e. a real number we moved to on a prior turn).
     prior_offer = _last_offered_rate(req.negotiationHistory)
+    if prior_offer is None:
+        co = _coerce_rate(req.currentOffer.rate)
+        if co is not None and co > floor_rate:
+            prior_offer = co
 
     # Final round? A counter sent THIS turn would advance the round counter to
     # `round + 1`; if that reaches maxRounds the executor cannot send another
@@ -1020,7 +1063,10 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
     # Stated as fact when present; omitted (never invented) when blank.
     scope_lines = _scope_lines(req, ctx)
 
-    if req.purpose == "onboarding":
+    if req.purpose in ("onboarding", "reward_confirmation"):
+        # M3: reward_confirmation is the post-agreement confirmation email —
+        # same shape as onboarding (confirm the agreed rate + lay out next
+        # steps), so it reuses the onboarding prompt.
         prompt = _build_onboarding_prompt(req, sender, scope_lines)
     elif req.purpose in ("counter_offer", "acceptance"):
         prompt = _build_offer_prompt(req, sender, ctx, brand_context, scope_lines)

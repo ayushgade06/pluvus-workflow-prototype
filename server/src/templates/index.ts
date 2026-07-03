@@ -53,7 +53,11 @@ const affiliateNodes: NodeSnapshot[] = [
     type: "REPLY_DETECTION",
     order: 2,
     config: {
-      lowConfidenceThreshold: 0.7,
+      // M4: kept in sync with the effective gate (LOW_CONFIDENCE_THRESHOLD =
+      // 0.50 in replyDetection). This value is currently informational — the
+      // executor uses the hardcoded 0.50 constant, not this config — so it must
+      // not imply a 0.70 gate that never runs.
+      lowConfidenceThreshold: 0.5,
       manualReviewOnLowConfidence: true,
     },
   },
@@ -130,7 +134,11 @@ const hybridNodes: NodeSnapshot[] = [
     type: "REPLY_DETECTION",
     order: 2,
     config: {
-      lowConfidenceThreshold: 0.7,
+      // M4: kept in sync with the effective gate (LOW_CONFIDENCE_THRESHOLD =
+      // 0.50 in replyDetection). This value is currently informational — the
+      // executor uses the hardcoded 0.50 constant, not this config — so it must
+      // not imply a 0.70 gate that never runs.
+      lowConfidenceThreshold: 0.5,
       manualReviewOnLowConfidence: true,
     },
   },
@@ -207,7 +215,11 @@ const fixedFeeNodes: NodeSnapshot[] = [
     type: "REPLY_DETECTION",
     order: 2,
     config: {
-      lowConfidenceThreshold: 0.7,
+      // M4: kept in sync with the effective gate (LOW_CONFIDENCE_THRESHOLD =
+      // 0.50 in replyDetection). This value is currently informational — the
+      // executor uses the hardcoded 0.50 constant, not this config — so it must
+      // not imply a 0.70 gate that never runs.
+      lowConfidenceThreshold: 0.5,
       manualReviewOnLowConfidence: true,
     },
   },

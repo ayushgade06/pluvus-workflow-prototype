@@ -20,13 +20,20 @@ export interface NegotiationRequest {
   campaignConstraints: {
     termFloor: NegotiationTerm;
     termCeiling: NegotiationTerm;
-    tone?: string;
+    // M5: `tone` removed — it was never populated (buildNegotiationRequest never
+    // set it) and never read (the Python prompt hardcodes tone). Dead field.
     senderName?: string;
     brandDescription?: string;
     /** Brand-supplied scope the AI may state as fact (e.g. "3 IG Reels"). */
     deliverables?: string;
     /** Brand-supplied go-live timeline; the AI states it only when present. */
     timeline?: string;
+    /**
+     * M1: where in the [floor, ceiling] band the recommended opening offer sits,
+     * as a fraction 0..1. Default 0.5 (midpoint). Lets a campaign open lower or
+     * higher without a code change.
+     */
+    recommendedOfferPosition?: number;
   };
 }
 

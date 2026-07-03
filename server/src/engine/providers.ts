@@ -240,6 +240,12 @@ export function buildNegotiationRequest(
   const brandDescription = typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined;
   const deliverables = typeof config["deliverables"] === "string" ? config["deliverables"] : undefined;
   const timeline = typeof config["timeline"] === "string" ? config["timeline"] : undefined;
+  // M1: optional band position for the recommended opening offer (0..1). Passed
+  // through only when a finite number; Python clamps + defaults to 0.5.
+  const recommendedOfferPosition =
+    typeof config["recommendedOfferPosition"] === "number" && Number.isFinite(config["recommendedOfferPosition"])
+      ? config["recommendedOfferPosition"]
+      : undefined;
 
   // FIX-2: thread the last offer we actually proposed; fall back to the floor
   // only when there is no prior offer (round 0 / no history).
@@ -269,6 +275,7 @@ export function buildNegotiationRequest(
       ...(brandDescription ? { brandDescription } : {}),
       ...(deliverables ? { deliverables } : {}),
       ...(timeline ? { timeline } : {}),
+      ...(recommendedOfferPosition !== undefined ? { recommendedOfferPosition } : {}),
     },
   };
 }
