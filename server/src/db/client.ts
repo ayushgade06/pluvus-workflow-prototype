@@ -12,9 +12,14 @@ dotenvConfig({ path: resolve(__dirname, "../../../.env") });
 
 const adapter = new PrismaPg({ connectionString: process.env["DATABASE_URL"] });
 
+// Query logging is opt-in and noisy (the poller alone fires every 30s). Enable
+// it by setting PRISMA_LOG_QUERIES=true in .env; otherwise we only surface
+// warnings and errors, even in development.
+const logQueries = process.env["PRISMA_LOG_QUERIES"] === "true";
+
 // Singleton Prisma client. Import this everywhere instead of constructing
 // a new PrismaClient, which would open redundant connection pools.
 export const prisma = new PrismaClient({
   adapter,
-  log: process.env["NODE_ENV"] === "development" ? ["query", "warn", "error"] : ["warn", "error"],
+  log: logQueries ? ["query", "warn", "error"] : ["warn", "error"],
 });
