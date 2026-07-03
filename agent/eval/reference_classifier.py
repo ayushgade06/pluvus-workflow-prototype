@@ -18,6 +18,8 @@ from __future__ import annotations
 from app.injection import (
     looks_like_injection,
     looks_like_opt_out,
+    looks_like_question,
+    mentions_rate,
     sanitize_creator_text,
 )
 
@@ -46,8 +48,22 @@ def _matches(lower: str, keywords: list[str]) -> bool:
 def reference_classify(message: str) -> str:
     """Return one of the five intents using the deterministic rule path.
 
-    Mirrors the order of the production classify_message gates: sanitize →
-    OPT_OUT (forced) → injection (→ UNKNOWN) → keyword match → UNKNOWN.
+    Mirrors the EXACT order of the production classify_message gates so this eval
+    is a genuine regression tripwire for the real code path (C4), not a divergent
+    re-implementation:
+
+        sanitize
+          → OPT_OUT      (looks_like_opt_out, forced)
+          → injection    (looks_like_injection → UNKNOWN)
+          → rate         (mentions_rate → POSITIVE)          [production gate 3.5]
+          → question     (looks_like_question → QUESTION)    [production gate 3.6]
+          → keyword match (stand-in for the LLM)
+          → UNKNOWN
+
+    The rate and question gates are the SAME functions the production
+    classify_message calls (steps 3.5 / 3.6), so a regression in either now trips
+    this eval instead of slipping through untested (previously reference_classify
+    re-implemented only opt-out + injection and never exercised those two gates).
     """
     clean = sanitize_creator_text(message)
 
@@ -55,6 +71,11 @@ def reference_classify(message: str) -> str:
         return "OPT_OUT"
     if looks_like_injection(clean):
         return "UNKNOWN"
+    # Production gates 3.5 / 3.6 — call the real functions, not a copy.
+    if mentions_rate(clean):
+        return "POSITIVE"
+    if looks_like_question(clean):
+        return "QUESTION"
 
     lower = clean.lower()
     # Negative before positive: "not interested" contains "interested".

@@ -1,6 +1,6 @@
 import type { ClassificationProvider } from "./ClassificationProvider.js";
 import type { ClassificationRequest, ClassificationResponse, ReplyIntentValue } from "./types.js";
-import { agentBaseUrl, agentPostJson } from "../agentServiceClient.js";
+import { agentBaseUrl, agentPostJson, classifyTimeoutMs } from "../agentServiceClient.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph classification provider
@@ -26,7 +26,14 @@ export class LangGraphClassificationProvider implements ClassificationProvider {
   }
 
   async classify(req: ClassificationRequest): Promise<ClassificationResponse> {
-    const data = await agentPostJson(this.baseUrl, "/classify", { message: req.message });
+    // Classify uses the shorter fail-fast timeout (it's a single short
+    // generation on the interactive reply path), not the long draft budget.
+    const data = await agentPostJson(
+      this.baseUrl,
+      "/classify",
+      { message: req.message },
+      { timeoutMs: classifyTimeoutMs() },
+    );
 
     const intent = data["intent"];
     const confidence = data["confidence"];

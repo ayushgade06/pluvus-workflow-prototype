@@ -1,0 +1,64 @@
+name: CI
+
+# C4: the test suites and the classification eval gate existed but nothing ran
+# them automatically — a gate that never runs is not a gate. This workflow runs
+# both the Python agent tests (incl. the eval regression gate) and the TypeScript
+# server tests on every push / PR, so a regression fails the build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  agent-tests:
+    name: Python agent tests + eval gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        # The unit tests use fake LLMs and pure gate functions — no network. We
+        # DO install langgraph + langchain-ollama so the tests that wrap the graph
+        # (_langgraph_classify / _langgraph_negotiate, all fed a FakeLLM) actually
+        # RUN instead of being skipped by pytest.importorskip. RUN_LLM_EVAL is left
+        # unset so no real model is ever contacted.
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" httpx python-dotenv pydantic pytest pytest-asyncio
+          pip install "langgraph>=0.1.0" "langchain-ollama>=0.2.0"
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+  server-tests:
+    name: TypeScript server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        # Prisma client is generated on install; the unit tests are pure logic and
+        # run under NODE_ENV=test (providers stay on mock — no agent-service HTTP).
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run server unit tests
+        run: npm test

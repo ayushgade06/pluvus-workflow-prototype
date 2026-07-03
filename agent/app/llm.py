@@ -22,7 +22,7 @@ FIX-8 — production hardening:
     the exact OPENAI_MODEL id.
 
 Provider-specific knobs:
-    Ollama:  OLLAMA_MODEL (default "qwen2.5:7b"), OLLAMA_MODEL_DIGEST (optional),
+    Ollama:  OLLAMA_MODEL (default "qwen3:8b"), OLLAMA_MODEL_DIGEST (optional),
              OLLAMA_BASE_URL (default http://localhost:11434)
     OpenAI:  OPENAI_MODEL (default "gpt-4o-mini"), OPENAI_API_KEY (required)
 

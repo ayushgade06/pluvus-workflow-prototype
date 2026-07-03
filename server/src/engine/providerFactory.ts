@@ -19,6 +19,78 @@ import type { NegotiationTerm } from "../adapters/negotiation/types.js";
 import type { ClassifyResult, NegotiateResult, EmailDraft, PriorNegotiationContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
+// Default AI-provider mode (C1)
+// ---------------------------------------------------------------------------
+// The classification and negotiation providers previously defaulted to `mock`,
+// which meant a process started WITHOUT the provider env vars (a misconfigured
+// deploy, or `npm start` with no .env) silently ran ZERO LLM logic on a money
+// path — MockNegotiationProvider fabricates rates from a hardcoded base and
+// MockClassificationProvider is keyword-only with no injection/rate/opt-out
+// parity. That is a production hazard, not a safe fallback.
+//
+// New default is env-aware:
+//   * Under NODE_ENV=test  → `mock` (unit tests and CI stay hermetic; no network).
+//   * Otherwise            → `langgraph` (real deploys use the real agent),
+//                            and if a real run ever DOES fall back to mock we log
+//                            a loud warning so the misconfiguration is visible.
+//
+// Test harnesses (engine/classification/negotiation/webhooks) construct
+// Mock*Provider instances DIRECTLY and do not depend on this default, so the
+// flip does not affect them.
+function isTestEnv(): boolean {
+  return (process.env["NODE_ENV"] ?? "").toLowerCase() === "test";
+}
+
+/**
+ * Resolve the effective AI-provider mode from an explicit env value and the
+ * NODE_ENV. Pure so it can be unit-tested without touching process.env.
+ *
+ *   explicit "langgraph" | "mock"  → used as-is (case-insensitive).
+ *   explicit unknown / unset       → default: "mock" under NODE_ENV=test,
+ *                                    "langgraph" otherwise.
+ */
+export function resolveAgentMode(
+  explicit: string | undefined,
+  nodeEnv: string | undefined,
+): "mock" | "langgraph" {
+  const e = (explicit ?? "").toLowerCase();
+  if (e === "langgraph" || e === "mock") return e;
+  return (nodeEnv ?? "").toLowerCase() === "test" ? "mock" : "langgraph";
+}
+
+function defaultAgentMode(): "mock" | "langgraph" {
+  return isTestEnv() ? "mock" : "langgraph";
+}
+
+// Warn (once per kind) when a REAL (non-test) run resolves to the mock AI
+// provider — either explicitly or by default. This is almost always a
+// misconfiguration: the LLM is not being used at all.
+const _mockFallbackWarned = new Set<string>();
+function warnIfProdMock(kind: string, choice: string): void {
+  if (choice === "mock" && !isTestEnv() && !_mockFallbackWarned.has(kind)) {
+    _mockFallbackWarned.add(kind);
+    console.warn(
+      `[providerFactory] WARNING: ${kind} is running in MOCK mode outside NODE_ENV=test — ` +
+        `no LLM is used for this path (rates/intents are rule-based). Set ${kind}=langgraph ` +
+        `(and AGENT_SERVICE_URL) for real AI behavior.`,
+    );
+  }
+}
+
+// Warn when an explicit provider env var is set to something we don't recognize
+// (a typo like "langraph"). resolveAgentMode() then applies the env-aware
+// default; surfacing the typo avoids a silent fallback.
+function warnUnknownProvider(kind: string, raw: string | undefined): void {
+  if (raw === undefined) return;
+  const v = raw.toLowerCase();
+  if (v !== "langgraph" && v !== "mock") {
+    console.warn(
+      `[providerFactory] unknown ${kind}="${raw}" — using the ${defaultAgentMode()} default`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Email provider factory
 // ---------------------------------------------------------------------------
 //   EMAIL_PROVIDER=mock   (default) → MockEmailProvider
@@ -46,17 +118,14 @@ export function emailProvider(): IEmailProvider {
 //   AGENT_PROVIDER=langgraph            → LangGraphClassificationProvider (HTTP to agent service)
 
 export function classificationProvider(): ClassificationProvider {
-  const choice = (process.env["AGENT_PROVIDER"] ?? "mock").toLowerCase();
+  const raw = process.env["AGENT_PROVIDER"];
+  const mode = resolveAgentMode(raw, process.env["NODE_ENV"]);
+  warnUnknownProvider("AGENT_PROVIDER", raw);
 
-  if (choice === "langgraph") {
+  if (mode === "langgraph") {
     return new LangGraphClassificationProvider();
   }
-
-  if (choice !== "mock") {
-    console.warn(
-      `[providerFactory] unknown AGENT_PROVIDER="${choice}" — falling back to mock`,
-    );
-  }
+  warnIfProdMock("AGENT_PROVIDER", "mock");
   return new MockClassificationProvider();
 }
 
@@ -67,17 +136,14 @@ export function classificationProvider(): ClassificationProvider {
 //   NEGOTIATION_PROVIDER=langgraph            → LangGraphNegotiationProvider (HTTP to agent service)
 
 export function negotiationProvider(): NegotiationProvider {
-  const choice = (process.env["NEGOTIATION_PROVIDER"] ?? "mock").toLowerCase();
+  const raw = process.env["NEGOTIATION_PROVIDER"];
+  const mode = resolveAgentMode(raw, process.env["NODE_ENV"]);
+  warnUnknownProvider("NEGOTIATION_PROVIDER", raw);
 
-  if (choice === "langgraph") {
+  if (mode === "langgraph") {
     return new LangGraphNegotiationProvider();
   }
-
-  if (choice !== "mock") {
-    console.warn(
-      `[providerFactory] unknown NEGOTIATION_PROVIDER="${choice}" — falling back to mock`,
-    );
-  }
+  warnIfProdMock("NEGOTIATION_PROVIDER", "mock");
   return new MockNegotiationProvider();
 }
 

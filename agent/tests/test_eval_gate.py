@@ -1,20 +1,24 @@
-"""Accuracy gate for the classification eval set (FIX-5).
+"""Regression gate for the classification eval set (FIX-5).
 
-This is the CI gate the audit calls the headline missing item: a versioned
-labeled set + a metric + a threshold that FAILS the build on regression.
+IMPORTANT (C4): the always-on gate measures the DETERMINISTIC reference
+classifier against a curated dataset — it scores ~1.000 by construction and is
+NOT a measure of the LLM's real-world accuracy. It is a CODE-PATH REGRESSION
+TRIPWIRE: reference_classify now calls the SAME production gate functions
+(looks_like_opt_out, looks_like_injection, mentions_rate, looks_like_question)
+in the same order as classify_message, so a break in any of those gates drops
+the macro-F1 and fails the build. For a real MODEL-accuracy number, run the
+opt-in LLM gate below.
 
 Two layers:
-  * Deterministic gate (always runs): scores the rule-based reference classifier
-    — the real production fallback path, which also exercises the FIX-7 OPT_OUT
-    and injection gates — and asserts macro-F1 and per-intent F1 thresholds.
+  * Deterministic gate (always runs): scores reference_classify — which exercises
+    the production OPT_OUT / injection / rate / question gates — and asserts
+    macro-F1 and per-intent F1 thresholds. Measures the RULES, not the model.
   * LLM gate (opt-in): set RUN_LLM_EVAL=1 (with a model available) to run the
-    SAME eval set through the live classify_message and print/score it. Skipped
-    by default so CI stays deterministic and offline.
+    SAME eval set through the live classify_message and score the actual model.
+    Skipped by default so CI stays deterministic and offline.
 
-The thresholds are intentionally strict for the deterministic path (the rules
-should nail this curated set) and serve as a regression tripwire: if a future
-change breaks OPT_OUT detection, the injection gate, or keyword routing, the
-macro-F1 drops and this test fails.
+The deterministic thresholds are intentionally strict (the rules should nail
+this curated set); they are a tripwire, not an accuracy claim.
 """
 
 from __future__ import annotations
@@ -50,13 +54,15 @@ def test_dataset_loads_and_covers_all_intents():
     assert covered == set(INTENTS), f"eval set must cover every intent; missing {set(INTENTS) - covered}"
 
 
-def test_macro_f1_meets_threshold(report):
+def test_reference_classifier_macro_f1_regression(report):
+    # Tripwire on the deterministic rule path (NOT model accuracy): a break in the
+    # production gates reference_classify calls drops this macro-F1.
     assert report.macro_f1 >= MIN_MACRO_F1, (
         f"macro_f1 {report.macro_f1:.3f} < {MIN_MACRO_F1}\n{report.format_table()}"
     )
 
 
-def test_per_intent_f1_meets_threshold(report):
+def test_reference_classifier_per_intent_f1_regression(report):
     weak = {
         intent: s.f1
         for intent, s in report.per_intent.items()
@@ -72,6 +78,21 @@ def test_opt_out_is_never_missed(report):
     assert recall >= MIN_OPT_OUT_RECALL, (
         f"OPT_OUT recall {recall:.3f} < {MIN_OPT_OUT_RECALL}\n{report.format_table()}"
     )
+
+
+def test_reference_classifier_exercises_production_rate_and_question_gates():
+    # C4: reference_classify must route through the SAME production gates as
+    # classify_message, so a regression in mentions_rate / looks_like_question
+    # trips the eval. Previously reference_classify re-implemented only opt-out +
+    # injection and never exercised these two, leaving them untested in the gate.
+    #   bare rate statement  → POSITIVE (via mentions_rate, production gate 3.5)
+    #   product/deal question → QUESTION (via looks_like_question, gate 3.6)
+    assert reference_classify("I charge $480") == "POSITIVE"
+    assert reference_classify("my rate is 500 dollars") == "POSITIVE"
+    assert reference_classify("what's the commission rate?") == "QUESTION"
+    # A rejection that also names a price must NOT be forced POSITIVE (the rate
+    # gate is suppressed by rejection language).
+    assert reference_classify("no thanks, I'd need way more than $480") != "POSITIVE"
 
 
 def test_injection_cases_do_not_flip_classification():
