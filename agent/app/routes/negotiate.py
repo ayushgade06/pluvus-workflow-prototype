@@ -645,6 +645,50 @@ Respond ONLY with valid JSON and nothing else:
 """
 
 
+# The FOLLOW-UP prompt (H3) is sent when the creator did NOT reply to our earlier
+# outreach. It is a brief, low-pressure nudge — NOT a second cold pitch. Crucially
+# it must NOT re-introduce the product from scratch (the creator already received
+# that in the first email); re-pitching reads as a duplicate and lowers response
+# rate. Keep it short, warm, and easy to reply to.
+_FOLLOWUP_PROMPT = """\
+You are a Creator Partnerships Manager writing on behalf of the company "{sender}".
+{brand_context}
+Write a short FOLLOW-UP email to the creator {name} on {platform} ({niche}). We
+already sent an initial partnership note and have NOT heard back yet; this is a
+gentle reminder, not a new pitch.
+{extra}
+
+Goal of the email:
+- Briefly and warmly circle back on the earlier note about partnering with {name}.
+- Do NOT re-introduce or re-explain what {sender} is or what the product does in
+  full — the creator already got that in the first email. At most ONE short
+  clause of context is fine; no dedicated product paragraph, no bullet list of
+  features.
+- Make it genuinely low-pressure: acknowledge they're busy and it's completely
+  fine if the timing isn't right.
+- Invite a quick reply if they're interested or have questions.
+
+Formatting (REQUIRED — a short, human note, not a wall of text):
+- Greeting line on its own: "Hi {name},"
+- Blank line, then 2-4 short sentences: circle back, low-pressure, invite a reply.
+- Blank line, then the sign-off.
+- Use real newline characters (\\n) between lines in the JSON string.
+
+Rules (strictly enforced):
+- Keep it SHORT — under 90 words. This is a nudge, not a pitch. No feature lists.
+- Do NOT invent any facts: no fake past collaborations, no statistics, no made-up
+  details. Only use what is given above.
+- Do NOT state any dollar amount, budget, or rate in this email.
+- The ONLY company/brand named is "{sender}". NEVER write "Pluvus" or any name
+  other than "{sender}".
+- NEVER write [Your Name], [Name], [Brand], <Name>, or ANY bracketed placeholder.
+- Sign off exactly as: "Best,\n{sender}"
+
+Respond ONLY with valid JSON and nothing else:
+{{"subject": "<subject line>", "body": "<full email body with \\n line breaks>"}}
+"""
+
+
 # The OFFER prompt is used for counter_offer / acceptance — the point in the
 # conversation where the creator HAS asked about terms (or proposed a rate) and
 # we now PRESENT concrete numbers: the fixed fee and, for a hybrid deal, the
@@ -980,6 +1024,23 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
         prompt = _build_onboarding_prompt(req, sender, scope_lines)
     elif req.purpose in ("counter_offer", "acceptance"):
         prompt = _build_offer_prompt(req, sender, ctx, brand_context, scope_lines)
+    elif req.purpose == "follow_up":
+        # H3: a dedicated brief-nudge prompt so follow-ups don't re-pitch the
+        # brand from scratch (the initial-outreach prompt mandates a full product
+        # paragraph — wrong for a reminder). Round is surfaced so a later nudge
+        # can read slightly differently; no history exists to thread (follow-ups
+        # fire on non-reply).
+        extra_parts = []
+        if req.round:
+            extra_parts.append(f"This is follow-up reminder number {req.round}.")
+        prompt = _FOLLOWUP_PROMPT.format(
+            name=req.creatorName,
+            platform=req.creatorPlatform or "social media",
+            niche=req.creatorNiche or "content creation",
+            sender=sender,
+            brand_context=brand_context,
+            extra="\n".join(extra_parts),
+        )
     else:
         # Build the personalization block. NOTE: we deliberately do NOT pass the
         # budget range (minBudget/maxBudget) here — the email may reference only

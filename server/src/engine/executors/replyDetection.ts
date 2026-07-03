@@ -3,6 +3,7 @@ import { prisma } from "../../db/client.js";
 import { listMessagesByInstance as listMessagesDb } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
+import { extractReplyText } from "./replyText.js";
 
 // Replies with confidence below this threshold are treated as UNKNOWN and
 // routed to MANUAL_REVIEW rather than auto-advanced.
@@ -88,7 +89,14 @@ export async function executeReplyDetection(
     };
   }
 
-  let { intent, confidence } = await agent.classify(latestInbound.body);
+  // H1: classify the creator's ACTUAL reply, not the raw body. The raw body
+  // quotes our own outreach ("interested", "rate", "commission") plus the
+  // creator's signature; classifying that lets the quoted history dominate the
+  // signal (a "No." can read POSITIVE). extractReplyText strips quoted thread +
+  // signature and falls back to the raw body if it would over-cut. The raw body
+  // remains persisted on the Message row for audit.
+  const replyText = extractReplyText(latestInbound.body);
+  let { intent, confidence } = await agent.classify(replyText);
 
   // Enforce low-confidence threshold: if the classifier is not confident
   // enough, override to UNKNOWN so the reply routes to MANUAL_REVIEW.

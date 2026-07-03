@@ -3,11 +3,13 @@ import {
   findInstanceById,
   findCreatorById,
   findVersionById,
+  findWorkflowById,
   updateInstanceState,
   updateInstanceStateConditional,
   appendEvent,
   createMessage,
 } from "../db/index.js";
+import { findCampaignById } from "../db/campaigns.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
@@ -131,7 +133,22 @@ export class WorkflowRuntime {
       throw new Error(`No nodes found in nodeGraph for version ${version.id}`);
     }
 
-    return { instance, node, nodeGraph, creator };
+    // H5: load the parent campaign (if any) so executors can fall back to its
+    // brand context when a node's config wasn't stamped with it. version →
+    // workflow → campaign. Best-effort: a missing/unlinked campaign is normal
+    // (seeded/legacy workflows have campaignId=null) and must not break
+    // execution, so any lookup failure degrades to "no campaign fallback".
+    let campaign = null;
+    try {
+      const workflow = await findWorkflowById(version.workflowId);
+      if (workflow?.campaignId) {
+        campaign = await findCampaignById(workflow.campaignId);
+      }
+    } catch {
+      campaign = null;
+    }
+
+    return { instance, node, nodeGraph, creator, campaign };
   }
 
   // -------------------------------------------------------------------------

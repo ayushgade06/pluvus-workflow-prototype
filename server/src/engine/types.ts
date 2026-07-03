@@ -1,6 +1,7 @@
 import type {
   ExecutionInstance,
   Creator,
+  Campaign,
   InstanceState,
   EventType,
   ReplyIntent,
@@ -20,6 +21,12 @@ export interface ExecutionContext {
   node: NodeSnapshot;
   nodeGraph: NodeSnapshot[];
   creator: Creator;
+  // H5: the parent campaign, when the workflow is linked to one. Used as a
+  // FALLBACK source of brand context (brandDescription/deliverables/timeline/
+  // rewardDescription/senderName) for the LLM when a node's config wasn't stamped
+  // with them (e.g. imported/legacy workflows). Null for seeded/legacy workflows
+  // that predate campaigns (campaignId is null) — those rely on node config.
+  campaign?: Campaign | null;
 }
 
 // NodeResult — what a node executor returns

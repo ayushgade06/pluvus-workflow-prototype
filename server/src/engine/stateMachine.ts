@@ -5,9 +5,12 @@ import type { InstanceState } from "@prisma/client";
 // ---------------------------------------------------------------------------
 
 const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
-  ENROLLED: ["OUTREACH_SENT", "OPTED_OUT"],
+  // MANUAL_REVIEW is reachable from the outreach/follow-up states too (H4): if the
+  // output guard catches a floor/ceiling leak in an AI-generated outreach or
+  // follow-up email, the funnel halts for human review instead of sending it.
+  ENROLLED: ["OUTREACH_SENT", "OPTED_OUT", "MANUAL_REVIEW"],
   OUTREACH_SENT: ["AWAITING_REPLY", "OPTED_OUT"],
-  AWAITING_REPLY: ["FOLLOWED_UP", "REPLY_RECEIVED", "NO_RESPONSE", "OPTED_OUT"],
+  AWAITING_REPLY: ["FOLLOWED_UP", "REPLY_RECEIVED", "NO_RESPONSE", "OPTED_OUT", "MANUAL_REVIEW"],
   FOLLOWED_UP: ["AWAITING_REPLY", "REPLY_RECEIVED", "OPTED_OUT"],
   REPLY_RECEIVED: ["NEGOTIATING", "REJECTED", "OPTED_OUT", "MANUAL_REVIEW"],
   NEGOTIATING: ["NEGOTIATING", "AWAITING_REPLY", "ACCEPTED", "REJECTED", "OPTED_OUT", "MANUAL_REVIEW"],

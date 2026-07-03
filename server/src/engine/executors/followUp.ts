@@ -2,6 +2,25 @@ import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
+import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
+import { mergeCampaignFallback } from "../campaignContext.js";
+
+// H4: guard the AI-generated follow-up before sending. A follow-up quotes no
+// money, so any floor/ceiling number is a leak → halt for human review.
+function followUpBlockedByGuard(hits: GuardHit[]): NodeResult {
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
+    dueAt: null,
+    eventType: "FOLLOW_UP_DUE",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "output_guard_blocked",
+      leaks: hits.map((h) => `${h.kind}:${h.value}`),
+    },
+  };
+}
 
 function resolveIntervalMs(config: Record<string, unknown>, followUpIndex: number): number {
   const intervals = Array.isArray(config["intervals"]) ? config["intervals"] as number[] : [3, 5, 7];
@@ -21,7 +40,8 @@ export async function executeFollowUp(
   agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance, node, nodeGraph, creator } = ctx;
-  const config = node.config;
+  // H5: fill missing brand context from the parent campaign (node config wins).
+  const config = mergeCampaignFallback(node.config, ctx.campaign);
   const maxCount = typeof config["maxCount"] === "number" ? config["maxCount"] : 3;
 
   // Case 1: Just sent outreach — enter the first waiting period.
@@ -72,6 +92,15 @@ export async function executeFollowUp(
       ...(dealDescription ? { dealDescription } : {}),
     });
     const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
+
+    // H4: scan the rendered follow-up for a leaked floor/ceiling (band lives on
+    // the NEGOTIATION node) before sending. Nothing is allowlisted — follow-ups
+    // present no rate. A hit routes to MANUAL_REVIEW.
+    const negotiationConfig = nodeGraph.find((n) => n.type === "NEGOTIATION")?.config;
+    const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(negotiationConfig ?? {}));
+    if (!guard.ok) {
+      return followUpBlockedByGuard(guard.hits);
+    }
 
     // FIX-11: reserve-before-send keyed on (instance, follow-up round) so a
     // crash between send and the row write can't double-send this follow-up on

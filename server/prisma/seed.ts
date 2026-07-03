@@ -88,6 +88,18 @@ const NODE_GRAPH: NodeSnapshot[] = [
       tone: "professional",
       termFloor: { rate: 500 },
       termCeiling: { rate: 2000 },
+      // H5: brand context the negotiation/offer LLM needs. Without these the
+      // agent falls back to "Pluvus Partnerships" / "a brand partnership" and
+      // signs blind. The seed IS a Pluvus demo, so senderName/brandName match the
+      // outreach node above; brandDescription lets the agent answer "what does
+      // your brand do?" instead of hallucinating. deliverables/timeline are left
+      // unset on purpose (the demo has none) — the prompt then keeps them open
+      // rather than inventing scope.
+      senderName: "Pluvus Partnerships",
+      brandName: "Pluvus Partnerships",
+      brandDescription:
+        "Pluvus is a creator-partnerships platform that connects brands with " +
+        "the right creators and manages the collaboration end to end.",
       stageTemplates: {
         opening: "Thanks for getting back to us! Here are the campaign details and our initial offer.",
         counter: "We appreciate the counter. Here's what we can do:",

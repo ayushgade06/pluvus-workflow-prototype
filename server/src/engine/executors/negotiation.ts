@@ -8,6 +8,8 @@ import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
+import { extractReplyText } from "./replyText.js";
+import { mergeCampaignFallback } from "../campaignContext.js";
 
 // FIX-11: outbound AI sends use the shared reserve-before-send helper
 // (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
@@ -77,7 +79,11 @@ export async function executeNegotiation(
   agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance, node, nodeGraph, creator } = ctx;
-  const config = node.config;
+  // H5: overlay the parent campaign's brand context onto the node config for any
+  // brand field the config is missing (unstamped/legacy nodes), so the
+  // negotiation + offer-copy LLM gets the real sender/brand/scope instead of
+  // signing as "Pluvus Partnerships" with no scope. Node config always wins.
+  const config = mergeCampaignFallback(node.config, ctx.campaign);
 
   if (instance.currentState !== "NEGOTIATING") {
     throw new Error(
@@ -121,7 +127,11 @@ export async function executeNegotiation(
 
   const messages = await listMessagesByInstance(instance.id);
   const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
-  const creatorReply = latestInbound?.body ?? "";
+  // H1: strip quoted thread + signature so the negotiation agent reasons about
+  // (and the counter copy acknowledges) the creator's ACTUAL words, not our own
+  // quoted outreach. Also feeds extractRequestedRate below — a "$500" in our
+  // quoted history must not be mistaken for the creator's ask.
+  const creatorReply = latestInbound?.body ? extractReplyText(latestInbound.body) : "";
 
   // FIX-1/FIX-2: assemble the conversation so far from persisted NEGOTIATION_TURN
   // events and thread it into the (stateless) agent so it can reason about the
