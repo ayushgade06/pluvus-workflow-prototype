@@ -4,6 +4,8 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { readStoredFile } from "../../storage/localFileStorage.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderContentBriefEmail } from "./contentBriefEmail.js";
+import { resolveBrandName } from "../campaignContext.js";
+import { blockedByMissingBrand } from "./guardEscalation.js";
 
 // ---------------------------------------------------------------------------
 // Content Brief executor
@@ -68,9 +70,12 @@ export async function executeContentBrief(
   };
 
   // 3. Draft the deterministic "Your Campaign Brief" email. Brand name is stamped
-  //    into node config (restampBrand); fall back defensively.
-  const brandName =
-    typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
+  //    into node config (restampBrand). L4: resolve from config → campaign; if
+  //    neither has it, fail loud to MANUAL_REVIEW rather than email "your brand".
+  const brandName = resolveBrandName(config, ctx.campaign);
+  if (brandName === undefined) {
+    return blockedByMissingBrand("CONTENT_BRIEF");
+  }
   const draft = {
     ...renderContentBriefEmail({
       creatorName: creator.name,

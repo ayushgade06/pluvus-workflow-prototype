@@ -25,3 +25,22 @@ export function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
     },
   };
 }
+
+// L4: fail loud when a creator-facing email has no resolvable brand name (config
+// AND campaign both missing it). Rather than send "Thanks, your brand" to a real
+// creator, route the instance to MANUAL_REVIEW so a human fixes the config. This
+// only fires on a genuinely mis-stamped / orphaned instance (restampBrand
+// normally always sets brandName).
+export function blockedByMissingBrand(node: string): NodeResult {
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
+    eventType: "MANUAL_REVIEW_FLAGGED",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "missing_brand_name",
+      node,
+    },
+  };
+}

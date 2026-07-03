@@ -76,3 +76,36 @@ def test_scrub_does_not_touch_unrelated_text():
     body = "We loved your fitness content, Alex. Best, Barclays"
     out = _scrub_brand(body, "Barclays")
     assert out == body
+
+
+# ---------------------------------------------------------------------------
+# L3 — the placeholder sweep catches the variants the explicit list missed,
+# without eating legitimate bracketed content.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    ["<Name>", "[Company]", "[Sender]", "[Signature]", "[previous creator's name]", "[Your Company]"],
+)
+def test_scrub_catches_additional_placeholders(placeholder):
+    body = f"Hi there, this is {placeholder} reaching out."
+    out = _scrub_brand(body, "Barclays")
+    assert placeholder not in out
+    assert "Barclays" in out
+
+
+def test_scrub_preserves_legitimate_bracket_content():
+    # Non-placeholder bracket content must survive: emoticons, money, URLs,
+    # handles with digits/symbols. These are not name/label-shaped tokens.
+    for keep in ["<3", "[$500]", "<https://acme.com>", "[10% off]", "<@user_42>"]:
+        body = f"Check this out {keep} — from Barclays"
+        out = _scrub_brand(body, "Barclays")
+        assert keep in out, f"scrub wrongly removed {keep!r}: {out!r}"
+
+
+def test_scrub_multiple_placeholders_in_one_body():
+    body = "Hi [Name], <Signature> here at [Company]. Best,\n[Your Name]"
+    out = _scrub_brand(body, "Barclays")
+    assert "[" not in out and "<" not in out
+    assert "Barclays" in out

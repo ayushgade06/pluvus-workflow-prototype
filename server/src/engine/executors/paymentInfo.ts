@@ -8,6 +8,8 @@ import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
+import { resolveBrandName } from "../campaignContext.js";
+import { blockedByMissingBrand } from "./guardEscalation.js";
 
 // ---------------------------------------------------------------------------
 // Payment Info executor
@@ -84,9 +86,13 @@ export async function executePaymentInfo(
   const formLink = paymentFormLink(token);
 
   // 2. Draft the deterministic "Payment Information Required" email. Brand names
-  //    are stamped into node config (restampBrand); fall back defensively.
-  const brandName =
-    typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
+  //    are stamped into node config (restampBrand). L4: resolve from config →
+  //    campaign; if neither has a brand name, fail loud to MANUAL_REVIEW rather
+  //    than email the creator "your brand".
+  const brandName = resolveBrandName(config, ctx.campaign);
+  if (brandName === undefined) {
+    return blockedByMissingBrand("PAYMENT_INFO");
+  }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
   // Physical-product campaigns collect a shipping address on the same form, so

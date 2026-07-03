@@ -76,3 +76,25 @@ export function mergeCampaignFallback(
   }
   return merged;
 }
+
+/**
+ * L4: resolve the brand name to put in a creator-facing email, trying node
+ * config first, then the parent campaign. Returns undefined when neither has a
+ * real brand name — the caller must then fail loud (route to MANUAL_REVIEW)
+ * rather than email a creator the literal filler "your brand". restampBrand
+ * normally always sets brandName, so undefined only happens for a genuinely
+ * mis-stamped / orphaned instance that a human should fix.
+ */
+export function resolveBrandName(
+  config: Record<string, unknown>,
+  campaign: Campaign | null | undefined,
+): string | undefined {
+  const fromConfig = config["brandName"] ?? config["senderName"];
+  if (typeof fromConfig === "string" && fromConfig.trim().length > 0) {
+    return fromConfig;
+  }
+  if (campaign && campaign.brand && campaign.brand.trim().length > 0) {
+    return campaign.brand;
+  }
+  return undefined;
+}

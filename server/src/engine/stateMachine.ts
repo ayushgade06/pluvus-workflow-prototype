@@ -16,14 +16,17 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   NEGOTIATING: ["NEGOTIATING", "AWAITING_REPLY", "ACCEPTED", "REJECTED", "OPTED_OUT", "MANUAL_REVIEW"],
   // ACCEPTED is no longer terminal: a successful negotiation auto-advances into
   // the Reward Setup node, which finalizes the agreement and emails the creator.
-  ACCEPTED: ["REWARD_PENDING"],
+  // MANUAL_REVIEW is reachable (L4) if the confirmation email has no resolvable
+  // brand name — halt for a human rather than email a creator "your brand".
+  ACCEPTED: ["REWARD_PENDING", "MANUAL_REVIEW"],
   // Reward Setup waiting state. Stays here on a non-confirming reply
   // (REWARD_PENDING → REWARD_PENDING), advances on an agreement reply, and can
   // still be escalated to a human.
   REWARD_PENDING: ["REWARD_PENDING", "REWARD_CONFIRMED", "MANUAL_REVIEW"],
   // Reward Setup success. No longer terminal: a confirmed agreement auto-advances
   // into the Payment Info node, which collects the creator's payout details.
-  REWARD_CONFIRMED: ["PAYMENT_PENDING"],
+  // MANUAL_REVIEW reachable (L4) on a missing brand name in the payment email.
+  REWARD_CONFIRMED: ["PAYMENT_PENDING", "MANUAL_REVIEW"],
   // Payment Info waiting state. Stays here until the creator submits the payout
   // form (PAYMENT_PENDING → PAYMENT_RECEIVED), and can still be escalated.
   PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "MANUAL_REVIEW"],
@@ -31,7 +34,8 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // into the Content Brief node. Content Brief has NO waiting state — it sends the
   // brief email and completes in a single step — so PAYMENT_RECEIVED transitions
   // straight to the CONTENT_BRIEF_SENT terminal.
-  PAYMENT_RECEIVED: ["CONTENT_BRIEF_SENT"],
+  // MANUAL_REVIEW reachable (L4) on a missing brand name in the content-brief email.
+  PAYMENT_RECEIVED: ["CONTENT_BRIEF_SENT", "MANUAL_REVIEW"],
   // Content Brief success. Terminal — the end of the linear graph.
   CONTENT_BRIEF_SENT: [],
   REJECTED: [],

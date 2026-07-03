@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import type { Campaign } from "@prisma/client";
-import { mergeCampaignFallback } from "./campaignContext.js";
+import { mergeCampaignFallback, resolveBrandName } from "./campaignContext.js";
 
 let n = 0;
 function test(name: string, fn: () => void): void {
@@ -77,6 +77,26 @@ test("a campaign with blank optional fields does not overwrite with junk", () =>
   // No brandDescription on the campaign → key stays absent (not "undefined").
   assert.ok(!("brandDescription" in merged) || merged["brandDescription"] === undefined);
   assert.equal(merged["shipsPhysicalProduct"], false);
+});
+
+// ---------------------------------------------------------------------------
+// L4 — resolveBrandName: config → campaign → undefined (caller fails loud).
+// ---------------------------------------------------------------------------
+
+test("resolveBrandName prefers config brandName", () => {
+  assert.equal(resolveBrandName({ brandName: "Configured Co" }, campaign), "Configured Co");
+});
+
+test("resolveBrandName falls back to senderName then campaign.brand", () => {
+  assert.equal(resolveBrandName({ senderName: "Sender Co" }, campaign), "Sender Co");
+  assert.equal(resolveBrandName({}, campaign), "Acme Running");
+});
+
+test("resolveBrandName returns undefined when neither config nor campaign has one", () => {
+  assert.equal(resolveBrandName({}, null), undefined);
+  assert.equal(resolveBrandName({ brandName: "   " }, null), undefined);
+  const blankBrand = { id: "c3", brand: "  " } as unknown as Campaign;
+  assert.equal(resolveBrandName({}, blankBrand), undefined);
 });
 
 console.log(`\n${n} passed\n`);

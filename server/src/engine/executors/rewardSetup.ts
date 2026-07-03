@@ -5,8 +5,9 @@ import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { resolveBand } from "../band.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
-import { blockedByGuard } from "./guardEscalation.js";
+import { blockedByGuard, blockedByMissingBrand } from "./guardEscalation.js";
 import { renderRewardConfirmationEmail } from "./rewardEmail.js";
+import { resolveBrandName } from "../campaignContext.js";
 
 // ---------------------------------------------------------------------------
 // Reward Setup executor
@@ -118,7 +119,12 @@ export async function executeRewardSetup(
   // but the template is the authoritative fallback — unlike the other executors
   // this never degrades to a generic body, since the confirmation must always
   // state the terms and ask for "I Agree".
-  const brandName = typeof config["brandName"] === "string" ? (config["brandName"] as string) : "your brand";
+  // L4: resolve the brand from config → parent campaign. If neither has it, fail
+  // loud to MANUAL_REVIEW rather than email the creator "your brand".
+  const brandName = resolveBrandName(config, ctx.campaign);
+  if (brandName === undefined) {
+    return blockedByMissingBrand("REWARD_SETUP");
+  }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
   const templateDraft = renderRewardConfirmationEmail({

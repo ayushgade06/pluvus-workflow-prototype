@@ -120,6 +120,21 @@ _INJECTION_PATTERNS = [
     r"\boverride\b.*\b(?:rules?|instructions?|settings?)\b",
     r"\breveal\b.*\b(?:floor|ceiling|budget|maximum|minimum|system prompt)\b",
     r"\bwhat(?:'s| is) your (?:system prompt|instructions?|maximum|budget|ceiling)\b",
+    # L2 — a few more high-value, conservative patterns. These are still a
+    # heuristic (regex can't catch every obfuscated jailbreak); the REAL guarantee
+    # is the deterministic money decision, which a flipped intent can't move. The
+    # point here is only to reduce how often the model is fooled in the first
+    # place, without false-positiving on genuine creator replies.
+    #   role-play / fake role markers ("system:", "assistant:", "### instruction")
+    r"(?:^|\n)\s*(?:system|assistant|developer)\s*:",
+    r"#{2,}\s*instructions?\b",
+    #   "print/repeat/show/output your (system) prompt/instructions"
+    r"\b(?:print|repeat|show|output|display|tell me)\b.*\b(?:your )?(?:system )?(?:prompt|instructions?)\b",
+    #   "pretend (that) you are ...", explicit jailbreak names
+    r"\bpretend (?:that )?you(?:'re| are)\b",
+    r"\b(?:jailbreak|DAN mode|developer mode)\b",
+    #   "in developer mode" / "as a developer"
+    r"\bdisregard\b.*\b(?:rules?|policy|policies|guidelines?)\b",
 ]
 _INJECTION_RE = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 

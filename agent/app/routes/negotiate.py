@@ -1161,20 +1161,38 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
     return DraftResponse(subject=subject, body=body)
 
 
+# Placeholder-shaped bracket content the model sometimes emits instead of a real
+# value: a short run of letters / spaces / a few name-punctuation chars inside
+# [ ] or < >. Deliberately NARROW (L3) so it maps things like "[Company]",
+# "[Sender]", "<Name>", "[previous creator's name]" to the real sender WITHOUT
+# eating legitimate bracketed content such as "<3", "[$500]", "<https://...>", or
+# an "@handle" — those contain digits/symbols/URLs and won't match this pattern.
+_PLACEHOLDER_TOKEN_RE = re.compile(r"[\[<][A-Za-z][A-Za-z '’\-/]{0,40}[\]>]")
+
+
 def _scrub_brand(text: str, sender: str) -> str:
     """Fix leftover placeholders and a stray platform name in generated copy.
 
     Two classes of fix:
-      1. Bracketed placeholders the model didn't fill -> the real sender.
+      1. Bracketed placeholders the model didn't fill -> the real sender. Handles
+         the common named ones explicitly AND a general placeholder-shaped bracket
+         token sweep (L3), so "<Name>", "[Company]", "[Sender]", "[Signature]",
+         "[previous creator's name]" etc. no longer slip through into a real email.
       2. A stray "Pluvus" the model emits from its own (old) identity wording,
          when the actual campaign sender is a DIFFERENT brand (e.g. Barclays).
          Sending a Barclays email that says "Pluvus" was a real leak; this maps
          it back to the sender. Skipped when the sender genuinely IS Pluvus.
     """
+    # Explicit common placeholders first (kept for clarity / exact behavior).
     text = re.sub(r"\[Your Name\]", sender, text, flags=re.IGNORECASE)
     text = re.sub(r"\[Name\]", sender, text, flags=re.IGNORECASE)
     text = re.sub(r"\[Brand\]", sender, text, flags=re.IGNORECASE)
     text = re.sub(r"<Your Name>", sender, text, flags=re.IGNORECASE)
+
+    # General placeholder-shaped bracket sweep for anything the explicit list
+    # missed. Narrow by construction (see _PLACEHOLDER_TOKEN_RE) so it only maps
+    # name/label-looking tokens to the sender.
+    text = _PLACEHOLDER_TOKEN_RE.sub(sender, text)
 
     if "pluvus" not in sender.lower():
         # Replace a standalone "Pluvus" (optionally "Pluvus Partnerships/Team")
