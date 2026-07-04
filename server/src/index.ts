@@ -9,6 +9,7 @@ import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
 import paymentRouter from "./routes/payment.js";
+import brandDecisionRouter from "./routes/brandDecision.js";
 import uploadsRouter from "./routes/uploads.js";
 import { startWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
@@ -81,6 +82,16 @@ app.use("/creators", creatorsRouter);
 // Payment Info email. Self-contained HTML; no SPA/router dependency.
 
 app.use("/payment", paymentRouter);
+
+// ---------------------------------------------------------------------------
+// Manual Escalation Resolution — brand-decision one-click magic links
+// ---------------------------------------------------------------------------
+// GET /brand-decision/:token/{approve,reject,counter,handoff} — the brand-facing
+// one-click actions linked from the actionable escalation email. Resolves a
+// BrandDecision deterministically and auto-resumes the workflow. Self-contained
+// HTML; peer of the free-text email reply.
+
+app.use("/brand-decision", brandDecisionRouter);
 
 // ---------------------------------------------------------------------------
 // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)

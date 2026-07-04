@@ -308,12 +308,37 @@ export interface ManualQueueItem {
   notification: ManualQueueNotification | null;
 }
 
+/** A run parked in AWAITING_BRAND_DECISION, waiting on the brand's reply/click.
+ *  Not in the manual queue proper — it auto-resumes on reply, or times out to
+ *  MANUAL_REVIEW after 72h. Surfaced read-only so operators can see what's pending. */
+export interface PendingBrandDecision {
+  instanceId: string;
+  creatorId: string;
+  creatorName: string;
+  creatorEmail: string;
+  creatorHandle: string | null;
+  platform: string | null;
+  niche: string | null;
+  reason: string;
+  reasonLabel: string;
+  /** The question we asked the brand (null for legacy rows without one). */
+  question: string | null;
+  askedAt: string | null;
+  /** Silence-timeout instant; past this the sweep moves it to MANUAL_REVIEW. */
+  expiresAt: string | null;
+  reaskCount: number;
+  updatedAt: string;
+}
+
 export interface ManualQueueResponse {
   workflowId: string;
   versionId?: string;
   version?: number;
   items: ManualQueueItem[];
   total: number;
+  /** Runs parked in AWAITING_BRAND_DECISION (email/magic-link resolvable). */
+  pendingDecisions?: PendingBrandDecision[];
+  pendingTotal?: number;
   generatedAt: string;
 }
 

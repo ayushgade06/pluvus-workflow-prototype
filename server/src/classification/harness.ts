@@ -36,7 +36,7 @@ import {
 } from "../db/index.js";
 import { closeLockClient } from "../scheduler/lock.js";
 import type { InstanceState, ReplyIntent } from "@prisma/client";
-import type { ClassifyResult } from "../engine/types.js";
+import type { ClassifyResult, BrandDecisionClassifyResult } from "../engine/types.js";
 import type { ClassificationProvider } from "../adapters/classification/ClassificationProvider.js";
 import type { IAgentProvider } from "../engine/providers.js";
 import type { NegotiateResult } from "../engine/types.js";
@@ -70,6 +70,20 @@ class HarnessAgentProvider implements IAgentProvider {
   async classify(body: string): Promise<ClassifyResult> {
     const result = await this.classifier.classify({ message: body });
     return { intent: result.intent as ReplyIntent, confidence: result.confidence };
+  }
+
+  async classifyBrandDecision(body: string): Promise<BrandDecisionClassifyResult> {
+    const result = await this.classifier.classify({ message: body });
+    switch (result.intent) {
+      case "POSITIVE":
+      case "QUESTION":
+        return { decision: "APPROVE", confidence: result.confidence };
+      case "NEGATIVE":
+      case "OPT_OUT":
+        return { decision: "REJECT", confidence: result.confidence };
+      default:
+        return { decision: "AMBIGUOUS", confidence: 0 };
+    }
   }
 
   async negotiate(_round: number, _config: Record<string, unknown>): Promise<NegotiateResult> {

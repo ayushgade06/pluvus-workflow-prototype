@@ -48,6 +48,14 @@ const REASON_LABELS: Record<string, string> = {
   escalated: "the negotiation agent escalated this conversation for human review",
   agent_unavailable:
     "the AI agent was unavailable (degraded mode), so this was routed to a human",
+  brand_requested_handoff:
+    "the brand asked us to hand this creator off to a human via the escalation email",
+  brand_reply_ambiguous_after_reask:
+    "we couldn't understand the brand's reply to the escalation email, even after asking again",
+  brand_final_counter_pending_delivery:
+    "the brand named a final counter-offer that needs a human to send to the creator",
+  brand_decision_timeout:
+    "we emailed the brand for a decision but heard nothing back within 72 hours",
 };
 
 function reasonLabel(reason: string): string {

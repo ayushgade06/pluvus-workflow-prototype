@@ -17,7 +17,11 @@ import type { Request, Response } from "express";
 import type { Event, Prisma } from "@prisma/client";
 import { prisma } from "../db/client.js";
 import { findWorkflowById, findLatestVersion } from "../db/workflows.js";
-import { findInstanceById, listLatestBrandNotificationsForInstances } from "../db/index.js";
+import {
+  findInstanceById,
+  listLatestBrandNotificationsForInstances,
+  listPendingBrandDecisionsForInstances,
+} from "../db/index.js";
 import { emailProvider } from "../engine/providerFactory.js";
 import { notifyBrandOfEscalation, resolveBrandRecipient } from "../notifications/escalation.js";
 
@@ -43,6 +47,12 @@ const REASON_LABELS: Record<string, string> = {
   output_guard_blocked: "Outbound draft blocked by safety guard",
   escalated: "Escalated by the negotiation agent",
   agent_unavailable: "AI agent unavailable (degraded mode)",
+  // Brand-decision reasons (AWAITING_BRAND_DECISION rows + timeout/handoff fallbacks).
+  missing_brand_name: "Waiting on the brand name to use in emails",
+  brand_requested_handoff: "The brand asked for a human to take over",
+  brand_reply_ambiguous_after_reask: "The brand's reply couldn't be understood",
+  brand_final_counter_pending_delivery: "Brand named a final counter to send",
+  brand_decision_timeout: "The brand didn't reply within 72 hours",
 };
 
 function reasonLabel(reason: string): string {
@@ -142,12 +152,50 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
       };
     });
 
+    // ── AWAITING_BRAND_DECISION rows (email/magic-link resolvable) ───────────
+    // These are NOT in the manual queue proper — they're parked waiting on the
+    // brand's reply and will auto-resume (or time out to MANUAL_REVIEW in 72h).
+    // Surfaced read-only so an operator can see what's pending on the brand.
+    const parked = await prisma.executionInstance.findMany({
+      where: {
+        workflowVersionId: latestVersion.id,
+        currentState: "AWAITING_BRAND_DECISION",
+      },
+      include: { creator: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    const decisionsByInstance = await listPendingBrandDecisionsForInstances(
+      parked.map((i) => i.id),
+    );
+    const pendingDecisions = parked.map((inst) => {
+      const decision = decisionsByInstance.get(inst.id) ?? null;
+      const reason = decision?.reason ?? "escalated";
+      return {
+        instanceId: inst.id,
+        creatorId: inst.creatorId,
+        creatorName: inst.creator.name,
+        creatorEmail: inst.creator.email,
+        creatorHandle: inst.creator.handle,
+        platform: inst.creator.platform,
+        niche: inst.creator.niche,
+        reason,
+        reasonLabel: reasonLabel(reason),
+        question: decision?.question ?? null,
+        askedAt: decision?.createdAt.toISOString() ?? null,
+        expiresAt: decision?.expiresAt.toISOString() ?? null,
+        reaskCount: decision?.reaskCount ?? 0,
+        updatedAt: inst.updatedAt.toISOString(),
+      };
+    });
+
     res.json({
       workflowId: wf.id,
       versionId: latestVersion.id,
       version: latestVersion.version,
       items,
       total: items.length,
+      pendingDecisions,
+      pendingTotal: pendingDecisions.length,
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {

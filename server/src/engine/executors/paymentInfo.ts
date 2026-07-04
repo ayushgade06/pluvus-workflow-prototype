@@ -9,7 +9,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
-import { blockedByMissingBrand } from "./guardEscalation.js";
+import { openMissingBrandDecision } from "./brandDecision.js";
 
 // ---------------------------------------------------------------------------
 // Payment Info executor
@@ -91,7 +91,9 @@ export async function executePaymentInfo(
   //    than email the creator "your brand".
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    return blockedByMissingBrand("PAYMENT_INFO");
+    // L4 config-fix: ask the brand for the missing name by email and re-run this
+    // node once it's supplied, instead of dead-ending in MANUAL_REVIEW.
+    return openMissingBrandDecision(ctx, email);
   }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;

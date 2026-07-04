@@ -10,6 +10,8 @@ import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
 import { extractReplyText } from "./replyText.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
+import { openBrandDecision } from "./brandDecision.js";
+import { resolveBand } from "../band.js";
 
 // FIX-11: outbound AI sends use the shared reserve-before-send helper
 // (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
@@ -107,24 +109,6 @@ export async function executeNegotiation(
   // (e.g. "hybrid — fixed fee plus commission") instead of only quoting a fee.
   const dealDescription = describeDeal(config);
 
-  // Hard stop — enforce maxRounds before calling the agent.
-  // This prevents the agent from even being consulted past the ceiling.
-  if (instance.negotiationRound >= maxRounds) {
-    return {
-      nextState: "MANUAL_REVIEW",
-      nextNodeId: null,
-      completedAt: new Date(),
-      negotiationRound: instance.negotiationRound,
-      eventType: "NEGOTIATION_TURN",
-      eventPayload: {
-        outcome: "ESCALATE",
-        reason: "max_rounds_reached",
-        round: instance.negotiationRound,
-        maxRounds,
-      },
-    };
-  }
-
   const messages = await listMessagesByInstance(instance.id);
   const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
   // H1: strip quoted thread + signature so the negotiation agent reasons about
@@ -132,6 +116,55 @@ export async function executeNegotiation(
   // quoted outreach. Also feeds extractRequestedRate below — a "$500" in our
   // quoted history must not be mistaken for the creator's ask.
   const creatorReply = latestInbound?.body ? extractReplyText(latestInbound.body) : "";
+
+  // Hard stop — enforce maxRounds before calling the agent.
+  // This prevents the agent from even being consulted past the ceiling.
+  //
+  // B9 (max_rounds_reached): instead of dead-ending in MANUAL_REVIEW, open a
+  // brand-decision round-trip — the brand gets ONE more move (approve the
+  // creator's number, name a final counter, reject, or hand off) and the run
+  // auto-resumes on their reply. See MANUAL_ESCALATION_RESOLUTION.md §3 B9.
+  if (instance.negotiationRound >= maxRounds) {
+    const { floor, ceiling } = resolveBand(config);
+    const creatorRate = extractRequestedRate(creatorReply);
+    const band =
+      floor !== undefined && ceiling !== undefined
+        ? ` (your ceiling was ${ceiling}, floor ${floor})`
+        : "";
+    const rateClause =
+      creatorRate !== undefined ? `Their latest ask is ${creatorRate}${band}.` : "";
+    const question =
+      `Negotiation with ${creator.name} reached the max of ${maxRounds} rounds ` +
+      `without agreement. ${rateClause} Do you want to accept their number, or name ` +
+      `one final counter? Any number you give is final — we won't negotiate further; ` +
+      `the creator can only take it or leave it.`;
+
+    return openBrandDecision(ctx, email, {
+      reason: "max_rounds_reached",
+      question,
+      // Max-rounds offers all four actions: approve their number, counter (final),
+      // reject, or hand off. (B10 over-ceiling, a later item, drops "counter".)
+      actions: ["approve", "reject", "counter", "handoff"],
+      context: {
+        reason: "max_rounds_reached",
+        actions: ["approve", "reject", "counter", "handoff"],
+        negotiationNodeId: node.id,
+        ...(creatorRate !== undefined ? { creatorRate } : {}),
+        ...(floor !== undefined ? { floor } : {}),
+        ...(ceiling !== undefined ? { ceiling } : {}),
+        maxRounds,
+        round: instance.negotiationRound,
+      },
+      ...(creatorReply ? { quotedReply: creatorReply } : {}),
+      eventType: "NEGOTIATION_TURN",
+      eventPayload: {
+        outcome: "ESCALATE",
+        reason: "max_rounds_reached",
+        round: instance.negotiationRound,
+        maxRounds,
+      },
+    });
+  }
 
   // FIX-1/FIX-2: assemble the conversation so far from persisted NEGOTIATION_TURN
   // events and thread it into the (stateless) agent so it can reason about the

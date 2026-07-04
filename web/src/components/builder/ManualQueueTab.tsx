@@ -7,6 +7,7 @@ import { InstanceInspector } from "../InstanceInspector";
 import type { WorkflowDetail } from "../../api/builderTypes";
 import type {
   ManualQueueItem,
+  PendingBrandDecision,
   BrandNotificationStatus,
 } from "../../api/builderTypes";
 
@@ -45,7 +46,9 @@ export function ManualQueueTab({ workflow }: Props) {
     );
   }
 
-  if (!data || data.total === 0) {
+  const pendingDecisions = data?.pendingDecisions ?? [];
+
+  if (!data || (data.total === 0 && pendingDecisions.length === 0)) {
     return (
       <EmptyState
         icon="🛟"
@@ -131,24 +134,50 @@ export function ManualQueueTab({ workflow }: Props) {
           <StatTile label="In Queue" value={data.total} color={colors.warning} />
           <StatTile label="Brand Notified" value={notifiedCount} color={colors.success} />
           <StatTile label="Needs Attention" value={failedCount} color={failedCount > 0 ? colors.danger : colors.textMuted} />
+          {pendingDecisions.length > 0 && (
+            <StatTile label="Awaiting Brand" value={pendingDecisions.length} color={colors.accent} />
+          )}
         </div>
 
         {/* Queue list */}
-        <div>
-          <SectionHeader count={data.total}>Escalated Creators</SectionHeader>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {data.items.map((item) => (
-              <QueueRow
-                key={item.instanceId}
-                item={item}
-                selected={selectedInstanceId === item.instanceId}
-                notifying={notifying === item.instanceId}
-                onOpen={() => setSelectedInstanceId(item.instanceId)}
-                onNotify={() => void handleNotify(item)}
-              />
-            ))}
+        {data.total > 0 && (
+          <div>
+            <SectionHeader count={data.total}>Escalated Creators</SectionHeader>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {data.items.map((item) => (
+                <QueueRow
+                  key={item.instanceId}
+                  item={item}
+                  selected={selectedInstanceId === item.instanceId}
+                  notifying={notifying === item.instanceId}
+                  onOpen={() => setSelectedInstanceId(item.instanceId)}
+                  onNotify={() => void handleNotify(item)}
+                />
+              ))}
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Awaiting brand decision — parked, auto-resolving, read-only */}
+        {pendingDecisions.length > 0 && (
+          <div>
+            <SectionHeader count={pendingDecisions.length}>Awaiting Brand Decision</SectionHeader>
+            <p style={{ fontSize: font.size.sm, color: colors.textMuted, margin: "0 0 12px", lineHeight: 1.6, maxWidth: 640 }}>
+              These runs are parked waiting on the brand's reply to an actionable email. They resume
+              automatically when the brand answers, or move to the queue above if there's no reply within 72 hours.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {pendingDecisions.map((d) => (
+                <PendingRow
+                  key={d.instanceId}
+                  decision={d}
+                  selected={selectedInstanceId === d.instanceId}
+                  onOpen={() => setSelectedInstanceId(d.instanceId)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
         </div>
       </div>
 
@@ -314,6 +343,118 @@ function QueueRow({
             ? "Resend"
             : "Notify brand"}
       </button>
+    </div>
+  );
+}
+
+// Coarse "time left" until a future instant (the 72h timeout). Returns e.g.
+// "~2 days left", "~5 hours left", or "timing out soon" / "overdue".
+function timeLeft(expiresAt: string | null): string {
+  if (!expiresAt) return "";
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (Number.isNaN(ms)) return "";
+  if (ms <= 0) return "overdue — will move to queue";
+  const hours = ms / 3_600_000;
+  if (hours < 1) return "timing out soon";
+  if (hours < 48) return `~${Math.round(hours)} hours left`;
+  return `~${Math.round(hours / 24)} days left`;
+}
+
+function PendingRow({
+  decision,
+  selected,
+  onOpen,
+}: {
+  decision: PendingBrandDecision;
+  selected: boolean;
+  onOpen: () => void;
+}) {
+  const remaining = timeLeft(decision.expiresAt);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        padding: "14px 18px",
+        background: selected ? "#16171e" : colors.panel,
+        border: `1px solid ${selected ? `${colors.accent}66` : colors.border}`,
+        borderRadius: radii.md,
+        boxShadow: selected
+          ? `0 0 0 3px ${colors.accent}1f, 0 1px 2px rgba(0,0,0,0.4)`
+          : "0 1px 2px rgba(0,0,0,0.4)",
+        transition: "border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+      }}
+    >
+      {/* Creator + question — clickable to open inspector */}
+      <button
+        onClick={onOpen}
+        className="ds-focusable"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          background: "transparent",
+          border: "none",
+          textAlign: "left",
+          cursor: "pointer",
+          padding: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontSize: font.size.lg, fontWeight: font.weight.semibold, color: colors.text, letterSpacing: -0.2 }}>
+            {decision.creatorName}
+          </span>
+          {decision.creatorHandle && (
+            <span style={{ fontSize: font.size.sm, color: colors.textDim }}>@{decision.creatorHandle}</span>
+          )}
+          {decision.platform && (
+            <span style={{ fontSize: font.size.sm, color: colors.textDim }}>· {decision.platform}</span>
+          )}
+        </div>
+        {decision.question && (
+          <span style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.5 }}>
+            {decision.question}
+          </span>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+          <span
+            style={{
+              fontSize: font.size.xs,
+              fontWeight: font.weight.medium,
+              color: colors.accent,
+              background: `${colors.accent}1f`,
+              border: `1px solid ${colors.accent}55`,
+              borderRadius: radii.pill,
+              padding: "2px 9px",
+              lineHeight: 1.5,
+            }}
+          >
+            ⏳ {decision.reasonLabel}
+          </span>
+          {decision.askedAt && (
+            <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+              asked {relativeTime(decision.askedAt)}
+            </span>
+          )}
+          {decision.reaskCount > 0 && (
+            <span style={{ fontSize: font.size.sm, color: colors.warning }}>· re-asked</span>
+          )}
+        </div>
+      </button>
+
+      {/* Waiting status */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: font.size.sm, color: colors.accent }}>
+          <span className="ds-pulse" style={{ width: 7, height: 7, borderRadius: "50%", background: colors.accent }} />
+          Waiting on brand
+        </span>
+        {remaining && (
+          <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{remaining}</span>
+        )}
+      </div>
     </div>
   );
 }

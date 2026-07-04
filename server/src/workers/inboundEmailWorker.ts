@@ -137,6 +137,58 @@ async function handleInboundEmail(
       return;
     }
 
+    // ── Brand-decision reply branch ────────────────────────────────────────
+    // A reply that arrives while the instance is AWAITING_BRAND_DECISION is the
+    // BRAND answering a business escalation (approve / reject / counter / handoff)
+    // — NOT the creator, and NOT a negotiation turn. Route it to the brand-
+    // decision reply handler, which persists the message and steps the generic
+    // brand-decision loop (parse pipeline → resolution map). This bypasses
+    // injectReply's forced REPLY_RECEIVED transition, which is invalid here.
+    if (instance.currentState === "AWAITING_BRAND_DECISION") {
+      try {
+        await runtime.handleBrandDecisionReply(instanceId, {
+          subject,
+          body,
+          threadId,
+          externalMessageId,
+          worker: "inbound-email",
+          queueJobId: job.id,
+        });
+      } catch (err) {
+        if (err instanceof StaleInstanceError) {
+          console.log(
+            `[inbound-email] OCC conflict on handleBrandDecisionReply — ${err.message} (job ${job.id})`,
+          );
+          return;
+        }
+        throw err;
+      }
+
+      // The brand reply may have advanced the instance to a state that needs a
+      // node-execution job to continue — this happens here (inbound worker), not
+      // via a node-execution job, so the node-execution worker's auto-chain never
+      // sees it. Enqueue the next step so the run resumes:
+      //   ACCEPTED / REWARD_CONFIRMED / PAYMENT_RECEIVED → L4 config-fix wrote the
+      //     brand name back and transitioned to the blocked node's run-from state;
+      //     re-enqueue so the SAME node re-runs, now with a resolvable name.
+      //   NEGOTIATING → forward-compat for a future final-offer resolution (no
+      //     brand-decision outcome lands here in this pass).
+      const afterBrand = await findInstanceById(instanceId);
+      const resumeState = afterBrand?.currentState;
+      const RESUME_STATES = ["NEGOTIATING", "ACCEPTED", "REWARD_CONFIRMED", "PAYMENT_RECEIVED"] as const;
+      if (resumeState && (RESUME_STATES as readonly string[]).includes(resumeState)) {
+        await enqueueNodeExecution({
+          instanceId,
+          expectedState: resumeState,
+          triggerRef: `auto-resume-${instanceId}-brand-msg-${externalMessageId}`,
+        });
+        console.log(
+          `[inbound-email] auto-enqueued resume step for ${instanceId} (brand decision → ${resumeState}, reply ${externalMessageId})`,
+        );
+      }
+      return;
+    }
+
     // ── Payment Info reply branch ──────────────────────────────────────────
     // A reply that arrives while the instance is in PAYMENT_PENDING is an email
     // sent while we're waiting on the creator's hosted payout FORM — usually a

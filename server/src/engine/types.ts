@@ -65,6 +65,19 @@ export interface ClassifyResult {
   confidence: number;
 }
 
+// BrandDecisionClassifyResult — returned by IAgentProvider.classifyBrandDecision().
+// The AI fallback for parsing a brand's escalation reply (§2.4), used only when
+// the deterministic token scan finds no explicit cue. `decision` is the parsed
+// action; `value` is the counter amount when decision === "COUNTER". A
+// confidence below the threshold is treated as AMBIGUOUS by the caller. The
+// adapter degrades to AMBIGUOUS/0 when the agent is down — a money decision is
+// never guessed on a degraded agent.
+export interface BrandDecisionClassifyResult {
+  decision: "APPROVE" | "REJECT" | "COUNTER" | "HANDOFF" | "AMBIGUOUS";
+  confidence: number;
+  value?: number;
+}
+
 // NegotiateResult — returned by MockAgentProvider.negotiate()
 //   present_offer: the creator asked about terms (no number proposed); present
 //   the fee+commission but do NOT consume a negotiation round (informational).

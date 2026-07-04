@@ -5,7 +5,8 @@ import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { resolveBand } from "../band.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
-import { blockedByGuard, blockedByMissingBrand } from "./guardEscalation.js";
+import { blockedByGuard } from "./guardEscalation.js";
+import { openMissingBrandDecision } from "./brandDecision.js";
 import { renderRewardConfirmationEmail } from "./rewardEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
 
@@ -123,7 +124,9 @@ export async function executeRewardSetup(
   // loud to MANUAL_REVIEW rather than email the creator "your brand".
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    return blockedByMissingBrand("REWARD_SETUP");
+    // L4 config-fix: instead of dead-ending in MANUAL_REVIEW, ask the brand for
+    // the missing name by email and re-run this node once it's supplied.
+    return openMissingBrandDecision(ctx, email);
   }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;

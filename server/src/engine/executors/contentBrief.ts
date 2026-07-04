@@ -5,7 +5,7 @@ import { readStoredFile } from "../../storage/localFileStorage.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderContentBriefEmail } from "./contentBriefEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
-import { blockedByMissingBrand } from "./guardEscalation.js";
+import { openMissingBrandDecision } from "./brandDecision.js";
 
 // ---------------------------------------------------------------------------
 // Content Brief executor
@@ -74,7 +74,9 @@ export async function executeContentBrief(
   //    neither has it, fail loud to MANUAL_REVIEW rather than email "your brand".
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    return blockedByMissingBrand("CONTENT_BRIEF");
+    // L4 config-fix: ask the brand for the missing name by email and re-run this
+    // node once it's supplied, instead of dead-ending in MANUAL_REVIEW.
+    return openMissingBrandDecision(ctx, email);
   }
   const draft = {
     ...renderContentBriefEmail({

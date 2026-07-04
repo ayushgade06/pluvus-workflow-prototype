@@ -37,6 +37,7 @@ async function runAsync(name: string, fn: () => Promise<void>): Promise<void> {
 function stubAgent(intent: ClassifyResult["intent"], confidence = 0.9): IAgentProvider {
   return {
     classify: async (): Promise<ClassifyResult> => ({ intent, confidence }),
+    classifyBrandDecision: async () => ({ decision: "AMBIGUOUS" as const, confidence: 0 }),
     negotiate: async (): Promise<NegotiateResult> => ({ outcome: "escalate", message: "" }),
     draftEmail: async (): Promise<EmailDraft | null> => null,
   };
@@ -127,6 +128,9 @@ await runAsync("'yes but $600' is not confirmed even if classifier says POSITIVE
 const throwingAgent: IAgentProvider = {
   classify: async () => {
     throw new Error("classifier should not be called on a deterministic match");
+  },
+  classifyBrandDecision: async () => {
+    throw new Error("classifyBrandDecision should not be called on a deterministic match");
   },
   negotiate: async (): Promise<NegotiateResult> => ({ outcome: "escalate", message: "" }),
   draftEmail: async () => null,
