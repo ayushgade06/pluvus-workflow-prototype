@@ -102,12 +102,14 @@ async function handleNodeExecution(
   //   OUTREACH_SENT  — follow-up node must run to set dueAt → AWAITING_REPLY
   //   FOLLOWED_UP    — follow-up node reschedules → AWAITING_REPLY
   //   NEGOTIATING    — negotiation executor sends counter/accept immediately
-  //   ACCEPTED       — negotiation succeeded; Reward Setup runs immediately to
-  //                    send the agreement-confirmation email → REWARD_PENDING
-  //   REWARD_CONFIRMED — agreement confirmed; Payment Info runs immediately to
-  //                    send the payout-form email → PAYMENT_PENDING
-  //   PAYMENT_RECEIVED — payout collected; Content Brief runs immediately to send
-  //                    the campaign-brief email → CONTENT_BRIEF_SENT (terminal)
+  //   ACCEPTED       — negotiation succeeded; the post-acceptance node runs
+  //                    immediately. Merged flow: Content Brief sends the merged
+  //                    offer + payout link + brief email → PAYMENT_PENDING. Legacy:
+  //                    Reward Setup sends the confirmation email → REWARD_PENDING
+  //   REWARD_CONFIRMED — (legacy) agreement confirmed; Payment Info runs immediately
+  //                    to send the payout-form email → PAYMENT_PENDING
+  //   PAYMENT_RECEIVED — (legacy) payout collected; Content Brief runs immediately
+  //                    to send the campaign-brief email → CONTENT_BRIEF_SENT
   //
   // AWAITING_REPLY, REWARD_PENDING and PAYMENT_PENDING are intentionally excluded:
   // they wait for a real reply / form submission (or a scheduled follow-up),
@@ -122,21 +124,26 @@ async function handleNodeExecution(
       `[node-execution] auto-enqueued follow-up step for ${instanceId} (${newState})`,
     );
   } else if (newState === "ACCEPTED") {
-    // Only auto-chain into Reward Setup when the workflow actually has a
-    // REWARD_SETUP node. Legacy workflows (END-terminated) leave ACCEPTED as the
+    // Auto-chain into the post-acceptance node: the CONTENT_BRIEF node in the
+    // merged flow, or the legacy REWARD_SETUP node. loadContext resolves ACCEPTED
+    // to whichever node is present, so the enqueued step dispatches correctly.
+    // Legacy workflows with neither node (END-terminated) leave ACCEPTED as the
     // final state — the pre-Reward-Setup behavior.
-    if (await runtime.rewardSetupApplies(instanceId)) {
+    if (
+      (await runtime.rewardSetupApplies(instanceId)) ||
+      (await runtime.contentBriefApplies(instanceId))
+    ) {
       await enqueueNodeExecution({
         instanceId,
         expectedState: "ACCEPTED",
-        triggerRef: `auto-reward-setup-${instanceId}`,
+        triggerRef: `auto-post-accept-${instanceId}`,
       });
       console.log(
-        `[node-execution] auto-enqueued reward-setup step for ${instanceId} (ACCEPTED)`,
+        `[node-execution] auto-enqueued post-accept step for ${instanceId} (ACCEPTED)`,
       );
     } else {
       console.log(
-        `[node-execution] ${instanceId} ACCEPTED with no Reward Setup node — leaving as final state`,
+        `[node-execution] ${instanceId} ACCEPTED with no post-acceptance node — leaving as final state`,
       );
     }
   } else if (newState === "REWARD_CONFIRMED") {

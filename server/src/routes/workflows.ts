@@ -113,15 +113,16 @@ function restampBrand(
 }
 
 // ---------------------------------------------------------------------------
-// Mirror the negotiation commission onto the Reward Setup node.
+// Mirror the negotiation commission onto the post-negotiation email node(s).
 // ---------------------------------------------------------------------------
-// The brand decides the commission % on the NEGOTIATION node. The Reward Setup
-// node displays + emails the finalized commission, so it must always reflect the
-// CURRENT negotiation value — not a stale copy. Unlike the brand fields above
-// (preserve-if-present), this OVERWRITES the reward node's commissionRate every
-// save so editing the negotiation node keeps the reward node in sync. Deliverables
-// are already carried by restampBrand from the campaign; commission is the one
-// field sourced from another node, so it's stamped here.
+// The brand decides the commission % on the NEGOTIATION node. The node that
+// emails the finalized commission — CONTENT_BRIEF in the merged flow, or the
+// legacy REWARD_SETUP node — must always reflect the CURRENT negotiation value,
+// not a stale copy. Unlike the brand fields above (preserve-if-present), this
+// OVERWRITES the target node's commissionRate every save so editing the
+// negotiation node keeps it in sync. Deliverables are already carried by
+// restampBrand from the campaign; commission is the one field sourced from
+// another node, so it's stamped here.
 export function stampRewardFromNegotiation(nodes: unknown): unknown {
   if (!Array.isArray(nodes)) return nodes;
 
@@ -132,13 +133,13 @@ export function stampRewardFromNegotiation(nodes: unknown): unknown {
   const negConfig = (negotiation?.config ?? {}) as Record<string, unknown>;
   const commission = negConfig["commissionRate"];
   // Only a positive number is a real commission; 0/absent means fixed-fee only,
-  // in which case the reward node should carry no commissionRate.
+  // in which case the target node should carry no commissionRate.
   const hasCommission = typeof commission === "number" && commission > 0;
 
   return nodes.map((node) => {
     if (!node || typeof node !== "object") return node;
     const n = node as { type?: unknown; config?: unknown; [k: string]: unknown };
-    if (n.type !== "REWARD_SETUP") return node;
+    if (n.type !== "REWARD_SETUP" && n.type !== "CONTENT_BRIEF") return node;
     const config = (n.config && typeof n.config === "object" ? n.config : {}) as Record<
       string,
       unknown

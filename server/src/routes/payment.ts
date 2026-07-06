@@ -41,12 +41,13 @@ function brandNameOf(
   return payment?.instance.workflowVersion.workflow.campaign?.brand ?? "Your brand";
 }
 
-// Whether this campaign ships a physical product — read off the (stamped)
-// PAYMENT_INFO node config in the immutable version's nodeGraph. This is the
-// authoritative gate for the shipping-address section: the flag is stamped into
-// every node by restampBrand, and reading it from the version (not the mutable
-// campaign) keeps the hosted form pinned to what was published. Exported so the
-// verification harness can assert the gate against a real payment row.
+// Whether this campaign ships a physical product — read off the (stamped) config
+// of the payout-collection node in the immutable version's nodeGraph. That is the
+// CONTENT_BRIEF node in the merged flow, or the legacy PAYMENT_INFO node. This is
+// the authoritative gate for the shipping-address section: the flag is stamped
+// into every node by restampBrand, and reading it from the version (not the
+// mutable campaign) keeps the hosted form pinned to what was published. Exported
+// so the verification harness can assert the gate against a real payment row.
 export function shipsPhysicalProductOf(
   payment: Awaited<ReturnType<typeof findPaymentInfoByToken>>,
 ): boolean {
@@ -55,7 +56,7 @@ export function shipsPhysicalProductOf(
   for (const n of graph) {
     if (!n || typeof n !== "object" || Array.isArray(n)) continue;
     const node = n as Record<string, unknown>;
-    if (node["type"] !== "PAYMENT_INFO") continue;
+    if (node["type"] !== "PAYMENT_INFO" && node["type"] !== "CONTENT_BRIEF") continue;
     const config =
       node["config"] && typeof node["config"] === "object"
         ? (node["config"] as Record<string, unknown>)
@@ -231,9 +232,12 @@ router.post("/:token", async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Auto-chain into Content Brief ──────────────────────────────────────
-    // handlePaymentSubmission advanced the instance to PAYMENT_RECEIVED here (the
-    // payment route), NOT via a node-execution job, so the node-execution worker's
+    // ── Auto-chain into Content Brief (legacy Payment Info graphs only) ───────
+    // In the MERGED flow the Content Brief node owns PAYMENT_PENDING, so
+    // handlePaymentSubmission steps it straight to CONTENT_BRIEF_SENT (terminal)
+    // and this block no-ops (currentState is not PAYMENT_RECEIVED). In LEGACY
+    // graphs the Payment Info node advances to PAYMENT_RECEIVED here (the payment
+    // route), NOT via a node-execution job, so the node-execution worker's
     // auto-chain never sees it — exactly like the reward reply in the inbound
     // worker. Enqueue the Content Brief step so a completed payout flows straight
     // into the campaign-brief email (guarded for legacy graphs without a

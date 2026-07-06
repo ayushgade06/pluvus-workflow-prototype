@@ -865,13 +865,16 @@ function PaymentInfoInfo({ config }: { config: Record<string, unknown> }) {
 }
 
 // ---------------------------------------------------------------------------
-// Content Brief form (configurable)
+// Content Brief form (configurable) — merged post-negotiation node
 // ---------------------------------------------------------------------------
-// Sends the campaign brief once payout info is collected. The brand uploads the
-// Campaign Brief PDF (required to launch) and optionally sets a referral link +
-// creator notes here, before launch. The PDF is uploaded to the server's local
-// storage on select; only its stored reference + original filename are persisted
-// in node config — never the bytes.
+// Sends the merged email (finalized offer + secure payout link + campaign brief
+// PDF) right after a successful negotiation, then waits for the payout form. The
+// brand uploads the Campaign Brief PDF (required to launch) and optionally sets a
+// referral link + creator notes here, before launch. The offer fields (fee /
+// commission / deliverables) are stamped from the campaign / negotiation config,
+// not entered here. The PDF is uploaded to the server's local storage on select;
+// only its stored reference + original filename are persisted in node config —
+// never the bytes.
 
 function ContentBriefForm({
   nodeId,
@@ -948,9 +951,11 @@ function ContentBriefForm({
   return (
     <FormStack>
       <InfoBox>
-        Runs after the creator submits their payout info. Emails the{" "}
-        <strong>campaign brief PDF</strong> with the referral link and any notes,
-        then completes — there is no creator acknowledgement or approval step.
+        Runs right after a successful negotiation. Sends the creator{" "}
+        <strong>one email</strong> with the finalized offer (fee, commission &
+        deliverables), a <strong>secure payout link</strong>, and the{" "}
+        <strong>campaign brief PDF</strong> (plus the referral link and any notes),
+        then waits for them to submit their payout details.
       </InfoBox>
 
       <Section title="Campaign Brief PDF">
@@ -1062,11 +1067,13 @@ function ContentBriefForm({
 
       <Section title="Status">
         <Badge color={hasBrief ? stateColor["CONTENT_BRIEF_SENT"] : colors.warning} dot>
-          {hasBrief ? "Ready to send on payout" : "Brief PDF required"}
+          {hasBrief ? "Ready to send on acceptance" : "Brief PDF required"}
         </Badge>
         <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 8 }}>
-          The brief email sends automatically once payout info is received, moving
-          the creator to <strong>{stateLabel["CONTENT_BRIEF_SENT"]}</strong>.
+          The merged email sends automatically once the negotiation is accepted,
+          moving the creator to <strong>{stateLabel["PAYMENT_PENDING"]}</strong>.
+          Submitting the payout form then completes the run at{" "}
+          <strong>{stateLabel["CONTENT_BRIEF_SENT"]}</strong>.
         </div>
       </Section>
     </FormStack>

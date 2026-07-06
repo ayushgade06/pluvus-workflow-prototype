@@ -12,14 +12,15 @@ import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "../components/b
 // Types a user may add from the palette. IMPORT_CREATOR_LIST is an implicit
 // entry concept (creators enroll into the first node) and END is legacy, so the
 // palette exposes the meaningful building blocks. Terminal nodes are addable so
-// users can build a complete pipeline from scratch.
+// users can build a complete pipeline from scratch. REWARD_SETUP and PAYMENT_INFO
+// are deprecated (merged into CONTENT_BRIEF, which now sends the finalized offer +
+// payout link + brief in one email) — kept as valid types so legacy published
+// graphs still render, but removed from the palette so new drafts don't add them.
 export const PALETTE_NODE_TYPES: NodeType[] = [
   "INITIAL_OUTREACH",
   "FOLLOW_UP",
   "REPLY_DETECTION",
   "NEGOTIATION",
-  "REWARD_SETUP",
-  "PAYMENT_INFO",
   "CONTENT_BRIEF",
 ];
 

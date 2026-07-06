@@ -71,4 +71,28 @@ test("no negotiation node → reward node commission cleared, no crash", () => {
   assert.equal("commissionRate" in rewardConfig(out), false);
 });
 
+// ── Merged flow: Content Brief is the post-negotiation email node ─────────────
+test("copies the negotiation commission onto the CONTENT_BRIEF node (merged flow)", () => {
+  const nodes: Node[] = [
+    { id: "neg", type: "NEGOTIATION", order: 0, config: { commissionRate: 18 } },
+    { id: "brief", type: "CONTENT_BRIEF", order: 1, config: { briefFileRef: "ref-1" } },
+  ];
+  const out = stampRewardFromNegotiation(nodes) as Node[];
+  const brief = out.find((x) => x.type === "CONTENT_BRIEF")!;
+  assert.equal(brief.config["commissionRate"], 18);
+  // Unrelated brief config is preserved.
+  assert.equal(brief.config["briefFileRef"], "ref-1");
+});
+
+test("clears a stale commission on CONTENT_BRIEF for a fixed-fee deal", () => {
+  const nodes: Node[] = [
+    { id: "neg", type: "NEGOTIATION", order: 0, config: {} },
+    { id: "brief", type: "CONTENT_BRIEF", order: 1, config: { commissionRate: 9, briefFileRef: "ref-2" } },
+  ];
+  const out = stampRewardFromNegotiation(nodes) as Node[];
+  const brief = out.find((x) => x.type === "CONTENT_BRIEF")!;
+  assert.equal("commissionRate" in brief.config, false);
+  assert.equal(brief.config["briefFileRef"], "ref-2");
+});
+
 console.log(`\n${n} passed\n`);

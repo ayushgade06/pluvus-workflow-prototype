@@ -1,8 +1,7 @@
 import { listEventsByInstance } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
-import { buildPriorContextFromEvents } from "./negotiationHistory.js";
-import { resolveBand } from "../band.js";
+import { resolveAgreedFee, firstNumber, firstString } from "./agreedFee.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
 import { blockedByGuard } from "./guardEscalation.js";
@@ -26,44 +25,10 @@ import { resolveBrandName } from "../campaignContext.js";
 // executeRewardReply (driven by the inbound-email worker) which advances the
 // instance to REWARD_CONFIRMED on a positive reply.
 
-/**
- * Resolve the final agreed fee for the deal.
- *
- * The negotiation persists the agreed rate on the ACCEPT NEGOTIATION_TURN event
- * (FIX-2). buildPriorContextFromEvents surfaces the last rate we put on the
- * table as `currentOffer`, which for a closed deal is exactly the agreed fee.
- * Falls back to the negotiation band (ceiling → floor), so the email always has
- * a concrete number to show even for legacy/mocked instances. The band comes
- * from the NEGOTIATION node config (minBudget/maxBudget), with the reward node's
- * own config as a secondary fallback.
- */
-export function resolveAgreedFee(
-  events: Awaited<ReturnType<typeof listEventsByInstance>>,
-  negotiationConfig: Record<string, unknown>,
-  fallbackConfig: Record<string, unknown> = {},
-): number | undefined {
-  const prior = buildPriorContextFromEvents(events);
-  if (prior.currentOffer !== undefined) return prior.currentOffer;
-  const negBand = resolveBand(negotiationConfig);
-  const fbBand = resolveBand(fallbackConfig);
-  return negBand.ceiling ?? negBand.floor ?? fbBand.ceiling ?? fbBand.floor;
-}
-
-/** First finite number among the candidates, else undefined. */
-function firstNumber(...candidates: unknown[]): number | undefined {
-  for (const c of candidates) {
-    if (typeof c === "number" && Number.isFinite(c)) return c;
-  }
-  return undefined;
-}
-
-/** First non-empty string among the candidates, else undefined. */
-function firstString(...candidates: unknown[]): string | undefined {
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) return c;
-  }
-  return undefined;
-}
+// resolveAgreedFee (plus firstNumber/firstString) now live in ./agreedFee.ts so
+// the Content Brief executor can share the finalized-terms resolution. Re-exported
+// here to keep existing importers (rewardReply, paymentReply, tests) unchanged.
+export { resolveAgreedFee };
 
 export async function executeRewardSetup(
   ctx: ExecutionContext,

@@ -34,7 +34,7 @@ import { openMissingBrandDecision } from "./brandDecision.js";
  * second token / link. If a row already exists we reuse its token; otherwise we
  * create one, tolerating a concurrent create (P2002) by re-reading.
  */
-async function resolvePaymentToken(instanceId: string): Promise<string> {
+export async function resolvePaymentToken(instanceId: string): Promise<string> {
   const existing = await findPaymentInfoByInstance(instanceId);
   if (existing) return existing.token;
   try {

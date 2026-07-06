@@ -263,13 +263,16 @@ export async function executeNegotiation(
     );
   }
 
-  // When the workflow has a Reward Setup node, it owns the post-acceptance
-  // confirmation email ("Campaign Agreement Confirmation" → asks the creator to
-  // reply "I Agree"). In that case the negotiation ACCEPT must NOT also send its
-  // own onboarding/acceptance email, or the creator gets two overlapping emails.
-  // Legacy workflows (no REWARD_SETUP node) keep sending the onboarding email as
-  // the final touch.
-  const hasRewardSetup = nodeGraph.some((n) => n.type === "REWARD_SETUP");
+  // When a downstream node owns the post-acceptance email, the negotiation ACCEPT
+  // must NOT also send its own onboarding/acceptance email, or the creator gets
+  // two overlapping emails. In the merged flow the CONTENT_BRIEF node sends the
+  // single "Your Campaign Brief" email (finalized terms + payout link + PDF);
+  // legacy graphs let the REWARD_SETUP node send the "Campaign Agreement
+  // Confirmation" ("I Agree") email. Legacy workflows with neither node keep
+  // sending the onboarding email here as the final touch.
+  const hasPostAcceptEmailNode = nodeGraph.some(
+    (n) => n.type === "REWARD_SETUP" || n.type === "CONTENT_BRIEF",
+  );
 
   const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
 
@@ -371,11 +374,14 @@ export async function executeNegotiation(
     }
 
     case "accept": {
-      // Reward Setup present → it owns the post-acceptance email. Skip the
-      // negotiation's own onboarding/acceptance send entirely and just transition
-      // to ACCEPTED; the Reward Setup node then sends the single, properly
-      // formatted "Campaign Agreement Confirmation" (bulleted terms + "I Agree").
-      if (hasRewardSetup) {
+      // A post-acceptance email node (Content Brief in the merged flow, or legacy
+      // Reward Setup) owns the post-acceptance email. Skip the negotiation's own
+      // onboarding/acceptance send entirely and just transition to ACCEPTED; the
+      // downstream node then sends the single, properly formatted email (merged
+      // brief, or the "Campaign Agreement Confirmation" for legacy graphs). The
+      // agreed rate is persisted on the NEGOTIATION_TURN payload so resolveAgreedFee
+      // can recover it as the finalized offer.
+      if (hasPostAcceptEmailNode) {
         return {
           nextState: "ACCEPTED",
           nextNodeId: null,

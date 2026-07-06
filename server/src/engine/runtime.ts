@@ -27,6 +27,7 @@ import {
   executePaymentSubmission,
   executePaymentReply,
   executeContentBrief,
+  executeContentBriefSubmission,
   executeBrandDecision,
   executeEnd,
 } from "./executors/index.js";
@@ -100,31 +101,40 @@ export class WorkflowRuntime {
       node = nodeGraph.find((n) => n.id === nodeId);
     }
 
-    // Reward Setup handoff: the negotiation ACCEPT clears currentNodeId (it sets
+    // Post-accept handoff: the negotiation ACCEPT clears currentNodeId (it sets
     // nextNodeId: null on the terminal-looking transition). When the instance is
-    // in the Reward Setup lifecycle (ACCEPTED just succeeded, or REWARD_PENDING),
-    // resolve to the REWARD_SETUP node so its executor runs rather than falling
-    // back to the first node. This keeps the negotiation executor untouched.
+    // ACCEPTED (or in the legacy REWARD_PENDING lifecycle), resolve to the node
+    // that owns the post-acceptance email so its executor runs rather than falling
+    // back to the first node. In the merged flow that is the CONTENT_BRIEF node;
+    // legacy graphs still resolve to REWARD_SETUP. This keeps the negotiation
+    // executor untouched.
     if (
       !node &&
       (instance.currentState === "ACCEPTED" || instance.currentState === "REWARD_PENDING")
     ) {
       node = nodeGraph.find((n) => n.type === "REWARD_SETUP");
+      if (!node && instance.currentState === "ACCEPTED") {
+        node = nodeGraph.find((n) => n.type === "CONTENT_BRIEF");
+      }
     }
 
-    // Payment Info handoff: mirrors the Reward Setup resolution above. In the
-    // Payment Info lifecycle (REWARD_CONFIRMED just landed, or PAYMENT_PENDING)
-    // the PAYMENT_INFO node is authoritative. REWARD_CONFIRMED can ONLY mean
-    // "hand off to Payment Info" (the reward node never handles it), so resolve to
-    // the PAYMENT_INFO node even when currentNodeId still points at the reward
-    // node — not just when it failed to resolve. This keeps dispatch state-driven.
+    // Payout-collection handoff: mirrors the resolution above. The PAYMENT_PENDING
+    // waiting state is owned by whichever node collects payout — the CONTENT_BRIEF
+    // node in the merged flow, or the legacy PAYMENT_INFO node. Resolve to
+    // PAYMENT_INFO when that node exists (legacy graphs), otherwise to CONTENT_BRIEF
+    // (merged graphs). REWARD_CONFIRMED is legacy-only and can ONLY mean "hand off
+    // to Payment Info". Resolve even when currentNodeId still points at the prior
+    // node — not just when it failed to resolve — so dispatch stays state-driven.
     if (
       instance.currentState === "REWARD_CONFIRMED" ||
       instance.currentState === "PAYMENT_PENDING"
     ) {
       const paymentNode = nodeGraph.find((n) => n.type === "PAYMENT_INFO");
-      if (paymentNode && node?.type !== "PAYMENT_INFO") {
-        node = paymentNode;
+      if (paymentNode) {
+        if (node?.type !== "PAYMENT_INFO") node = paymentNode;
+      } else if (instance.currentState === "PAYMENT_PENDING") {
+        const contentBriefNode = nodeGraph.find((n) => n.type === "CONTENT_BRIEF");
+        if (contentBriefNode && node?.type !== "CONTENT_BRIEF") node = contentBriefNode;
       }
     }
 
@@ -820,10 +830,17 @@ export class WorkflowRuntime {
         return state;
       }
 
-      // Backward compatibility: a workflow published before Reward Setup has no
-      // REWARD_SETUP node. For those, ACCEPTED is effectively terminal (there is
-      // nowhere to advance to), so stop here rather than trying to step it.
-      if (state === "ACCEPTED" && !hasRewardSetupNode(ctx.nodeGraph)) {
+      // Backward compatibility: a workflow published before both Reward Setup and
+      // Content Brief has neither node. For those, ACCEPTED is effectively terminal
+      // (there is nowhere to advance to), so stop here rather than trying to step
+      // it. When a CONTENT_BRIEF node IS present (merged flow), ACCEPTED is NOT a
+      // stop state — the loop steps into the merged email send, which lands on
+      // PAYMENT_PENDING (a stop state below).
+      if (
+        state === "ACCEPTED" &&
+        !hasRewardSetupNode(ctx.nodeGraph) &&
+        !hasContentBriefNode(ctx.nodeGraph)
+      ) {
         return state;
       }
 
@@ -859,8 +876,9 @@ export class WorkflowRuntime {
         return state;
       }
 
-      // Stop at PAYMENT_PENDING — Payment Info waits for the creator's payout
-      // form submission (delivered via handlePaymentSubmission), same as above.
+      // Stop at PAYMENT_PENDING — the payout-collection node (Content Brief in the
+      // merged flow, or legacy Payment Info) waits for the creator's payout form
+      // submission (delivered via handlePaymentSubmission), same as above.
       if (state === "PAYMENT_PENDING") {
         return state;
       }
@@ -965,9 +983,24 @@ export class WorkflowRuntime {
         }
         return executePaymentInfo(ctx, this.email, this.agent);
       case "CONTENT_BRIEF":
-        // Content Brief has a single phase: on PAYMENT_RECEIVED it sends the
-        // campaign-brief email (PDF attachment + referral link) and completes
-        // immediately. There is no waiting state / creator reply to handle.
+        // Content Brief is the merged post-negotiation node. Phases keyed on state:
+        //   ACCEPTED                     → send the merged email (finalized offer +
+        //                                  payout link + brief PDF), enter waiting
+        //   PAYMENT_PENDING + submission → the creator submitted the payout form;
+        //                                  finalize to the CONTENT_BRIEF_SENT terminal
+        //   PAYMENT_PENDING + reply      → an inbound EMAIL arrived (often a
+        //                                  re-negotiation attempt); send the "rate
+        //                                  is fixed" auto-reply and stay waiting
+        //   PAYMENT_RECEIVED             → legacy path: Payment Info already
+        //                                  collected payout; send the brief-only
+        //                                  email and complete.
+        // The submission phase is driven via handlePaymentSubmission (the hosted
+        // payment route); the reply phase via handlePaymentReply (inbound worker).
+        if (ctx.instance.currentState === "PAYMENT_PENDING") {
+          return phase === "reply"
+            ? executePaymentReply(ctx, this.email, this.agent)
+            : executeContentBriefSubmission(ctx, this.email, this.agent);
+        }
         return executeContentBrief(ctx, this.email, this.agent);
       case "END":
         return executeEnd(ctx, this.email, this.agent);

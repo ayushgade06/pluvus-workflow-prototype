@@ -57,7 +57,7 @@ export const NODE_DESCRIPTION: Record<NodeType, string> = {
   PAYMENT_INFO:
     "Collects the creator's payout details via a secure hosted form, then resumes the workflow.",
   CONTENT_BRIEF:
-    "Emails the campaign brief (PDF) with the referral link and optional notes, then completes.",
+    "After a successful negotiation, sends one email with the finalized offer, a secure payout link, and the campaign brief PDF, then waits for the creator to submit their payout details.",
   END: "Terminal node — marks the creator's journey complete.",
 };
 
@@ -117,7 +117,7 @@ export function configSummary(node: DraftNode): string {
     case "CONTENT_BRIEF": {
       const hasBrief = typeof cfg["briefFileRef"] === "string" && !!(cfg["briefFileRef"] as string);
       return hasBrief
-        ? "Campaign brief PDF · referral link · sends on payout"
+        ? "Finalized offer + payout link + brief PDF · awaits payout"
         : "Upload a campaign brief PDF to launch";
     }
     case "END":
@@ -181,18 +181,17 @@ export function configChips(node: DraftNode): string[] {
       // Payout method + the fields the hosted form collects, then the wait state.
       return ["payout method", "account id", "hosted form", "awaits submission"];
     case "CONTENT_BRIEF": {
-      // Brief (Uploaded/Missing) · Referral (Configured/Missing) · Notes
-      // (Present/Empty) · Email (Pending in the builder — sent at runtime).
+      // Offer + payout link are always in the merged email · Brief (Uploaded/
+      // Missing) · Referral (Configured/Missing) · then the payout wait state.
       const hasBrief = typeof cfg["briefFileRef"] === "string" && !!(cfg["briefFileRef"] as string);
       const hasReferral =
         typeof cfg["referralLink"] === "string" && !!(cfg["referralLink"] as string).trim();
-      const hasNotes =
-        typeof cfg["creatorNotes"] === "string" && !!(cfg["creatorNotes"] as string).trim();
       return [
+        "finalized offer",
+        "payout link",
         hasBrief ? "brief uploaded" : "brief missing",
         hasReferral ? "referral set" : "no referral",
-        hasNotes ? "notes" : "no notes",
-        "email pending",
+        "awaits payout",
       ];
     }
     default:
@@ -218,8 +217,10 @@ const TYPE_TO_STATE: Record<string, string> = {
   REWARD_SETUP: "REWARD_PENDING",
   // Payment Info surfaces creators currently awaiting their payout-form submission.
   PAYMENT_INFO: "PAYMENT_PENDING",
-  // Content Brief surfaces creators whose campaign brief has been sent (terminal).
-  CONTENT_BRIEF: "CONTENT_BRIEF_SENT",
+  // Content Brief owns the payout-collection wait in the merged flow, so it
+  // surfaces creators currently awaiting their payout-form submission (the active
+  // bucket) rather than the terminal CONTENT_BRIEF_SENT.
+  CONTENT_BRIEF: "PAYMENT_PENDING",
   END: "ACCEPTED",
 };
 

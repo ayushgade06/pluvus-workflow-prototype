@@ -72,14 +72,16 @@ const EDGES: Array<[InstanceState, InstanceState, boolean?]> = [
   ["NEGOTIATING", "ACCEPTED"],
   ["NEGOTIATING", "REJECTED"],
   ["NEGOTIATING", "MANUAL_REVIEW"],
-  ["ACCEPTED", "REWARD_PENDING"], // auto-chain into Reward Setup
+  ["ACCEPTED", "PAYMENT_PENDING"], // merged flow: auto-chain into Content Brief (sends offer + payout link + brief)
+  ["PAYMENT_PENDING", "CONTENT_BRIEF_SENT"], // merged flow: creator submits payout form → terminal
+  ["ACCEPTED", "REWARD_PENDING"], // legacy: auto-chain into Reward Setup
   ["REWARD_PENDING", "REWARD_PENDING", true], // self-loop (non-confirming reply)
   ["REWARD_PENDING", "REWARD_CONFIRMED"], // creator confirms
   ["REWARD_PENDING", "MANUAL_REVIEW"],
-  ["REWARD_CONFIRMED", "PAYMENT_PENDING"], // auto-chain into Payment Info
-  ["PAYMENT_PENDING", "PAYMENT_RECEIVED"], // creator submits the payout form
+  ["REWARD_CONFIRMED", "PAYMENT_PENDING"], // legacy: auto-chain into Payment Info
+  ["PAYMENT_PENDING", "PAYMENT_RECEIVED"], // legacy: creator submits the payout form
   ["PAYMENT_PENDING", "MANUAL_REVIEW"],
-  ["PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT"], // auto-chain into Content Brief
+  ["PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT"], // legacy: auto-chain into Content Brief
 ];
 
 interface Props {

@@ -74,27 +74,15 @@ const affiliateNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-reward-setup",
-    type: "REWARD_SETUP",
-    order: 4,
-    // No config needed: the finalized commission is read at runtime from the
-    // NEGOTIATION node (the brand's single source of truth), and deliverables are
-    // stamped from the campaign.
-    config: {},
-  },
-  {
-    id: "node-payment-info",
-    type: "PAYMENT_INFO",
-    order: 5,
-    // No config needed: the payout-form link + email are derived at runtime.
-    config: {},
-  },
-  {
     id: "node-content-brief",
     type: "CONTENT_BRIEF",
-    order: 6,
-    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
-    // a referral link + creator notes in the builder before launch.
+    order: 4,
+    // The merged post-negotiation node: on ACCEPTED it sends ONE email with the
+    // finalized offer (commission read from the NEGOTIATION node, deliverables
+    // stamped from the campaign), a secure payout-form link, and the campaign
+    // brief PDF, then waits for the creator to submit the form. The brand uploads
+    // the Campaign Brief PDF (briefFileRef) and optionally sets a referral link +
+    // creator notes in the builder before launch.
     config: {},
   },
 ];
@@ -155,26 +143,14 @@ const hybridNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-reward-setup",
-    type: "REWARD_SETUP",
-    order: 4,
-    // Commission is read at runtime from the NEGOTIATION node; deliverables from
-    // the campaign.
-    config: {},
-  },
-  {
-    id: "node-payment-info",
-    type: "PAYMENT_INFO",
-    order: 5,
-    // No config needed: the payout-form link + email are derived at runtime.
-    config: {},
-  },
-  {
     id: "node-content-brief",
     type: "CONTENT_BRIEF",
-    order: 6,
-    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
-    // a referral link + creator notes in the builder before launch.
+    order: 4,
+    // The merged post-negotiation node: sends the finalized offer + secure payout
+    // link + campaign brief PDF in one email, then waits for the payout form.
+    // Commission is read at runtime from the NEGOTIATION node; deliverables from
+    // the campaign. The brand uploads the Campaign Brief PDF (briefFileRef) and
+    // optionally sets a referral link + creator notes in the builder before launch.
     config: {},
   },
 ];
@@ -235,25 +211,14 @@ const fixedFeeNodes: NodeSnapshot[] = [
     },
   },
   {
-    id: "node-reward-setup",
-    type: "REWARD_SETUP",
-    order: 4,
-    // Fixed-fee campaign: no commission component.
-    config: {},
-  },
-  {
-    id: "node-payment-info",
-    type: "PAYMENT_INFO",
-    order: 5,
-    // No config needed: the payout-form link + email are derived at runtime.
-    config: {},
-  },
-  {
     id: "node-content-brief",
     type: "CONTENT_BRIEF",
-    order: 6,
-    // The brand uploads the Campaign Brief PDF (briefFileRef) and optionally sets
-    // a referral link + creator notes in the builder before launch.
+    order: 4,
+    // The merged post-negotiation node: sends the finalized offer + secure payout
+    // link + campaign brief PDF in one email, then waits for the payout form.
+    // Fixed-fee campaign: no commission component. The brand uploads the Campaign
+    // Brief PDF (briefFileRef) and optionally sets a referral link + creator notes
+    // in the builder before launch.
     config: {},
   },
 ];
@@ -346,10 +311,14 @@ export function validateNodeGraph(nodes: unknown): { valid: boolean; errors: str
   if (!types.includes("INITIAL_OUTREACH")) {
     errors.push("workflow must include an INITIAL_OUTREACH node");
   }
-  // The workflow must end in a terminal node: REWARD_SETUP (current) or END
-  // (legacy, pre-Reward-Setup workflows).
-  if (!types.includes("REWARD_SETUP") && !types.includes("END")) {
-    errors.push("workflow must include a REWARD_SETUP node");
+  // The workflow must end in a terminal node: CONTENT_BRIEF (current merged flow),
+  // REWARD_SETUP (legacy Reward Setup flow), or END (legacy, pre-Reward-Setup).
+  if (
+    !types.includes("CONTENT_BRIEF") &&
+    !types.includes("REWARD_SETUP") &&
+    !types.includes("END")
+  ) {
+    errors.push("workflow must include a CONTENT_BRIEF node");
   }
 
   // Content Brief requires an uploaded Campaign Brief PDF (briefFileRef). The

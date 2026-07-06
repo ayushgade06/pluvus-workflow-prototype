@@ -64,10 +64,14 @@ export interface PaymentInfoConfig {
   [key: string]: unknown;
 }
 
-// Content Brief sends the campaign brief (PDF + referral link + optional notes)
-// once payout info is collected, then completes. The brand configures it in the
-// builder before launch. Only the uploaded PDF's stored reference is persisted —
-// never the bytes; the original filename is kept for display + the attachment.
+// Content Brief is the merged post-negotiation node: on ACCEPTED it sends ONE
+// email with the finalized offer (fee/commission/deliverables/timeline), a secure
+// payout-form link, and the campaign brief (PDF + referral link + optional notes),
+// then waits for the creator to submit the form. The brand configures the brief
+// fields in the builder before launch; the offer fields are stamped from the
+// campaign / negotiation config at save/publish (like the legacy Reward Setup
+// node). Only the uploaded PDF's stored reference is persisted — never the bytes;
+// the original filename is kept for display + the attachment.
 export interface ContentBriefConfig {
   /** Stored reference for the uploaded Campaign Brief PDF (required to launch). */
   briefFileRef?: string;
@@ -77,6 +81,12 @@ export interface ContentBriefConfig {
   referralLink?: string;
   /** Optional brand notes shown to the creator in the email body. */
   creatorNotes?: string;
+  /** Commission %, stamped from the negotiation node (for display in the builder). */
+  commissionRate?: number;
+  /** Deliverables scope, stamped from the campaign. */
+  deliverables?: string;
+  /** Go-live timeline, stamped from the campaign. */
+  timeline?: string;
 }
 
 export type NodeConfig =

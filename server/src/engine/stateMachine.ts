@@ -25,15 +25,16 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // resumes automatically:
   //   AWAITING_BRAND_DECISION → stay put on an ambiguous reply (re-ask once)
   //   NEGOTIATING             → brand approved a counter / re-opened talks
-  //   ACCEPTED                → brand approved the creator's number → Reward Setup
+  //   ACCEPTED                → brand approved the creator's number → Content Brief
   //   REJECTED                → brand rejected the deal (terminal)
-  //   REWARD_PENDING          → brand approved → jump straight into reward setup
+  //   REWARD_PENDING          → brand approved → jump straight into reward setup (legacy)
   //   OPTED_OUT               → creator opted out while parked
   //   MANUAL_REVIEW           → brand asked for a full human handoff, or timed out
   // The L4 config-fix variant (missing brand name) also re-runs the blocked node
   // after the brand supplies a name, so it can transition BACK to the state that
-  // node runs from: ACCEPTED (Reward Setup), REWARD_CONFIRMED (Payment Info), or
-  // PAYMENT_RECEIVED (Content Brief).
+  // node runs from: ACCEPTED (Content Brief send phase), PAYMENT_PENDING (Content
+  // Brief re-run after send), plus the legacy REWARD_PENDING (Reward Setup),
+  // REWARD_CONFIRMED (Payment Info) and PAYMENT_RECEIVED (legacy Content Brief).
   AWAITING_BRAND_DECISION: [
     "AWAITING_BRAND_DECISION",
     "NEGOTIATING",
@@ -41,17 +42,18 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
     "REJECTED",
     "REWARD_PENDING",
     "REWARD_CONFIRMED",
+    "PAYMENT_PENDING",
     "PAYMENT_RECEIVED",
     "OPTED_OUT",
     "MANUAL_REVIEW",
   ],
   // ACCEPTED is no longer terminal: a successful negotiation auto-advances into
-  // the Reward Setup node, which finalizes the agreement and emails the creator.
-  // MANUAL_REVIEW is reachable (L4) if the confirmation email has no resolvable
-  // brand name — halt for a human rather than email a creator "your brand".
-  // AWAITING_BRAND_DECISION is the L4 config-fix path: instead of dead-ending, ask
-  // the brand for the missing name by email, then re-run Reward Setup from here.
-  ACCEPTED: ["REWARD_PENDING", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
+  // the Content Brief node, which sends the merged offer + payout link + brief
+  // email and parks in PAYMENT_PENDING. (Legacy graphs advance into Reward Setup
+  // → REWARD_PENDING instead.) MANUAL_REVIEW is reachable (L4) if the email has no
+  // resolvable brand name. AWAITING_BRAND_DECISION is the L4 config-fix path: ask
+  // the brand for the missing name by email, then re-run the node from here.
+  ACCEPTED: ["PAYMENT_PENDING", "REWARD_PENDING", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
   // Reward Setup waiting state. Stays here on a non-confirming reply
   // (REWARD_PENDING → REWARD_PENDING), advances on an agreement reply, and can
   // still be escalated to a human.
@@ -61,9 +63,12 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // MANUAL_REVIEW reachable (L4) on a missing brand name in the payment email;
   // AWAITING_BRAND_DECISION is the L4 config-fix path (ask brand → re-run here).
   REWARD_CONFIRMED: ["PAYMENT_PENDING", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
-  // Payment Info waiting state. Stays here until the creator submits the payout
-  // form (PAYMENT_PENDING → PAYMENT_RECEIVED), and can still be escalated.
-  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "MANUAL_REVIEW"],
+  // Payout-collection waiting state. Stays here until the creator submits the
+  // payout form. In the merged flow the Content Brief node owns this state and the
+  // submission lands directly on the CONTENT_BRIEF_SENT terminal; in legacy graphs
+  // the Payment Info node owns it and the submission lands on PAYMENT_RECEIVED
+  // (which then chains into Content Brief). Both edges are kept. Can be escalated.
+  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT", "MANUAL_REVIEW"],
   // Payment Info success. No longer terminal: the payout submission auto-advances
   // into the Content Brief node. Content Brief has NO waiting state — it sends the
   // brief email and completes in a single step — so PAYMENT_RECEIVED transitions

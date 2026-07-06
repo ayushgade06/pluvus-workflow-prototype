@@ -505,7 +505,7 @@ function phaseMessage(source: NodeType, target: NodeType): string {
   if (target === "PAYMENT_INFO")
     return `Payment Info can't come before the agreement is approved (it follows Reward Setup).`;
   if (target === "CONTENT_BRIEF")
-    return `Content Brief can't come before the creator accepts (it follows Reward Setup / Payment Info).`;
+    return `Content Brief can't come before the creator accepts (it follows the negotiation).`;
   if (target === "NEGOTIATION" && phaseOf(source) > phaseOf("NEGOTIATION"))
     return `Negotiation can't come after the deal is already finalized.`;
   return `"${TYPE_LABEL[target]}" can't come after "${TYPE_LABEL[source]}" — it belongs earlier in the workflow.`;

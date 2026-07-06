@@ -1,5 +1,6 @@
 /**
- * Unit tests for the Content Brief "Your Campaign Brief" email renderer. Pure —
+ * Unit tests for the Content Brief "Your Campaign Brief" email renderer (the
+ * merged post-negotiation email: finalized offer + payout link + brief). Pure —
  * no DB, no network, no file system. Run:
  *   npx tsx src/engine/executors/contentBriefEmail.test.ts
  */
@@ -16,10 +17,17 @@ function test(name: string, fn: () => void): void {
 
 console.log("\ncontentBriefEmail\n");
 
+const FORM_LINK = "http://localhost:3001/payment/tok-abc-123";
+
 const full = () =>
   renderContentBriefEmail({
     creatorName: "Ada",
     brandName: "Pluvus",
+    formLink: FORM_LINK,
+    fixedFee: 750,
+    commissionRate: 15,
+    deliverables: "2 Reels + 1 Story",
+    timeline: "Content live by July 20, 2026",
     referralLink: "https://example.com/referral/creator123",
     creatorNotes: "Please tag @pluvus in your first story.",
   });
@@ -47,6 +55,45 @@ test("body signs off as the brand", () => {
   assert.match(body, /Thanks,\nPluvus$/);
 });
 
+// ── Finalized offer block ────────────────────────────────────────────────────
+test("body states the finalized terms header + fee + commission", () => {
+  const { body } = full();
+  assert.match(body, /Here are your finalized terms:/);
+  assert.match(body, /• Fixed Fee: \$750/);
+  assert.match(body, /• Commission: 15%/);
+});
+
+test("body renders each deliverable as its own bullet", () => {
+  const { body } = full();
+  assert.match(body, /• Deliverables:/);
+  assert.match(body, /- 2 Reels/);
+  assert.match(body, /- 1 Story/);
+});
+
+test("body states the timeline line when provided", () => {
+  const { body } = full();
+  assert.match(body, /• Timeline: Content live by July 20, 2026/);
+});
+
+test("fee falls back to 'the agreed fee' and commission to 'None' when absent", () => {
+  const { body } = renderContentBriefEmail({
+    creatorName: "Ada",
+    brandName: "Pluvus",
+    formLink: FORM_LINK,
+    referralLink: "",
+    creatorNotes: "",
+  });
+  assert.match(body, /• Fixed Fee: the agreed fee/);
+  assert.match(body, /• Commission: None/);
+});
+
+// ── Payout link ──────────────────────────────────────────────────────────────
+test("body includes the secure payout form link verbatim", () => {
+  const { body } = full();
+  assert.match(body, /complete your secure payout information here:/);
+  assert.ok(body.includes(FORM_LINK));
+});
+
 // ── Referral link ────────────────────────────────────────────────────────────
 test("body includes the referral link verbatim under a label when configured", () => {
   const { body } = full();
@@ -58,6 +105,7 @@ test("body omits the referral section entirely when no link is configured", () =
   const { body } = renderContentBriefEmail({
     creatorName: "Ada",
     brandName: "Pluvus",
+    formLink: FORM_LINK,
     referralLink: "",
     creatorNotes: "",
   });
@@ -74,30 +122,31 @@ test("body omits notes cleanly when none are provided (no empty gap markers)", (
   const { body } = renderContentBriefEmail({
     creatorName: "Ada",
     brandName: "Pluvus",
+    formLink: FORM_LINK,
     referralLink: "https://x.test/r/1",
     creatorNotes: "   ",
   });
-  // The paragraph after the referral link should be the review reminder, with no
-  // stray blank paragraph where the notes would have been.
+  // No stray blank paragraph (triple newline) where the notes would have been.
   assert.doesNotMatch(body, /\n\n\n/);
   assert.match(body, /Please review the attached document/);
 });
 
 // ── Product/sample reward ────────────────────────────────────────────────────
-test("body mentions the reward when a rewardDescription is provided", () => {
+test("body renders the reward bullet when a rewardDescription is provided", () => {
   const { body } = renderContentBriefEmail({
     creatorName: "Ada",
     brandName: "Pluvus",
+    formLink: FORM_LINK,
     referralLink: "",
     creatorNotes: "",
     rewardDescription: "a free pair of our running shoes",
   });
-  assert.match(body, /you'll receive a free pair of our running shoes\./);
+  assert.match(body, /• Reward: a free pair of our running shoes/);
 });
 
-test("body omits the reward sentence when no reward is configured", () => {
+test("body omits the reward bullet when no reward is configured", () => {
   // full() is built without a rewardDescription.
-  assert.doesNotMatch(full().body, /you'll receive/);
+  assert.doesNotMatch(full().body, /• Reward:/);
 });
 
 // ── No attachment bytes here (that's the executor's job) ─────────────────────
