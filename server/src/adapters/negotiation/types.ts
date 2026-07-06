@@ -29,6 +29,15 @@ export interface NegotiationRequest {
     /** Brand-supplied go-live timeline; the AI states it only when present. */
     timeline?: string;
     /**
+     * Brand-set commission % (hybrid deals). NON-negotiable: only the fixed fee
+     * moves. Threaded so the LLM can state it as fixed when a creator tries to
+     * change it, and so the output guard can block a draft that alters it.
+     */
+    commissionRate?: number;
+    /** Brand-supplied product/sample perk (e.g. "a free pair of shoes"). Also
+     *  NON-negotiable — the LLM states it as a standard part of the offer. */
+    rewardDescription?: string;
+    /**
      * M1: where in the [floor, ceiling] band the recommended opening offer sits,
      * as a fraction 0..1. Default 0.5 (midpoint). Lets a campaign open lower or
      * higher without a code change.

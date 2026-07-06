@@ -134,8 +134,12 @@ def test_fixed_fee_deal_has_no_commission_bullet():
     )
     ctx = {"deliverables": "1 Reel", "timeline": "Live by July 20, 2026"}
     p = _build_offer_prompt(req, "Pluvus", ctx, "", _scope_lines(req, ctx))
-    # No commission percentage presented as content, and no dedicated bullet.
-    assert "%" not in p
+    # No commission percentage presented as CONTENT (a numeric N% figure), and no
+    # dedicated bullet. The static prompt now mentions "commission %" in a negative
+    # instruction (no number attached), so assert the absence of a numeric percent,
+    # not a bare "%".
+    import re as _re
+    assert not _re.search(r"\d+(?:\.\d+)?\s*%", p)
     assert "commission bullet" not in p.lower()
     # The guard is present and negative — it forbids mentioning/agreeing to one.
     assert "NO commission component" in p

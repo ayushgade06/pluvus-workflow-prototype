@@ -485,6 +485,7 @@ pytest tests/test_eval_gate.py     # the gate
 | `AGENT_CB_COOLDOWN_MS` | TS | `30000` | Breaker open duration. |
 | `AGENT_RATE_LIMIT` | Py | `60` | Requests per window per client/route. |
 | `AGENT_RATE_WINDOW_SECONDS` | Py | `60` | Rate-limit window length. |
+| `NEGOTIATION_STRATEGY` | Py | `rules` | `rules` = deterministic decision (model classifies + extracts, code picks the number). `llm` = model reads full history and picks action **and** rate itself, bounded by `_apply_decision_guards` (clamp to [floor, ceiling], escalate over-ceiling/unreadable, close on final round); falls back to `rules` on any LLM/transport failure. |
 | `LLM_PROVIDER` | Py | `ollama` | Primary chat provider (`ollama` / `openai`). |
 | `LLM_FALLBACK_PROVIDER` | Py | _(unset)_ | Optional failover provider. |
 | `OLLAMA_MODEL` | Py | `qwen3:30b-a3b` | Ollama model tag. |

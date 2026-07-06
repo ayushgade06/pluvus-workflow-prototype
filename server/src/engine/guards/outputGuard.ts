@@ -28,12 +28,29 @@ export interface GuardConstraints {
    * with a bound is not falsely blocked.
    */
   allowedRate?: number | undefined;
+  /**
+   * Additional rates that may legitimately appear in the draft even when they
+   * coincide with a bound. The primary use is the CREATOR'S OWN STATED ASK: if
+   * the creator proposed $500 and our ceiling is also $500, echoing their number
+   * back ("we hear you'd like $500") is not a leak — they said it first, so it
+   * discloses nothing internal. A bound the creator NEVER mentioned still blocks.
+   * `allowedRate` (our presented offer) is always treated as allowlisted too.
+   */
+  allowedRates?: number[] | undefined;
+  /**
+   * The brand-set commission % for this campaign (hybrid deals). It is NON-
+   * negotiable: the outbound draft may only ever state THIS percentage as the
+   * commission. If the draft states any OTHER commission % (e.g. the model caved
+   * to a creator's "make it 15%"), that is a promise the brand never authorized —
+   * the draft is blocked. Undefined disables the check (cash-only / no commission).
+   */
+  commissionRate?: number | undefined;
   /** Extra internal strings that must never appear (case-insensitive). */
   internalTerms?: string[] | undefined;
 }
 
 export interface GuardHit {
-  kind: "floor" | "ceiling" | "term";
+  kind: "floor" | "ceiling" | "term" | "commission";
   value: string;
 }
 
@@ -61,6 +78,32 @@ function numberAppears(text: string, n: number): boolean {
   return false;
 }
 
+// Find every percentage in the text that is used as a COMMISSION rate, i.e. a
+// number immediately followed by "%" (or "percent") that sits near the word
+// "commission". Returns the distinct numeric values found. Used to enforce that
+// the only commission % the draft states is the brand's configured one — the
+// creator cannot negotiate the commission, so a different % is an unauthorized
+// promise, not a leak. Deliberately narrow (must be adjacent to "commission")
+// so an unrelated percentage — "30-day usage rights", "grew 15%" — is ignored.
+function commissionPercentsMentioned(text: string): number[] {
+  const found = new Set<number>();
+  // A percentage token: 15%, 15 %, 15.5%, 15 percent.
+  const pct = "(\\d+(?:\\.\\d+)?)\\s*(?:%|percent)";
+  // The percentage within ~40 chars BEFORE or AFTER the word "commission".
+  const patterns = [
+    new RegExp(`${pct}[^.]{0,40}?commission`, "gi"),
+    new RegExp(`commission[^.]{0,40}?${pct}`, "gi"),
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) found.add(n);
+    }
+  }
+  return [...found];
+}
+
 /**
  * Scan a rendered outbound draft for disclosure of internal bounds.
  *
@@ -72,14 +115,20 @@ export function scanOutboundDraft(draft: GuardDraft, constraints: GuardConstrain
   const haystack = `${draft.subject ?? ""}\n${draft.body}`;
   const hits: GuardHit[] = [];
 
-  const { floor, ceiling, allowedRate, internalTerms } = constraints;
+  const { floor, ceiling, allowedRate, allowedRates, commissionRate, internalTerms } = constraints;
 
-  // Floor/ceiling checks are skipped when the bound equals the rate we are
-  // intentionally presenting this turn.
-  if (floor !== undefined && floor !== allowedRate && numberAppears(haystack, floor)) {
+  // A bound is allowlisted (not a leak) when it equals the rate we are
+  // intentionally presenting this turn (`allowedRate`) OR any rate in
+  // `allowedRates` — chiefly the creator's own stated ask, which they disclosed
+  // to us, so repeating it discloses nothing internal.
+  const allow = new Set<number>();
+  if (allowedRate !== undefined) allow.add(allowedRate);
+  for (const r of allowedRates ?? []) allow.add(r);
+
+  if (floor !== undefined && !allow.has(floor) && numberAppears(haystack, floor)) {
     hits.push({ kind: "floor", value: String(floor) });
   }
-  if (ceiling !== undefined && ceiling !== allowedRate && numberAppears(haystack, ceiling)) {
+  if (ceiling !== undefined && !allow.has(ceiling) && numberAppears(haystack, ceiling)) {
     hits.push({ kind: "ceiling", value: String(ceiling) });
   }
 
@@ -88,6 +137,18 @@ export function scanOutboundDraft(draft: GuardDraft, constraints: GuardConstrain
     const t = term.trim().toLowerCase();
     if (t.length > 0 && lower.includes(t)) {
       hits.push({ kind: "term", value: term });
+    }
+  }
+
+  // Commission is brand-set and NON-negotiable: the draft may only ever state the
+  // configured commission %. Any OTHER commission % is a promise the creator
+  // pushed for and the model wrongly conceded — block it. Skipped when no
+  // commission is configured (cash-only deals never mention a commission rate).
+  if (commissionRate !== undefined) {
+    for (const pct of commissionPercentsMentioned(haystack)) {
+      if (pct !== commissionRate) {
+        hits.push({ kind: "commission", value: `${pct}% (expected ${commissionRate}%)` });
+      }
     }
   }
 
@@ -102,6 +163,7 @@ export function scanOutboundDraft(draft: GuardDraft, constraints: GuardConstrain
 export function guardConstraintsFromConfig(
   config: Record<string, unknown>,
   allowedRate?: number,
+  creatorRate?: number,
 ): GuardConstraints {
   // Resolve floor/ceiling from EITHER termFloor/termCeiling or minBudget/
   // maxBudget so a UI-built workflow's bounds are still scanned for leaks (the
@@ -111,10 +173,26 @@ export function guardConstraintsFromConfig(
     ? (config["internalTerms"] as unknown[]).filter((x): x is string => typeof x === "string")
     : undefined;
 
+  // The creator's own stated ask is allowlisted: echoing a number they gave us
+  // is not a disclosure of an internal bound, even when the two coincide. This
+  // is what lets a deal close/counter AT the ceiling or floor without the guard
+  // falsely flagging the creator's number as a leak.
+  const allowedRates =
+    typeof creatorRate === "number" && Number.isFinite(creatorRate) ? [creatorRate] : undefined;
+
+  // Brand-set commission % (hybrid deals). Non-negotiable — the guard blocks a
+  // draft that states any other commission %. Absent for cash-only campaigns.
+  const commissionRate =
+    typeof config["commissionRate"] === "number" && Number.isFinite(config["commissionRate"])
+      ? (config["commissionRate"] as number)
+      : undefined;
+
   return {
     ...(floor !== undefined ? { floor } : {}),
     ...(ceiling !== undefined ? { ceiling } : {}),
     ...(allowedRate !== undefined ? { allowedRate } : {}),
+    ...(allowedRates ? { allowedRates } : {}),
+    ...(commissionRate !== undefined ? { commissionRate } : {}),
     ...(internalTerms ? { internalTerms } : {}),
   };
 }

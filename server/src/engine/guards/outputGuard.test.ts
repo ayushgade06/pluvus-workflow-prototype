@@ -60,6 +60,35 @@ test("a different number than the allowlisted one still blocks", () => {
   if (!r.ok) assert.ok(r.hits.some((h) => h.kind === "ceiling"));
 });
 
+test("creator's ask equal to a bound (in allowedRates) is not blocked", () => {
+  // Ceiling is 2000 and the creator asked for 2000; echoing their number back
+  // is not a leak — they said it first. We counter at 1800 (allowedRate).
+  const r = scanOutboundDraft(
+    { body: "We hear you'd like $2,000 — we can offer $1,800 for this collaboration." },
+    { ...C, allowedRate: 1800, allowedRates: [2000] },
+  );
+  assert.equal(r.ok, true);
+});
+
+test("a bound the creator never mentioned still blocks even with allowedRates set", () => {
+  // The floor (500) appears but was NOT the creator's ask (their ask was 2000).
+  const r = scanOutboundDraft(
+    { body: "Our floor is 500 internally, but you asked $2000." },
+    { ...C, allowedRate: 1800, allowedRates: [2000] },
+  );
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.ok(r.hits.some((h) => h.kind === "floor"));
+});
+
+test("allowedRate and allowedRates are both honored", () => {
+  // floor 500 == allowedRate, ceiling 2000 == an allowedRates entry → both pass.
+  const r = scanOutboundDraft(
+    { body: "Offer $500. You mentioned $2000." },
+    { ...C, allowedRate: 500, allowedRates: [2000] },
+  );
+  assert.equal(r.ok, true);
+});
+
 test("scans subject too", () => {
   const r = scanOutboundDraft({ subject: "Re: 500 floor", body: "clean body" }, C);
   assert.equal(r.ok, false);
@@ -84,6 +113,54 @@ test("no constraints → always ok", () => {
   assert.equal(r.ok, true);
 });
 
+console.log("\ncommission guard (non-negotiable %)\n");
+
+const CC = { commissionRate: 10 };
+
+test("the configured commission % passes", () => {
+  const r = scanOutboundDraft(
+    { body: "This is a hybrid partnership with a 10% commission on sales you drive." },
+    CC,
+  );
+  assert.equal(r.ok, true);
+});
+
+test("a DIFFERENT commission % is blocked", () => {
+  const r = scanOutboundDraft(
+    { body: "Happy to bump you to a 15% commission on all sales." },
+    CC,
+  );
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.ok(r.hits.some((h) => h.kind === "commission" && h.value.startsWith("15%")));
+});
+
+test("commission % written as 'percent' is caught", () => {
+  const r = scanOutboundDraft({ body: "We can offer 20 percent commission this time." }, CC);
+  assert.equal(r.ok, false);
+});
+
+test("an unrelated percentage is NOT a commission hit", () => {
+  // 30-day usage rights / 'grew 15%' must not trip the commission check.
+  const r = scanOutboundDraft(
+    { body: "You keep the 10% commission, with 30-day usage rights; your reach grew 40% last year." },
+    CC,
+  );
+  assert.equal(r.ok, true);
+});
+
+test("commission check skipped when no rate configured", () => {
+  const r = scanOutboundDraft({ body: "We can do a 25% commission structure." }, {});
+  assert.equal(r.ok, true);
+});
+
+test("decimal commission % matches the configured decimal", () => {
+  const r = scanOutboundDraft(
+    { body: "a 12.5% commission on the sales you drive" },
+    { commissionRate: 12.5 },
+  );
+  assert.equal(r.ok, true);
+});
+
 console.log("\nguardConstraintsFromConfig\n");
 
 test("extracts floor/ceiling rates from node config", () => {
@@ -102,6 +179,30 @@ test("threads allowedRate and internalTerms", () => {
   );
   assert.equal(c.allowedRate, 250);
   assert.deepEqual(c.internalTerms, ["budget cap"]); // non-strings filtered
+});
+
+test("threads the creator's ask into allowedRates", () => {
+  const c = guardConstraintsFromConfig(
+    { termFloor: { rate: 200 }, termCeiling: { rate: 500 } },
+    475, // our counter
+    500, // creator's ask (== ceiling)
+  );
+  assert.equal(c.allowedRate, 475);
+  assert.deepEqual(c.allowedRates, [500]);
+});
+
+test("omits allowedRates when no creator ask is given", () => {
+  const c = guardConstraintsFromConfig({ termCeiling: { rate: 500 } }, 475);
+  assert.equal(c.allowedRates, undefined);
+});
+
+test("threads commissionRate from config", () => {
+  const c = guardConstraintsFromConfig({ commissionRate: 10, termCeiling: { rate: 500 } });
+  assert.equal(c.commissionRate, 10);
+  // and end-to-end: a 15% draft with this config blocks.
+  const r = scanOutboundDraft({ body: "15% commission works!" }, c);
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.ok(r.hits.some((h) => h.kind === "commission"));
 });
 
 test("missing terms yield undefined bounds (no false block)", () => {

@@ -259,6 +259,18 @@ export function buildNegotiationRequest(
   const brandDescription = typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined;
   const deliverables = typeof config["deliverables"] === "string" ? config["deliverables"] : undefined;
   const timeline = typeof config["timeline"] === "string" ? config["timeline"] : undefined;
+  // Non-fee terms the creator cannot negotiate: the commission % and any product
+  // perk/reward are brand-set. Threaded so the LLM can state them as FIXED when a
+  // creator tries to move them (and so the output guard can enforce it). Only the
+  // fixed fee is negotiable.
+  const commissionRate =
+    typeof config["commissionRate"] === "number" && Number.isFinite(config["commissionRate"])
+      ? config["commissionRate"]
+      : undefined;
+  const rewardDescription =
+    typeof config["rewardDescription"] === "string" && config["rewardDescription"].trim().length > 0
+      ? config["rewardDescription"]
+      : undefined;
   // M1: optional band position for the recommended opening offer (0..1). Passed
   // through only when a finite number; Python clamps + defaults to 0.5.
   const recommendedOfferPosition =
@@ -294,6 +306,8 @@ export function buildNegotiationRequest(
       ...(brandDescription ? { brandDescription } : {}),
       ...(deliverables ? { deliverables } : {}),
       ...(timeline ? { timeline } : {}),
+      ...(commissionRate !== undefined ? { commissionRate } : {}),
+      ...(rewardDescription ? { rewardDescription } : {}),
       ...(recommendedOfferPosition !== undefined ? { recommendedOfferPosition } : {}),
     },
   };

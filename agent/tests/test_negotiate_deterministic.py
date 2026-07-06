@@ -88,9 +88,9 @@ def test_end_to_end_decision_reproducible(monkeypatch):
         (r.action, None if r.proposedTerms is None else r.proposedTerms.get("rate"))
         for r in (neg_mod._langgraph_negotiate(_req()) for _ in range(20))
     }
-    # round 1, our offer = recommended 300 (no prior offer in history), ask 480
-    # → step avg(300, 480) = 390. Deterministic across all 20 runs.
-    assert seen == {("COUNTER", 390.0)}
+    # round 1, our offer = recommended = floor 100 (default position 0.0, no prior
+    # offer in history), ask 480 → step avg(100, 480) = 290. Deterministic over 20 runs.
+    assert seen == {("COUNTER", 290.0)}
 
 
 def test_confidence_does_not_change_decision(monkeypatch):
@@ -152,18 +152,20 @@ def test_above_floor_current_offer_seeds_prior_offer(monkeypatch):
 
 def test_floor_default_current_offer_is_not_treated_as_prior_offer(monkeypatch):
     # currentOffer == floor (100) is the buildNegotiationRequest DEFAULT, not a
-    # real standing offer. It must NOT seed prior_offer, so we still step from the
-    # recommended midpoint: avg(300, 480) = 390 (unchanged pre-M5 behavior).
+    # real standing offer. It must NOT seed prior_offer. With the default position
+    # 0.0 the recommended opening IS the floor (100), so we step from 100:
+    # avg(100, 480) = 290. (The point of the test — currentOffer=floor doesn't
+    # become a prior offer — still holds; the number just reflects the new default.)
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
     monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_with(100))
     assert r.action == "COUNTER"
-    assert r.proposedTerms.get("rate") == 390.0
+    assert r.proposedTerms.get("rate") == 290.0
 
 
 # ---------------------------------------------------------------------------
 # M1 — recommendedOfferPosition knob controls where in the band the opening
-# offer sits (default 0.5 = midpoint).
+# offer sits (default 0.0 = the FLOOR — open low, concede up).
 # ---------------------------------------------------------------------------
 
 
@@ -185,14 +187,14 @@ def _req_position(position, floor=100, ceiling=500):
     )
 
 
-def test_default_position_is_band_midpoint(monkeypatch):
-    # No position → 0.5 → recommended = 100 + (500-100)*0.5 = 300, presented on a
-    # RATE_DISCOVERY (asking the rate) turn.
+def test_default_position_opens_at_floor(monkeypatch):
+    # No position → default 0.0 → recommended = floor = 100, presented on a
+    # RATE_DISCOVERY (asking the rate) turn. Open low, concede up.
     out = '{"intent": "RATE_DISCOVERY", "response": "Here it is.", "creatorRateMentioned": null}'
     monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_position(None))
     assert r.action == "PRESENT_OFFER"
-    assert r.proposedTerms.get("rate") == 300.0
+    assert r.proposedTerms.get("rate") == 100.0
 
 
 def test_lower_position_opens_lower(monkeypatch):

@@ -343,7 +343,12 @@ export async function executeNegotiation(
       const draft = aiDraft ?? await email.draft(creator, body, config);
 
       // FIX-4: the presented fee is allowlisted; still scan for floor/ceiling leak.
-      const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(config, proposedRate));
+      // The creator's own stated ask is allowlisted too (echoing their number is
+      // not a leak even if it coincides with a bound).
+      const guard = scanOutboundDraft(
+        draft,
+        guardConstraintsFromConfig(config, proposedRate, extractRequestedRate(creatorReply)),
+      );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
       }
@@ -424,8 +429,13 @@ export async function executeNegotiation(
       const draft = aiDraft ?? await email.draft(creator, body, config);
 
       // FIX-4: scan the rendered draft for leaked floor/ceiling before sending.
-      // The agreed rate is allowlisted (it is the offer we mean to present).
-      const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(config, proposedRate));
+      // The agreed rate is allowlisted (it is the offer we mean to present), and
+      // so is the creator's own stated ask — an acceptance at the ceiling/floor
+      // (their number == a bound) must be able to state that number.
+      const guard = scanOutboundDraft(
+        draft,
+        guardConstraintsFromConfig(config, proposedRate, extractRequestedRate(creatorReply)),
+      );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
       }
@@ -529,8 +539,14 @@ export async function executeNegotiation(
       const draft = aiDraft ?? await email.draft(creator, body, config);
 
       // FIX-4: scan the rendered counter draft for leaked floor/ceiling before
-      // sending. The rate we are countering with is allowlisted.
-      const guard = scanOutboundDraft(draft, guardConstraintsFromConfig(config, proposedRate));
+      // sending. The rate we are countering with is allowlisted, AND so is the
+      // creator's own stated ask — echoing a number they gave us (even one that
+      // coincides with a bound, e.g. their $500 ask == the $500 ceiling) is not
+      // a leak, so a legitimate at-bound negotiation isn't forced to MANUAL_REVIEW.
+      const guard = scanOutboundDraft(
+        draft,
+        guardConstraintsFromConfig(config, proposedRate, creatorRequestedRate),
+      );
       if (!guard.ok) {
         return blockedByGuard(newRound, guard.hits);
       }
