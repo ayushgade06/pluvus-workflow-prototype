@@ -4,13 +4,15 @@ import { listMessagesByInstance as listMessagesDb } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { extractReplyText } from "./replyText.js";
+import { openBrandDecision } from "./brandDecision.js";
 
 // Replies with confidence below this threshold are treated as UNKNOWN and
 // routed to MANUAL_REVIEW rather than auto-advanced.
 const LOW_CONFIDENCE_THRESHOLD = 0.50;
 
 // DB seam — injectable so the routing logic (incl. the active-negotiation
-// short-circuit) is unit-testable without a live database. Defaults to real db.
+// short-circuit and the A1/A2 low-confidence brand-decision hand-off) is
+// unit-testable without a live database. Defaults to real db / brand-decision.
 export interface ReplyDetectionDeps {
   listMessagesByInstance(instanceId: string): Promise<Message[]>;
   updateMessageClassification(
@@ -18,6 +20,9 @@ export interface ReplyDetectionDeps {
     intent: ReplyIntent,
     confidence: number,
   ): Promise<void>;
+  // A1/A2: opening the brand-decision round-trip does DB writes + an email send,
+  // so it's injected here to keep the UNKNOWN routing unit-testable.
+  openBrandDecision: typeof openBrandDecision;
 }
 
 const defaultDeps: ReplyDetectionDeps = {
@@ -28,11 +33,12 @@ const defaultDeps: ReplyDetectionDeps = {
       data: { replyIntent: intent, classifyConfidence: confidence },
     });
   },
+  openBrandDecision,
 };
 
 export async function executeReplyDetection(
   ctx: ExecutionContext,
-  _email: IEmailProvider,
+  email: IEmailProvider,
   agent: IAgentProvider,
   deps: ReplyDetectionDeps = defaultDeps,
 ): Promise<NodeResult> {
@@ -139,12 +145,32 @@ export async function executeReplyDetection(
 
     case "UNKNOWN":
     default:
-      return {
-        nextState: "MANUAL_REVIEW",
-        nextNodeId: null,
-        completedAt: new Date(),
+      // A1/A2 (§3 low_confidence_reply): the classifier couldn't confidently
+      // read the creator's intent. Rather than dead-ending in MANUAL_REVIEW, open
+      // a brand-decision round-trip — the brand does the one thing the AI
+      // couldn't (read a human's intent) and the run auto-resumes on their reply.
+      //   APPROVE  → NEGOTIATING (treat as POSITIVE; the negotiation node runs)
+      //   COUNTER n→ NEGOTIATING seeded with the creator's number (resolution side)
+      //   REJECT   → REJECTED
+      //   HANDOFF  → MANUAL_REVIEW
+      // The resolution map is reason-aware in executeBrandDecision (this reason
+      // resumes negotiation on APPROVE instead of closing the deal like B9).
+      return deps.openBrandDecision(ctx, email, {
+        reason: "low_confidence_reply",
+        question:
+          `We couldn't tell how ${ctx.creator.name} meant this reply. ` +
+          `Here's what they wrote — how should we read it? Approve to treat it ` +
+          `as interested (we'll continue negotiating), reject if they're passing, ` +
+          `or hand off to a human.`,
+        actions: ["approve", "reject", "counter", "handoff"],
+        context: {
+          reason: "low_confidence_reply",
+          actions: ["approve", "reject", "counter", "handoff"],
+          negotiationNodeId: negotiationNode?.id ?? null,
+        },
+        ...(replyText ? { quotedReply: replyText } : {}),
         eventType: "MANUAL_REVIEW_FLAGGED",
-        eventPayload: { intent, confidence, messageId: latestInbound.id },
-      };
+        eventPayload: { intent, confidence, messageId: latestInbound.id, reason: "low_confidence_reply" },
+      });
   }
 }

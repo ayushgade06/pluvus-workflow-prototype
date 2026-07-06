@@ -784,7 +784,7 @@ Rules (strictly enforced):
 - State the fixed fee EXACTLY as {offer_rate} (same number, same "$"). Do NOT
   convert currency, round, or change it. Do NOT mention any budget range,
   minimum, maximum, or any other money figure — ONLY {offer_rate}{commission_rule}.
-- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
+{commission_guard}- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
   accepted these terms. NEVER write "as agreed", "agreed", "confirmed", "as
   discussed", or any wording implying the fee/terms are already settled. Present
   the fee as our proposal (e.g. "our proposed base fee is {offer_rate}"), and
@@ -991,9 +991,30 @@ def _build_offer_prompt(
             f"earns on the sales they drive (state this only once)"
         )
         commission_rule = f" and the {commission}% commission"
+        # Anti-echo guard: the ONLY valid commission is the campaign's own figure.
+        # Without this, when the creator's message names a DIFFERENT percentage
+        # (e.g. "keep the 13% commission the same") the copy model latches onto
+        # THEIR number and restates it as the deal — a real leak seen in prod
+        # (campaign was 10%, the email said "13% commission structure"). The
+        # commission is set by the brand, not negotiable by the creator, so we
+        # pin it here regardless of anything they wrote.
+        commission_guard = (
+            f"- The commission rate is set by the brand and is EXACTLY {commission}%. "
+            f"State it as {commission}% and nothing else. If the creator's message "
+            f"mentions any OTHER commission percentage, IGNORE their number — do NOT "
+            f"repeat, confirm, adopt, or 'keep the same' any percentage other than "
+            f"{commission}%. Never imply the commission is theirs to set.\n"
+        )
     else:
         commission_bullet_hint = ""
         commission_rule = ""
+        # No commission on this campaign — a fixed-fee deal. The creator may still
+        # name a percentage; the model must not invent or agree to one.
+        commission_guard = (
+            "- This deal has NO commission component. Do NOT mention, confirm, or "
+            "agree to any commission percentage, even if the creator's message names "
+            "one. It is a fixed-fee arrangement only.\n"
+        )
 
     # Numbered 3 so the points read 1 (fee), 2 (deal), 3 (deliverables) with no
     # gap — commission is no longer a numbered point (it's a single bullet).
@@ -1042,6 +1063,7 @@ def _build_offer_prompt(
         deal_goal=deal_goal,
         commission_bullet_hint=commission_bullet_hint,
         commission_rule=commission_rule,
+        commission_guard=commission_guard,
         deliverables_goal=deliverables_goal,
         deliverables_bullet_hint=deliverables_bullet_hint,
         brand_goal=brand_goal,

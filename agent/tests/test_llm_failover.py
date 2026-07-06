@@ -22,9 +22,10 @@ from app.llm import FailoverChat, _candidate_chain, _ollama_model_id
 def test_ollama_model_id_default(monkeypatch):
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
     monkeypatch.delenv("OLLAMA_MODEL_DIGEST", raising=False)
-    # Canonical local model is qwen3:8b — the code default is source of truth,
-    # and structured.py strips <think> blocks that only qwen3 emits.
-    assert _ollama_model_id() == "qwen3:8b"
+    # Canonical local model is qwen3:30b-a3b (strongest local build) — the code
+    # default is source of truth, and structured.py strips <think> blocks that
+    # only qwen3 emits.
+    assert _ollama_model_id() == "qwen3:30b-a3b"
 
 
 def test_ollama_model_id_custom_tag(monkeypatch):

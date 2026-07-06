@@ -487,7 +487,7 @@ pytest tests/test_eval_gate.py     # the gate
 | `AGENT_RATE_WINDOW_SECONDS` | Py | `60` | Rate-limit window length. |
 | `LLM_PROVIDER` | Py | `ollama` | Primary chat provider (`ollama` / `openai`). |
 | `LLM_FALLBACK_PROVIDER` | Py | _(unset)_ | Optional failover provider. |
-| `OLLAMA_MODEL` | Py | `qwen3:8b` | Ollama model tag. |
+| `OLLAMA_MODEL` | Py | `qwen3:30b-a3b` | Ollama model tag. |
 | `OLLAMA_MODEL_DIGEST` | Py | _(unset)_ | Pin an immutable digest. |
 | `OLLAMA_BASE_URL` | Py | `http://localhost:11434` | Ollama endpoint. |
 | `OPENAI_MODEL` | Py | `gpt-4o-mini` | OpenAI model id. |

@@ -59,20 +59,190 @@ function draftUnavailable(round: number, purpose: string): NodeResult {
   };
 }
 
+// The creator's most recent inbound message, EXCLUDING any inbound rows that are
+// actually brand replies to an escalation email (A1/A2 low_confidence_reply: the
+// brand answered "approve", which is persisted INBOUND on the same instance). If
+// we didn't skip those, resuming negotiation after an A1/A2 approval would make
+// the agent reason about the brand's word ("approve") as if the creator wrote it.
+//
+// Brand-decision replies are tagged on the INBOUND_REPLY_RECEIVED event with
+// `brandDecisionReply: true` + the message's externalMessageId; we collect those
+// ids and drop the matching messages. (Normal creator replies have no such tag.)
+async function latestCreatorInbound(
+  instanceId: string,
+): Promise<{ body: string } | undefined> {
+  const messages = await listMessagesByInstance(instanceId);
+  const events = await listEventsByInstance(instanceId, { type: "INBOUND_REPLY_RECEIVED" });
+  const brandReplyMsgIds = new Set(
+    events
+      .filter((e) => (e.payload as Record<string, unknown> | null)?.["brandDecisionReply"] === true)
+      .map((e) => (e.payload as Record<string, unknown> | null)?.["externalMessageId"])
+      .filter((id): id is string => typeof id === "string"),
+  );
+  return messages
+    .filter((m) => m.direction === "INBOUND")
+    .filter((m) => !(m.externalMessageId && brandReplyMsgIds.has(m.externalMessageId)))
+    .at(-1);
+}
+
 // Best-effort extraction of a dollar amount the creator named in their reply
-// (e.g. "I charge $480" / "480 dollars" / "my rate is 480"). Used purely to let
-// the counter copy ACKNOWLEDGE their ask — never to make the money decision
-// (that stays deterministic in the agent). Returns undefined when no clear
-// amount is present.
+// (e.g. "I charge $480" / "480 dollars" / "my rate is 480" / "can you do 900").
+// Used purely to let the counter/escalation copy ACKNOWLEDGE their ask — never to
+// make the money decision (that stays deterministic in the agent). Returns
+// undefined when no clear amount is present.
 export function extractRequestedRate(text: string | undefined): number | undefined {
   if (!text) return undefined;
-  // Prefer an explicit "$" amount; fall back to a number near "dollars"/"rate".
+  // Priority 1: an explicit "$" amount. Priority 2: a number tagged "dollars"/
+  // "usd". Priority 3: a BARE number adjacent to a rate-signalling word — this
+  // catches the common "my rate is 900" / "I need 900" / "can you do 900" phrasing
+  // that carries no currency marker, WITHOUT grabbing incidental counts like
+  // "3 reels" (no rate word nearby → not matched).
   const dollar = text.match(/\$\s*(\d[\d,]*(?:\.\d+)?)/);
   const worded = text.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:dollars|usd)\b/i);
-  const raw = dollar?.[1] ?? worded?.[1];
-  if (!raw) return undefined;
-  const n = Number(raw.replace(/,/g, ""));
-  return Number.isFinite(n) ? n : undefined;
+  // An explicit "$" or "dollars" marker makes ANY number a rate (even "$3").
+  const markedRaw = dollar?.[1] ?? worded?.[1];
+  if (markedRaw) {
+    const n = Number(markedRaw.replace(/,/g, ""));
+    return Number.isFinite(n) ? n : undefined;
+  }
+  // No currency marker: fall back to a BARE number adjacent to a rate-signalling
+  // word — catches "my rate is 900" / "I need 900" / "can you do 900" WITHOUT a
+  // "$". A rate word before the number ("rate is 900", "do 900") or after it
+  // ("900 is my rate", "900 flat"). To avoid grabbing incidental counts that
+  // happen to sit next to a generic word (e.g. "do 3 stories"), a bare number
+  // must be money-plausible (>= MIN_BARE_RATE); real creator asks are never $3.
+  const MIN_BARE_RATE = 50;
+  const rateWord = "(?:rate|charge|charging|fee|price|priced|budget|ask(?:ing)?|need|want|pay|do|flat)";
+  const bareBefore = text.match(
+    new RegExp(`\\b${rateWord}\\b[^\\d]{0,12}(\\d[\\d,]*(?:\\.\\d+)?)`, "i"),
+  );
+  const bareAfter = text.match(
+    new RegExp(`(\\d[\\d,]*(?:\\.\\d+)?)[^\\d]{0,12}\\b${rateWord}\\b`, "i"),
+  );
+  const bareRaw = bareBefore?.[1] ?? bareAfter?.[1];
+  if (!bareRaw) return undefined;
+  const bare = Number(bareRaw.replace(/,/g, ""));
+  if (!Number.isFinite(bare) || bare < MIN_BARE_RATE) return undefined;
+  return bare;
+}
+
+// Open the B9 max-rounds brand decision (§3 B9). Shared by BOTH callers that can
+// reach the ceiling:
+//   1. the hard stop at entry (instance re-enters already at negotiationRound >=
+//      maxRounds), and
+//   2. the counter path's secondary guard (a counter that WOULD push the round to
+//      maxRounds — the round can't actually be sent, so instead of dead-ending in
+//      MANUAL_REVIEW we page the brand for one final move).
+// Both produce the identical actionable email (approve their number / final
+// counter / reject / hand off) and park the run in AWAITING_BRAND_DECISION.
+function openMaxRoundsBrandDecision(
+  ctx: ExecutionContext,
+  email: IEmailProvider,
+  config: Record<string, unknown>,
+  args: { creatorReply: string; maxRounds: number; round: number },
+): Promise<NodeResult> {
+  const { instance, node, creator } = ctx;
+  const { creatorReply, maxRounds, round } = args;
+  const { floor, ceiling } = resolveBand(config);
+  const creatorRate = extractRequestedRate(creatorReply);
+  const band =
+    floor !== undefined && ceiling !== undefined
+      ? ` (your ceiling was ${ceiling}, floor ${floor})`
+      : "";
+  const rateClause =
+    creatorRate !== undefined ? `Their latest ask is ${creatorRate}${band}.` : "";
+  const question =
+    `Negotiation with ${creator.name} reached the max of ${maxRounds} rounds ` +
+    `without agreement. ${rateClause} Do you want to accept their number, or name ` +
+    `one final counter? Any number you give is final — we won't negotiate further; ` +
+    `the creator can only take it or leave it.`;
+
+  return openBrandDecision(ctx, email, {
+    reason: "max_rounds_reached",
+    question,
+    // Max-rounds offers all four actions: approve their number, counter (final),
+    // reject, or hand off. (B10 over-ceiling, a later item, drops "counter".)
+    actions: ["approve", "reject", "counter", "handoff"],
+    context: {
+      reason: "max_rounds_reached",
+      actions: ["approve", "reject", "counter", "handoff"],
+      negotiationNodeId: node.id,
+      ...(creatorRate !== undefined ? { creatorRate } : {}),
+      ...(floor !== undefined ? { floor } : {}),
+      ...(ceiling !== undefined ? { ceiling } : {}),
+      maxRounds,
+      round,
+    },
+    ...(creatorReply ? { quotedReply: creatorReply } : {}),
+    eventType: "NEGOTIATION_TURN",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "max_rounds_reached",
+      round,
+      maxRounds,
+    },
+  });
+}
+
+// Open the B10 over-ceiling / agent-escalate brand decision (§3 B10). The agent
+// escalated because the creator's ask is above the internal ceiling (or the rate
+// was unreadable). Instead of dead-ending in MANUAL_REVIEW, page the brand:
+// approve the creator's number (overspend), reject, or hand off to a human.
+//
+// This is APPROVE/REJECT/HANDOFF only — no `counter`. Per the locked spec (§3
+// B10 Step 2) an over-ceiling escalation is the brand's call to overspend or
+// walk; we do NOT re-open negotiation with a brand counter here (that would
+// require the creator-facing final-offer sub-state, a follow-on item). A brand
+// who wants to propose a different number can HANDOFF to a human.
+function openOverCeilingBrandDecision(
+  ctx: ExecutionContext,
+  email: IEmailProvider,
+  config: Record<string, unknown>,
+  args: { creatorReply: string; round: number; message: string },
+): Promise<NodeResult> {
+  const { node, creator } = ctx;
+  const { creatorReply, round, message } = args;
+  const { floor, ceiling } = resolveBand(config);
+  const creatorRate = extractRequestedRate(creatorReply);
+
+  // Build the ask. When we could read the creator's number, quote it against the
+  // ceiling; when we couldn't, ask the brand to read the reply and decide.
+  const ceilingClause =
+    ceiling !== undefined ? ` (above your ceiling of ${ceiling})` : "";
+  const question =
+    creatorRate !== undefined
+      ? `${creator.name} is asking for ${creatorRate}${ceilingClause}, which is ` +
+        `more than this campaign's budget allows. This is approve-or-reject only ` +
+        `— we won't negotiate further. Approve at ${creatorRate}, reject, or hand ` +
+        `off to a human.`
+      : `${creator.name} replied but we couldn't read a clear rate from their ` +
+        `message. How do you want to proceed — approve continuing, reject, or ` +
+        `hand off to a human?`;
+
+  return openBrandDecision(ctx, email, {
+    reason: "escalated",
+    question,
+    // Over-ceiling: approve (overspend) / reject / handoff. No counter (see above).
+    actions: ["approve", "reject", "handoff"],
+    context: {
+      reason: "escalated",
+      actions: ["approve", "reject", "handoff"],
+      negotiationNodeId: node.id,
+      ...(creatorRate !== undefined ? { creatorRate } : {}),
+      ...(floor !== undefined ? { floor } : {}),
+      ...(ceiling !== undefined ? { ceiling } : {}),
+      round,
+    },
+    ...(creatorReply ? { quotedReply: creatorReply } : {}),
+    eventType: "NEGOTIATION_TURN",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "escalated",
+      round,
+      message,
+      ...(creatorRate !== undefined ? { creatorRate } : {}),
+    },
+  });
 }
 
 export async function executeNegotiation(
@@ -109,12 +279,12 @@ export async function executeNegotiation(
   // (e.g. "hybrid — fixed fee plus commission") instead of only quoting a fee.
   const dealDescription = describeDeal(config);
 
-  const messages = await listMessagesByInstance(instance.id);
-  const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
-  // H1: strip quoted thread + signature so the negotiation agent reasons about
-  // (and the counter copy acknowledges) the creator's ACTUAL words, not our own
-  // quoted outreach. Also feeds extractRequestedRate below — a "$500" in our
-  // quoted history must not be mistaken for the creator's ask.
+  // Latest creator reply, skipping brand escalation replies (see helper). H1:
+  // strip quoted thread + signature so the negotiation agent reasons about (and
+  // the counter copy acknowledges) the creator's ACTUAL words, not our own quoted
+  // outreach. Also feeds extractRequestedRate below — a "$500" in our quoted
+  // history must not be mistaken for the creator's ask.
+  const latestInbound = await latestCreatorInbound(instance.id);
   const creatorReply = latestInbound?.body ? extractReplyText(latestInbound.body) : "";
 
   // Hard stop — enforce maxRounds before calling the agent.
@@ -125,44 +295,10 @@ export async function executeNegotiation(
   // creator's number, name a final counter, reject, or hand off) and the run
   // auto-resumes on their reply. See MANUAL_ESCALATION_RESOLUTION.md §3 B9.
   if (instance.negotiationRound >= maxRounds) {
-    const { floor, ceiling } = resolveBand(config);
-    const creatorRate = extractRequestedRate(creatorReply);
-    const band =
-      floor !== undefined && ceiling !== undefined
-        ? ` (your ceiling was ${ceiling}, floor ${floor})`
-        : "";
-    const rateClause =
-      creatorRate !== undefined ? `Their latest ask is ${creatorRate}${band}.` : "";
-    const question =
-      `Negotiation with ${creator.name} reached the max of ${maxRounds} rounds ` +
-      `without agreement. ${rateClause} Do you want to accept their number, or name ` +
-      `one final counter? Any number you give is final — we won't negotiate further; ` +
-      `the creator can only take it or leave it.`;
-
-    return openBrandDecision(ctx, email, {
-      reason: "max_rounds_reached",
-      question,
-      // Max-rounds offers all four actions: approve their number, counter (final),
-      // reject, or hand off. (B10 over-ceiling, a later item, drops "counter".)
-      actions: ["approve", "reject", "counter", "handoff"],
-      context: {
-        reason: "max_rounds_reached",
-        actions: ["approve", "reject", "counter", "handoff"],
-        negotiationNodeId: node.id,
-        ...(creatorRate !== undefined ? { creatorRate } : {}),
-        ...(floor !== undefined ? { floor } : {}),
-        ...(ceiling !== undefined ? { ceiling } : {}),
-        maxRounds,
-        round: instance.negotiationRound,
-      },
-      ...(creatorReply ? { quotedReply: creatorReply } : {}),
-      eventType: "NEGOTIATION_TURN",
-      eventPayload: {
-        outcome: "ESCALATE",
-        reason: "max_rounds_reached",
-        round: instance.negotiationRound,
-        maxRounds,
-      },
+    return openMaxRoundsBrandDecision(ctx, email, config, {
+      creatorReply,
+      maxRounds,
+      round: instance.negotiationRound,
     });
   }
 
@@ -324,35 +460,36 @@ export async function executeNegotiation(
     }
 
     case "escalate": {
-      return {
-        nextState: "MANUAL_REVIEW",
-        nextNodeId: null,
-        completedAt: new Date(),
-        eventType: "NEGOTIATION_TURN",
-        eventPayload: { outcome, reason: "escalated", round: instance.negotiationRound, message },
-      };
+      // B10 (§3): the agent escalated because the creator's ask is above the
+      // internal ceiling (or the rate was unreadable). Instead of dead-ending in
+      // MANUAL_REVIEW, page the brand for an approve/reject/handoff decision and
+      // park in AWAITING_BRAND_DECISION; the run auto-resumes on the brand's reply.
+      return openOverCeilingBrandDecision(ctx, email, config, {
+        creatorReply,
+        round: instance.negotiationRound,
+        message,
+      });
     }
 
     case "counter": {
       const newRound = instance.negotiationRound + 1;
 
-      // Secondary guard: if incrementing would hit or exceed maxRounds, escalate
-      // to MANUAL_REVIEW instead of sending another counter that can't be
-      // replied to within the allowed window.
+      // Secondary guard: incrementing would hit or exceed maxRounds. We can't send
+      // another counter that can't be replied to within the allowed window — so
+      // instead of dead-ending in MANUAL_REVIEW, this IS the max-rounds moment (B9):
+      // page the brand for one final move (approve their number / final counter /
+      // reject / hand off) and park the run in AWAITING_BRAND_DECISION. Same
+      // actionable email + resolution loop as the entry hard stop above; the run
+      // auto-resumes on the brand's reply. Previously this was the unreachable-B9
+      // gap — a straight counter→counter never entered the hard stop at >=maxRounds
+      // because this guard bailed to a dashboard-only MANUAL_REVIEW first.
       if (newRound >= maxRounds) {
-        return {
-          nextState: "MANUAL_REVIEW",
-          nextNodeId: null,
-          completedAt: new Date(),
-          negotiationRound: newRound,
-          eventType: "NEGOTIATION_TURN",
-          eventPayload: {
-            outcome: "ESCALATE",
-            reason: "max_rounds_reached_on_counter",
-            round: newRound,
-            maxRounds,
-          },
-        };
+        return openMaxRoundsBrandDecision(ctx, email, config, {
+          creatorReply,
+          maxRounds,
+          // Report the ceiling round we've reached, not a half-advanced counter.
+          round: maxRounds,
+        });
       }
 
       // Try AI-generated counter copy; fall back to agent-provided message.

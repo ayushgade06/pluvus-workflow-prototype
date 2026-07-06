@@ -22,7 +22,7 @@ FIX-8 — production hardening:
     the exact OPENAI_MODEL id.
 
 Provider-specific knobs:
-    Ollama:  OLLAMA_MODEL (default "qwen3:8b"), OLLAMA_MODEL_DIGEST (optional),
+    Ollama:  OLLAMA_MODEL (default "qwen3:30b-a3b"), OLLAMA_MODEL_DIGEST (optional),
              OLLAMA_BASE_URL (default http://localhost:11434)
     OpenAI:  OPENAI_MODEL (default "gpt-4o-mini"), OPENAI_API_KEY (required)
 
@@ -50,7 +50,7 @@ def _ollama_model_id() -> str:
     a later `ollama pull` of the same tag can't silently change behavior on the
     decision path (audit Determinism finding).
     """
-    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:30b-a3b")
     digest = os.getenv("OLLAMA_MODEL_DIGEST", "").strip()
     if digest:
         # Tolerate the digest being given with or without the sha256: prefix.
@@ -59,13 +59,81 @@ def _ollama_model_id() -> str:
     return model
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse a boolean env var. Accepts 1/true/yes/on (any case) as True."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _parse_keep_alive(raw: str | None):
+    """Normalize OLLAMA_KEEP_ALIVE for the Ollama API.
+
+    Ollama accepts keep_alive as either an integer number of SECONDS (with -1 =
+    forever, 0 = unload now) OR a Go duration STRING that MUST carry a unit
+    ("30m", "1h"). A unit-less string like "-1"/"300" is rejected with HTTP 400
+    "missing unit in duration". So a purely-numeric value is returned as an int;
+    anything with a unit is passed through as the trimmed string. Empty/None
+    defaults to -1 (pin forever).
+    """
+    s = (raw or "").strip()
+    if s == "":
+        return -1
+    try:
+        return int(s)  # "-1", "0", "300" -> int seconds (no unit needed)
+    except ValueError:
+        return s  # "30m", "1h", "90s" -> Go duration string
+
+
 def _make_ollama(temperature: float):
     from langchain_ollama import ChatOllama  # type: ignore[import]
+
+    # qwen3 is a HYBRID REASONING model — left to its defaults it emits a long
+    # <think>…</think> block before the JSON. On the classify/negotiate/draft
+    # paths that reasoning is pure latency: the routes want a structured decision,
+    # not a visible chain of thought. On a box where the 30B runs mostly on CPU a
+    # single classify was measured at ~287s almost entirely inside <think>, which
+    # blew the interactive timeout and truncated the block so no JSON parsed →
+    # StructuredOutputError → UNKNOWN/confidence-0 → every real reply dumped to
+    # MANUAL_REVIEW. reasoning=False sets Ollama's `think: false` so the model
+    # answers directly; the structured.py <think> stripper still handles any model
+    # that ignores the flag. Override with OLLAMA_REASONING=true to study a chain.
+    reasoning = _env_flag("OLLAMA_REASONING", default=False)
+    # Default context window (Ollama's own default is 4096). The prompt + a short
+    # structured answer fit comfortably in 8k; bump via OLLAMA_NUM_CTX if needed.
+    num_ctx = _env_int("OLLAMA_NUM_CTX", 8192)
+    # Keep the model resident between calls. Ollama unloads a model after ~5min
+    # idle by default; reloading a large model blew the interactive timeout on the
+    # FIRST reply after any gap. -1 pins it in memory indefinitely; override with
+    # OLLAMA_KEEP_ALIVE (e.g. "30m", or "0" to unload immediately). This is a big
+    # latency win. NOTE: Ollama parses a *string* keep_alive as a Go duration and
+    # REJECTS "-1"/"0" (no unit) with 400 "missing unit in duration"; a bare
+    # integer means seconds (and -1 = forever). So pass a plain integer through as
+    # an int, and only pass unit-bearing strings ("30m", "1h") as strings.
+    keep_alive = _parse_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
+    # Hard cap on generated tokens. classify/negotiate/draft emit a small JSON
+    # object (an intent + one-sentence reason, or a short email) — without a cap
+    # the CPU-bound model (~4 tok/s here) can ramble for hundreds of tokens and
+    # run for minutes. 512 is ample for a draft email; classify/negotiate use far
+    # less. Override with OLLAMA_NUM_PREDICT. -1 = unbounded (not recommended here).
+    num_predict = _env_int("OLLAMA_NUM_PREDICT", 512)
 
     return ChatOllama(
         model=_ollama_model_id(),
         base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         temperature=temperature,
+        reasoning=reasoning,
+        num_ctx=num_ctx,
+        num_predict=num_predict,
+        keep_alive=keep_alive,
     )
 
 

@@ -47,6 +47,88 @@ const SIGNATURE_DELIMITERS: RegExp[] = [
 // aggressively and fall back to the raw body.
 const MIN_CLEANED_CHARS = 2;
 
+// ---------------------------------------------------------------------------
+// HTML → plain text (real emails from Gmail/Outlook/etc. are HTML)
+// ---------------------------------------------------------------------------
+// The quote/signature stripping below is line-based, but an HTML email is one
+// tag blob with no ">" quote lines or "-- " delimiters — so without this step
+// the raw markup ("<div><p>Hi ...</p>") reaches the classifier, which returns
+// UNKNOWN/confidence-0 and routes every real reply to MANUAL_REVIEW. We convert
+// HTML to plain text FIRST, then the existing line logic strips quoted history.
+
+// Cheap, dependency-free HTML detection: a tag-shaped token anywhere in the body.
+// Good enough to decide whether to run the (idempotent-ish) HTML→text pass.
+const HTML_TAG_RE = /<\/?[a-z][\s\S]*?>/i;
+
+const NAMED_ENTITIES: Record<string, string> = {
+  "&nbsp;": " ",
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'",
+  "&apos;": "'",
+  "&mdash;": "—",
+  "&ndash;": "–",
+  "&hellip;": "…",
+  "&rsquo;": "’",
+  "&lsquo;": "‘",
+  "&rdquo;": "”",
+  "&ldquo;": "“",
+};
+
+/** Decode the common named + numeric HTML entities the classifier would otherwise
+ *  see as literal "&#39;". Unknown entities are left untouched. */
+function decodeEntities(text: string): string {
+  let out = text.replace(
+    /&(?:nbsp|amp|lt|gt|quot|#39|apos|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);/gi,
+    (m) => NAMED_ENTITIES[m.toLowerCase()] ?? NAMED_ENTITIES[m] ?? m,
+  );
+  // Numeric entities: decimal (&#123;) and hex (&#x1F600;).
+  out = out.replace(/&#(\d+);/g, (_m, d: string) => safeFromCodePoint(parseInt(d, 10)));
+  out = out.replace(/&#x([0-9a-f]+);/gi, (_m, h: string) => safeFromCodePoint(parseInt(h, 16)));
+  return out;
+}
+
+function safeFromCodePoint(code: number): string {
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return "";
+  try {
+    return String.fromCodePoint(code);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Convert an HTML email body to plain text: drop script/style content, turn
+ * block-level and <br> tags into line breaks, strip all remaining tags, decode
+ * entities, and collapse whitespace. Returns the input unchanged when it doesn't
+ * look like HTML, so plain-text replies are unaffected.
+ */
+export function htmlToPlainText(body: string): string {
+  if (typeof body !== "string" || !HTML_TAG_RE.test(body)) return body;
+  let text = body;
+  // Remove content we never want as text.
+  text = text.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ");
+  text = text.replace(/<!--[\s\S]*?-->/g, " ");
+  // Line breaks: <br>, and the close of common block elements, become newlines.
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, "\n");
+  text = text.replace(/<li\b[^>]*>/gi, "\n- ");
+  // Strip every remaining tag.
+  text = text.replace(/<[^>]+>/g, "");
+  // Decode entities AFTER tag removal so a decoded "<"/">" can't reopen a tag.
+  text = decodeEntities(text);
+  // Normalize whitespace: trim each line, drop blank runs.
+  text = text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/[ \t ]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text;
+}
+
 /**
  * Return the creator's top-posted reply with quoted history and signature
  * removed. Falls back to the trimmed original when cleaning would leave
@@ -57,7 +139,12 @@ export function extractReplyText(rawBody: string): string {
     return typeof rawBody === "string" ? rawBody : "";
   }
 
-  const lines = rawBody.split(/\r?\n/);
+  // Real emails are HTML: convert to plain text FIRST so the quote/signature
+  // line logic below (and the classifier/negotiation agent downstream) operate on
+  // readable text, not "<div><p>...". No-op for plain-text bodies.
+  const body = htmlToPlainText(rawBody);
+
+  const lines = body.split(/\r?\n/);
   const kept: string[] = [];
 
   for (const line of lines) {
@@ -77,9 +164,10 @@ export function extractReplyText(rawBody: string): string {
   const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 
   // Safety net: never hand the classifier an empty/near-empty string just
-  // because the heuristic over-cut. Fall back to the raw (trimmed) body.
+  // because the heuristic over-cut. Fall back to the HTML-stripped body (not the
+  // raw HTML) so the fallback is still readable plain text.
   if (cleaned.replace(/\s/g, "").length < MIN_CLEANED_CHARS) {
-    return rawBody.trim();
+    return body.trim();
   }
   return cleaned;
 }

@@ -116,8 +116,14 @@ def test_deal_label_strips_commission_clause():
 
 
 def test_fixed_fee_deal_has_no_commission_bullet():
-    """A fixed-fee deal (no commission in ctx) must not mention any commission %,
-    and must use the full deal description (nothing to strip)."""
+    """A fixed-fee deal (no commission in ctx) must not present any commission %
+    as a deal term, and must use the full deal description (nothing to strip).
+
+    NOTE: the prompt now carries an explicit guard TELLING the model there is no
+    commission (so it can't echo a percentage the creator names), so the literal
+    word "commission" DOES appear — in a negative instruction. We therefore assert
+    the absence of any commission BULLET / percentage-as-content, not the absence
+    of the word."""
     req = DraftRequest(
         purpose="counter_offer",
         creatorName="Ayush",
@@ -128,7 +134,30 @@ def test_fixed_fee_deal_has_no_commission_bullet():
     )
     ctx = {"deliverables": "1 Reel", "timeline": "Live by July 20, 2026"}
     p = _build_offer_prompt(req, "Pluvus", ctx, "", _scope_lines(req, ctx))
-    assert "commission" not in p.lower()
+    # No commission percentage presented as content, and no dedicated bullet.
+    assert "%" not in p
+    assert "commission bullet" not in p.lower()
+    # The guard is present and negative — it forbids mentioning/agreeing to one.
+    assert "NO commission component" in p
+    assert "agree to any commission percentage" in p
+
+
+def test_offer_prompt_pins_commission_and_forbids_creator_echo():
+    """Regression: the commission is the BRAND's figure, never the creator's.
+
+    Prod leak — campaign commission was 10% but the creator's message said "keep
+    the 13% commission structure the same", and the offer copy restated "13%
+    commission structure". The prompt must (a) pin the campaign's own percentage
+    and (b) explicitly forbid repeating/adopting any other percentage the creator
+    names."""
+    p = _prompt()  # ctx commissionRate = 10
+    assert "set by the brand and is EXACTLY 10%" in p
+    # The anti-echo instruction: ignore any other percentage the creator wrote.
+    collapsed = " ".join(p.split())
+    assert "IGNORE their number" in collapsed
+    assert "keep the same" in collapsed  # bans "keep the same" for a foreign %
+    # And it must not treat the commission as the creator's to set.
+    assert "never imply the commission is theirs to set" in collapsed.lower()
 
 
 # ── Fix: cookie/attribution (and similar) deferral is CONDITIONAL on the ───────

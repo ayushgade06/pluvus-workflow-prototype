@@ -368,9 +368,10 @@ From `.env.example` (root) and where each is read:
 → operator fallback `affiliatepartner@pluvus.com`.
 
 > ⚠️ **Mismatch to be aware of:** `.env.example` defaults `AGENT_SERVICE_URL` to
-> port **8001** and `OLLAMA_MODEL` to **qwen2.5:7b**, but the **code defaults**
-> differ — `agentServiceClient.ts` → `http://localhost:8000`, and `llm.py` →
-> `qwen3:8b`. Set these explicitly in `.env` to avoid surprises.
+> port **8001**, but the **code default** in `agentServiceClient.ts` is
+> `http://localhost:8000`. Set it explicitly in `.env` to avoid surprises.
+> (`OLLAMA_MODEL` is aligned: both `.env.example` and the `llm.py` code default
+> are **qwen3:30b-a3b**, the strongest local model.)
 
 ### Negotiation config (per‑workflow node config, **not** env)
 Set on the `NEGOTIATION` node from the template (`server/src/templates/index.ts`):

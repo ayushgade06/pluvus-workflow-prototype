@@ -358,8 +358,26 @@ export async function executeBrandDecision(
 
     case "APPROVE":
       await recordResolution(decision.id, "RESOLVED", parse, rawReply);
-      // Brand approved the creator's number → ACCEPTED, which auto-advances into
-      // Reward Setup exactly as a normal negotiation acceptance does (§3 B9).
+      // What APPROVE means depends on WHY we paged the brand:
+      //
+      //   low_confidence_reply (A1/A2) — the brand is reading the creator's
+      //     INTENT, not signing off on a money deal. "Approve" = "yes, they're
+      //     interested" → resume NEGOTIATING so the negotiation node runs the
+      //     normal present/counter logic against the creator's reply (which is
+      //     already in the thread). This does NOT close a deal.
+      //
+      //   max_rounds_reached / escalated (B9/B10) — the brand is approving the
+      //     creator's NUMBER → ACCEPTED, which auto-advances into Reward Setup
+      //     exactly as a normal negotiation acceptance does (§3 B9/B10).
+      if (context.reason === "low_confidence_reply") {
+        return {
+          nextState: "NEGOTIATING",
+          nextNodeId: context.negotiationNodeId ?? null,
+          eventType: "REPLY_CLASSIFIED",
+          // Reads as the brand resolving the ambiguous reply to POSITIVE.
+          eventPayload: { ...commonPayload, resolvedIntent: "POSITIVE", resumedNegotiation: true },
+        };
+      }
       return {
         nextState: "ACCEPTED",
         nextNodeId: null,
@@ -370,6 +388,23 @@ export async function executeBrandDecision(
 
     case "COUNTER":
       await recordResolution(decision.id, "RESOLVED", parse, rawReply);
+      // For A1/A2, a brand COUNTER <n> means "read them as proposing <n>" — the
+      // conversation is still early (round 0), so we can safely resume the
+      // negotiation node, which reads the creator's reply + the number now on the
+      // thread and steps normally. No max-rounds loop risk here (unlike B9).
+      if (context.reason === "low_confidence_reply") {
+        return {
+          nextState: "NEGOTIATING",
+          nextNodeId: context.negotiationNodeId ?? null,
+          eventType: "REPLY_CLASSIFIED",
+          eventPayload: {
+            ...commonPayload,
+            resolvedIntent: "POSITIVE",
+            resumedNegotiation: true,
+            ...(parse.value !== undefined ? { seededRate: parse.value } : {}),
+          },
+        };
+      }
       // B9/B11 locked decision 1: a brand COUNTER is a FINAL take-it-or-leave-it
       // offer to the creator, NOT a re-opened negotiation round. Delivering it
       // requires a one-shot "final offer sent" sub-state that waits on the
