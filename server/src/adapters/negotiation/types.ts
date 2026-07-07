@@ -58,6 +58,17 @@ export interface NegotiationResponse {
   proposedTerms?: NegotiationTerm;
   responseDraft?: string;
   reasoning?: string;
+  /**
+   * Comprehension carried across the /negotiate → /draft seam so the SENT email
+   * answers every question and acknowledges pushed fixed terms, instead of
+   * /draft re-parsing the raw reply. See
+   * .claude/spec/draft-comprehension-threading.md §5.4.
+   * Every distinct question/request the creator raised this turn.
+   */
+  creatorQuestions?: string[];
+  /** Which FIXED terms the creator pushed to change, from the closed vocabulary
+   *  commission|perk|deliverables|timeline. */
+  pushedFixedTerms?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +113,12 @@ export interface DraftRequest {
   /** Free-text product/sample reward blurb (e.g. "a free pair of our running
    *  shoes"). Mentioned in the copy only when present. */
   rewardDescription?: string | undefined;
+  /** Creator's questions, extracted upstream by /negotiate so /draft answers an
+   *  explicit checklist instead of re-parsing the raw reply (spec §5.5). */
+  creatorQuestions?: string[] | undefined;
+  /** Fixed terms the creator pushed on (commission|perk|deliverables|timeline),
+   *  so the copy ACKNOWLEDGES the ask rather than silently restating the value. */
+  pushedFixedTerms?: string[] | undefined;
 }
 
 export interface DraftResponse {

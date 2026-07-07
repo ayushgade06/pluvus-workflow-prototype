@@ -93,6 +93,17 @@ export interface NegotiateResult {
    * when the provider returned no numeric term.
    */
   proposedRate?: number;
+  /**
+   * Comprehension threaded from /negotiate across the seam (spec §6.1): the
+   * executor destructures these and spreads them into the /draft `extra` so the
+   * SENT email answers every question and acknowledges pushed fixed terms.
+   * Undefined when the provider emitted none (e.g. rules mode).
+   *   creatorQuestions — every question/request the creator raised this turn.
+   *   pushedFixedTerms — fixed terms (commission|perk|deliverables|timeline) the
+   *     creator tried to change.
+   */
+  creatorQuestions?: string[];
+  pushedFixedTerms?: string[];
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and

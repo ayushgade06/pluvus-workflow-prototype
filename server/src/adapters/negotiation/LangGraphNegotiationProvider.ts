@@ -48,6 +48,20 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
     if (typeof data["reasoning"] === "string") {
       response.reasoning = data["reasoning"];
     }
+    // Carry the comprehension fields across the seam (spec §5.4). This adapter
+    // reconstructs the response field-by-field from the raw HTTP JSON, so these
+    // MUST be copied explicitly or they are silently dropped before the executor
+    // ever sees them. Keep only clean string arrays; anything else → omitted.
+    const asStringArray = (v: unknown): string[] | undefined =>
+      Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
+    const creatorQuestions = asStringArray(data["creatorQuestions"]);
+    if (creatorQuestions) {
+      response.creatorQuestions = creatorQuestions;
+    }
+    const pushedFixedTerms = asStringArray(data["pushedFixedTerms"]);
+    if (pushedFixedTerms) {
+      response.pushedFixedTerms = pushedFixedTerms;
+    }
     return response;
   }
 

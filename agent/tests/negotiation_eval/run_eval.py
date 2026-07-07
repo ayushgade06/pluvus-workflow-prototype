@@ -344,10 +344,15 @@ def run_conversation(conv):
         draft = (resp or {}).get("responseDraft")
 
         # Call /draft for the actual sent email of this turn (the creator-facing
-        # copy), threading the creator's requested rate as the executor does.
+        # copy), threading the creator's requested rate AND the comprehension
+        # (questions + pushed fixed terms) across the seam as the executor does.
         sent = None
         if not err and action is not None:
-            sent = call_draft(action, rate, creator_reply)
+            sent = call_draft(
+                action, rate, creator_reply,
+                creator_questions=(resp or {}).get("creatorQuestions") or [],
+                pushed_fixed_terms=(resp or {}).get("pushedFixedTerms") or [],
+            )
 
         turns_out.append({
             "turn": idx + 1, "round": round_no, "creatorReply": creator_reply,
@@ -445,9 +450,17 @@ def draft_purpose_for(action):
     return None
 
 
-def call_draft(action, rate, creator_reply, requested_rate=None):
+def call_draft(action, rate, creator_reply, requested_rate=None,
+               creator_questions=None, pushed_fixed_terms=None):
     """Call /draft the way the executor would for this action, returning
     {subject, body, dt, err, purpose} or None if this action produces no draft.
+
+    creator_questions / pushed_fixed_terms are the comprehension /negotiate
+    extracted this turn; the executor threads them into /draft so the SENT email
+    answers an explicit checklist and acknowledges pushed fixed terms. We mirror
+    that here so the eval exercises the real end-to-end seam
+    (.claude/spec/draft-comprehension-threading.md §9), not a comprehension-blind
+    /draft call.
     """
     purpose = draft_purpose_for(action)
     if purpose is None:
@@ -471,6 +484,8 @@ def call_draft(action, rate, creator_reply, requested_rate=None):
         },
         **({"proposedTerms": {"rate": rate}} if rate is not None else {}),
         **({"creatorRequestedRate": requested_rate} if requested_rate is not None else {}),
+        **({"creatorQuestions": creator_questions} if creator_questions else {}),
+        **({"pushedFixedTerms": pushed_fixed_terms} if pushed_fixed_terms else {}),
     }
     status, resp, dt, err = post("/draft", payload)
     if err or not isinstance(resp, dict):
@@ -507,9 +522,14 @@ def main():
             if not err and isinstance(resp, dict):
                 action = resp.get("action")
                 rate = (resp.get("proposedTerms") or {}).get("rate")
-                print(f"    negotiate {status} in {dt:.0f}s -> {action} {rate}")
-                # Call /draft for the SENT email (the copy the creator receives).
-                draft = call_draft(action, rate, case["reply"])
+                cqs = resp.get("creatorQuestions") or []
+                pfts = resp.get("pushedFixedTerms") or []
+                print(f"    negotiate {status} in {dt:.0f}s -> {action} {rate} "
+                      f"| Q={len(cqs)} pushed={pfts}")
+                # Call /draft for the SENT email (the copy the creator receives),
+                # threading the comprehension across the seam like the executor.
+                draft = call_draft(action, rate, case["reply"],
+                                   creator_questions=cqs, pushed_fixed_terms=pfts)
                 if draft:
                     tag = "ERROR" if draft["err"] else "ok"
                     print(f"    draft ({draft['purpose']}) {tag} in {draft['dt']:.0f}s")

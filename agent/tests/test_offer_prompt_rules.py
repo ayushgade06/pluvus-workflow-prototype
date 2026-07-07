@@ -182,3 +182,79 @@ def test_offer_prompt_does_not_volunteer_unasked_topics():
     # whitespace first — the template wraps this sentence across lines.
     collapsed = " ".join(p.split())
     assert "do not mention these subjects at all" in collapsed
+
+
+# ── Comprehension threading (spec: draft-comprehension-threading.md §7/§9.5) ────
+#    /negotiate now hands /draft an explicit question checklist + the fixed terms
+#    the creator pushed, so the offer prompt fires PRECISELY instead of relying on
+#    the model re-parsing the raw reply. These assert the prompt renders those
+#    blocks when the fields are populated and is byte-unchanged when they are empty.
+
+
+def test_question_checklist_renders_each_question_when_populated():
+    """A populated creatorQuestions list becomes a numbered must-answer checklist
+    in the prompt (spec §7.1), naming every question the creator raised."""
+    questions = [
+        "what is the fee?",
+        "when does content go live?",
+        "can I get 15% commission?",
+    ]
+    p = _prompt(creatorQuestions=questions)
+    # The checklist header is unique to the rendered block (distinct from the
+    # prompt's always-present generic "your email MUST answer EACH one" line).
+    assert "The creator asked the following" in p
+    # Every question is enumerated verbatim in the checklist.
+    for i, q in enumerate(questions, start=1):
+        assert f"{i}) {q}" in p
+
+
+def test_question_checklist_absent_when_no_questions():
+    """With no creatorQuestions the explicit checklist block does not render —
+    behavior falls back to the prompt's generic 'identify EVERY question' text,
+    so the prompt is unchanged from before this feature."""
+    p = _prompt()  # creatorQuestions defaults to []
+    assert "The creator asked the following" not in p
+
+
+def test_pushed_fixed_term_acknowledgement_renders_and_names_term():
+    """When the creator PUSHED a fixed term, the fixed-terms point fires and names
+    the specific term(s) with their fixed value so the copy acknowledges the ask
+    (the Case-10 gap), not merely restates the value (spec §7.2)."""
+    p = _prompt(pushedFixedTerms=["commission", "perk"], rewardDescription="a free pair of shoes")
+    collapsed = " ".join(p.split())
+    # The pushed-terms point is present and framed as "the creator asked to change".
+    assert "Fixed terms the creator asked to change" in collapsed
+    assert "PUSHED on" in collapsed
+    # The commission is named as fixed at the campaign value (10% from ctx).
+    assert "the commission is fixed at 10%" in collapsed
+    # The pushed perk is named with its fixed value.
+    assert "the product perk is fixed as a free pair of shoes" in collapsed
+
+
+def test_pushed_fixed_term_normalizes_vocabulary_synonyms():
+    """pushedFixedTerms is normalized to the closed vocabulary in code (spec §4.2),
+    so a synonym like 'commission rate' still fires the commission acknowledgement
+    rather than being dropped."""
+    p = _prompt(pushedFixedTerms=["commission rate"])
+    assert "the commission is fixed at 10%" in p
+
+
+def test_fixed_terms_point_absent_when_nothing_pushed():
+    """The fixed-terms acknowledgement point does NOT fire merely because the
+    campaign HAS fixed terms — only when the creator actually pushed one. With an
+    empty pushedFixedTerms the block is absent (the standing 'only the fee is
+    negotiable' rule in the prompt body still applies)."""
+    p = _prompt()  # ctx has commissionRate=10 but pushedFixedTerms defaults to []
+    assert "Fixed terms the creator asked to change" not in p
+    assert "PUSHED on" not in p
+    # The general fixed-terms rule in the prompt body is still present (unchanged).
+    assert "only the fixed fee is negotiable" in p
+
+
+def test_prompt_byte_identical_when_comprehension_empty():
+    """Regression guard (spec §9.4/§9.5): with both comprehension fields empty the
+    built prompt is IDENTICAL to one built without ever passing them — the feature
+    adds nothing to the audited path when the producer emitted nothing."""
+    baseline = _prompt()
+    with_empty = _prompt(creatorQuestions=[], pushedFixedTerms=[])
+    assert baseline == with_empty

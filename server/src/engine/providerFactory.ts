@@ -273,6 +273,10 @@ export class AgentProviderAdapter implements IAgentProvider {
       creatorReply?: string;
       creatorRequestedRate?: number;
       dealDescription?: string;
+      // Comprehension threaded from /negotiate so the SENT email answers an
+      // explicit checklist and acknowledges pushed fixed terms (spec §6.2).
+      creatorQuestions?: string[];
+      pushedFixedTerms?: string[];
     },
   ): Promise<EmailDraft | null> {
     const request = {
@@ -291,6 +295,11 @@ export class AgentProviderAdapter implements IAgentProvider {
       creatorReply: extra?.creatorReply,
       creatorRequestedRate: extra?.creatorRequestedRate,
       dealDescription: extra?.dealDescription,
+      // Comprehension forwarded to /draft (spec §5.5/§6.2). The Python
+      // DraftRequest reads these to render the question checklist + fixed-term
+      // acknowledgement instead of re-parsing the raw reply.
+      creatorQuestions: extra?.creatorQuestions,
+      pushedFixedTerms: extra?.pushedFixedTerms,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

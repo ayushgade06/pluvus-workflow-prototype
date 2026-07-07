@@ -121,6 +121,11 @@ class NegotiateResponse(BaseModel):
     proposedTerms: dict[str, Any] | None = None
     responseDraft: str | None = None
     reasoning: str | None = None
+    # Comprehension threaded to the executor → /draft (spec §5.3). Both negotiate
+    # paths copy these off their internal _Negotiate*LLMOutput. Default [] keeps
+    # the wire response backward-compatible; rules mode may leave them empty.
+    creatorQuestions: list[str] = []
+    pushedFixedTerms: list[str] = []
 
 
 class _NegotiateLLMOutput(BaseModel):
@@ -135,6 +140,12 @@ class _NegotiateLLMOutput(BaseModel):
     response: str
     creatorRateMentioned: Any | None = None
     confidence: float | None = None
+    # Comprehension carried across the /negotiate → /draft seam (spec §5.2). Same
+    # two fields as the llm-mode schema; default [] so rules mode is unchanged
+    # until _NEGOTIATE_PROMPT is taught to emit them (Phase 2 prompt work). See
+    # _NegotiateDecisionLLMOutput for the full rationale on the loose types.
+    creatorQuestions: list[str] = []
+    pushedFixedTerms: list[str] = []
 
     @field_validator("response")
     @classmethod
@@ -163,6 +174,19 @@ class _NegotiateDecisionLLMOutput(BaseModel):
     rate: Any | None = None
     response: str
     reasoning: str | None = None
+    # Comprehension carried across the /negotiate → /draft seam so the SENT email
+    # answers every question and acknowledges pushed fixed terms, instead of
+    # /draft re-parsing the raw reply. Non-optional with default [] — an empty
+    # list means "the model looked and found none" (distinct from "field absent")
+    # and is backward-compatible with old callers. See
+    # .claude/spec/draft-comprehension-threading.md §4/§5.1.
+    #   creatorQuestions — every distinct question/request the creator raised.
+    #   pushedFixedTerms — which FIXED terms the creator tried to change, from the
+    #     closed vocabulary commission|perk|deliverables|timeline. Kept a loose
+    #     list[str] (NOT a Literal): the prompt pins the vocabulary and code
+    #     normalizes it, so a stray "commission rate" can't 422 a money decision.
+    creatorQuestions: list[str] = []
+    pushedFixedTerms: list[str] = []
 
     @field_validator("response")
     @classmethod
@@ -205,6 +229,17 @@ class DraftRequest(BaseModel):
     # so the model never invents deal terms. No dollar figures (those are
     # negotiated later).
     dealDescription: str | None = None
+    # Comprehension threaded from /negotiate across the executor (spec §5.6) so
+    # the SENT email answers an explicit checklist instead of /draft re-parsing
+    # the raw reply. Non-optional with default [] (empty = "none found", not
+    # "field absent"), backward-compatible with old callers.
+    #   creatorQuestions — every question/request the creator raised this turn.
+    #     _build_offer_prompt renders these as a numbered must-answer checklist.
+    #   pushedFixedTerms  — which fixed terms (commission|perk|deliverables|
+    #     timeline) the creator pushed on, so the copy ACKNOWLEDGES the ask
+    #     ("we can't move to 15%") rather than silently restating the fixed value.
+    creatorQuestions: list[str] = []
+    pushedFixedTerms: list[str] = []
 
 
 class DraftResponse(BaseModel):
@@ -454,6 +489,73 @@ def _negotiation_strategy() -> str:
 _RATE_BEARING_ACTIONS = {"ACCEPT", "COUNTER", "PRESENT_OFFER"}
 
 
+# The closed vocabulary for pushedFixedTerms (spec §4). The schema stays a loose
+# list[str] (a Pydantic Literal would 422 the whole money decision over copy
+# metadata); we pin the vocabulary in the prompt and normalize here in code —
+# the same loose-schema/normalize-in-code pattern _apply_decision_guards uses.
+_FIXED_TERM_VOCAB = {"commission", "perk", "deliverables", "timeline"}
+
+# Loose synonyms the model may emit instead of the canonical token, mapped back
+# to the vocabulary so a near-miss ("commission rate", "product") still counts
+# rather than being silently dropped.
+_FIXED_TERM_ALIASES = {
+    "commission rate": "commission",
+    "commission %": "commission",
+    "commission percentage": "commission",
+    "product": "perk",
+    "product perk": "perk",
+    "reward": "perk",
+    "sample": "perk",
+    "gift": "perk",
+    "deliverable": "deliverables",
+    "scope": "deliverables",
+    "content": "deliverables",
+    "schedule": "timeline",
+    "deadline": "timeline",
+    "timing": "timeline",
+}
+
+
+def _normalize_pushed_terms(raw: Any) -> list[str]:
+    """Coerce the model's ``pushedFixedTerms`` to the closed vocabulary.
+
+    Accepts the model's loose output (may include synonyms, casing, or garbage),
+    maps recognized values onto ``commission|perk|deliverables|timeline``, drops
+    anything unrecognized, and de-duplicates while preserving order. Never
+    raises — an unreadable value becomes an empty list, which is safe (``/draft``
+    simply won't fire a fixed-term acknowledgement it has no basis for).
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        key = item.strip().lower()
+        term = key if key in _FIXED_TERM_VOCAB else _FIXED_TERM_ALIASES.get(key)
+        if term and term not in out:
+            out.append(term)
+    return out
+
+
+def _normalize_questions(raw: Any) -> list[str]:
+    """Coerce the model's ``creatorQuestions`` to a clean ``list[str]``.
+
+    Keeps non-empty string items (trimmed), drops blanks/non-strings, and
+    de-duplicates while preserving order. Never raises.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        q = item.strip()
+        if q and q not in out:
+            out.append(q)
+    return out
+
+
 def _apply_decision_guards(
     action_raw: str,
     rate_raw: Any,
@@ -673,11 +775,25 @@ deliverable, or timeline other than the ones in Campaign Context.
 
 ## Output
 
+Also report what you understood the creator to be asking, so the email we send
+answers it precisely:
+- `creatorQuestions`: a JSON array listing EVERY distinct question or request in
+  the creator's latest message, one per element, in their own words (e.g.
+  ["what is the fee?", "when does content go live?", "can I get 15% commission?"]).
+  If they asked nothing, return [].
+- `pushedFixedTerms`: a JSON array naming which FIXED (non-negotiable) terms the
+  creator tried to change. Use ONLY these exact values: "commission", "perk",
+  "deliverables", "timeline". Include a value only if they actually pushed to
+  change that term (e.g. asked for a higher commission % → "commission"; asked
+  for extra/different product → "perk"). If they pushed none, return [].
+
 Return ONLY valid JSON with no explanation:
 {{"action": "ACCEPT|COUNTER|PRESENT_OFFER|REJECT|ESCALATE",
   "rate": <number or null>,
   "response": "<ready-to-send email reply, signed off as {sender}>",
-  "reasoning": "<one sentence: why this action and number>"}}
+  "reasoning": "<one sentence: why this action and number>",
+  "creatorQuestions": ["<each question/request the creator raised>"],
+  "pushedFixedTerms": ["<any of: commission, perk, deliverables, timeline>"]}}
 
 The response field must be ready to send directly. Never use placeholders.
 """
@@ -781,6 +897,12 @@ def _llm_negotiate_decision(
     resp.responseDraft = parsed.response
     # Store the model's own reasoning for auditability; fall back to the action.
     resp.reasoning = (parsed.reasoning or "").strip() or decision.action
+    # Thread the comprehension across the seam (spec §5.3): normalize the model's
+    # loose output before it leaves the producer so the executor and /draft get
+    # clean data (questions trimmed/de-duped; fixed terms mapped to the closed
+    # vocabulary). Empty lists are fine — /draft renders as today when both empty.
+    resp.creatorQuestions = _normalize_questions(parsed.creatorQuestions)
+    resp.pushedFixedTerms = _normalize_pushed_terms(parsed.pushedFixedTerms)
     return resp
 
 
@@ -856,6 +978,25 @@ Classify the creator's message as one of:
 
 ---
 
+## Message comprehension (for the email we send)
+
+The creator may raise SEVERAL things in one message — e.g. propose a fee AND ask
+about the commission AND ask when content goes live. Read the WHOLE message and,
+in addition to the intent above, report:
+
+- `creatorQuestions`: every distinct question or request in their message, one per
+  array element, in their own words (e.g. ["what is the fee?", "when does content
+  go live?", "can I get 15% commission?"]). If they asked nothing, return [].
+- `pushedFixedTerms`: which FIXED (non-negotiable) terms they tried to change,
+  using ONLY these exact values: "commission", "perk", "deliverables", "timeline".
+  Only the fixed fee is negotiable; the commission %, the product perk, the
+  deliverables, and the timeline are set by the brand. Include a value only if the
+  creator actually pushed to change that term (asked for a higher commission % →
+  "commission"; asked for extra/different product → "perk"). If they pushed none,
+  return [].
+
+---
+
 ## Response Strategy by Intent
 
 **RATE_DISCOVERY**: Present the recommended offer (${recommended_offer}) naturally. Do not discuss ranges or maximums.
@@ -895,7 +1036,9 @@ Return ONLY valid JSON with no explanation:
 {{"intent": "RATE_DISCOVERY|RATE_PROPOSAL|NEGOTIATION|OBJECTION|ACCEPTANCE|REJECTION",
   "response": "<ready-to-send email reply, signed off as {sender}>",
   "creatorRateMentioned": <number or null>,
-  "confidence": <0.0-1.0>}}
+  "confidence": <0.0-1.0>,
+  "creatorQuestions": ["<each question/request the creator raised>"],
+  "pushedFixedTerms": ["<any of: commission, perk, deliverables, timeline>"]}}
 
 The response field must be ready to send directly to the creator. Sign off as {sender}. Never use placeholders.
 """
@@ -1073,6 +1216,11 @@ def _rules_negotiate(
         resp.proposedTerms = {"rate": decision.proposed_rate}
     resp.responseDraft = response_text
     resp.reasoning = intent
+    # Thread comprehension across the seam (spec §5.2/§5.3). These are [] unless
+    # _NEGOTIATE_PROMPT emits them; normalized identically to the llm path so
+    # both strategies hand /draft the same clean shape.
+    resp.creatorQuestions = _normalize_questions(parsed.creatorQuestions)
+    resp.pushedFixedTerms = _normalize_pushed_terms(parsed.pushedFixedTerms)
     return resp
 
 
@@ -1218,6 +1366,8 @@ when/how they get paid): answer those too. If we have the detail, state it; if w
 were not given that specific, say in one honest sentence it'll be confirmed
 together on the next step — never invent a number or term. Leaving any question
 the creator asked unanswered reads as ignoring them.
+
+{question_checklist}
 
 You MUST also address EACH of the points below in its own clearly separated
 section — do not answer only the fee and skip the rest. Cover, in this order:
@@ -1524,28 +1674,66 @@ def _build_offer_prompt(
     else:
         brand_goal = ""
 
-    # Fixed (non-negotiable) terms the creator may have tried to change. Only the
-    # fee moves; the commission %, the product perk/reward, deliverables, and
-    # timeline are brand-set. This is a must-cover point so the model actually
-    # RESPONDS to a "can we do 15%? / can I get two pairs?" request (stating it's
-    # fixed) instead of silently ignoring it. Only built when we have the values.
+    # Fixed (non-negotiable) terms the creator ACTUALLY pushed on this turn.
+    # Threaded from /negotiate (spec §7): the executor passes pushedFixedTerms,
+    # the closed vocabulary subset of commission|perk|deliverables|timeline the
+    # creator tried to change. This block now fires ONLY when they pushed one
+    # (not merely whenever the campaign HAS fixed terms) and names the SPECIFIC
+    # term(s), so the copy acknowledges the ask ("we can't move to 15%") instead
+    # of silently restating the fixed value — the Case-10 gap. When
+    # pushedFixedTerms is empty (rules mode, or nothing pushed) this stays "" and
+    # the model still gets the standing "only the fee is negotiable" rule from
+    # _OFFER_PROMPT's body, so behavior is unchanged.
     reward = (req.rewardDescription or ctx.get("rewardDescription") or "").strip()
-    fixed_bits: list[str] = []
-    if commission is not None:
-        fixed_bits.append(f"the commission is fixed at {commission}% (it cannot be increased or changed)")
-    if reward:
-        fixed_bits.append(f"the product perk is fixed as: {reward} (it cannot be increased or swapped)")
-    if fixed_bits:
+    pushed = _normalize_pushed_terms(req.pushedFixedTerms)
+    # Human-readable, value-bearing phrase per pushed term. Where we know the
+    # fixed value (commission %, perk blurb) we state it; deliverables/timeline
+    # are named generically (their concrete values live in their own points).
+    _pushed_phrase = {
+        "commission": (
+            f"the commission is fixed at {commission}% and cannot be increased or changed"
+            if commission is not None
+            else "this is a fixed-fee deal with no commission component to add"
+        ),
+        "perk": (
+            f"the product perk is fixed as {reward} and cannot be increased or swapped"
+            if reward
+            else "the product perk is a standard, fixed part of this campaign and cannot be changed"
+        ),
+        "deliverables": "the deliverables are set by the brand and cannot be reduced or changed",
+        "timeline": "the go-live timeline is set by the brand and cannot be changed",
+    }
+    if pushed:
+        pushed_bits = "; ".join(_pushed_phrase[t] for t in pushed)
         fixed_terms_goal = (
-            "4. Fixed terms — if the creator asked to change the commission %, the "
-            "product perk, the deliverables, or the timeline, RESPOND to that ask: "
-            "say warmly that it is a standard, fixed part of this campaign and "
-            "cannot be adjusted. Specifically: " + "; ".join(fixed_bits) + ". Do NOT "
+            "4. Fixed terms the creator asked to change — the creator PUSHED on "
+            "the following non-negotiable term(s), so you MUST respond to that ask "
+            "directly (do not ignore it or merely restate the value): " + pushed_bits +
+            ". Warmly acknowledge what they asked for, then say clearly it is a "
+            "standard, fixed part of this campaign and cannot be adjusted. Do NOT "
             "agree to any different commission %, extra/different perk, or altered "
             "deliverables/timeline.\n"
         )
     else:
         fixed_terms_goal = ""
+
+    # Explicit question checklist (spec §7). When /negotiate extracted the
+    # creator's questions upstream, render them as a numbered must-answer list so
+    # the copy model answers an EXPLICIT checklist rather than re-parsing the raw
+    # reply (the double-comprehension the spec removes). Empty (rules mode / no
+    # questions) → "" and the _OFFER_PROMPT body's generic "identify EVERY
+    # question" instruction still applies, so behavior is unchanged.
+    questions = _normalize_questions(req.creatorQuestions)
+    if questions:
+        numbered = "\n".join(f"  {i}) {q}" for i, q in enumerate(questions, start=1))
+        question_checklist = (
+            "The creator asked the following — your email MUST answer EACH one "
+            "explicitly (if we don't have a specific, say in one honest sentence "
+            "it'll be confirmed together — never invent a number or term):\n"
+            f"{numbered}\n\n"
+        )
+    else:
+        question_checklist = ""
 
     extra_parts: list[str] = []
     if req.creatorReply:
@@ -1563,6 +1751,7 @@ def _build_offer_prompt(
         brand_context=brand_context,
         offer_rate=offer_rate,
         ack_clause_fmt=ack_clause_fmt,
+        question_checklist=question_checklist,
         deal_goal=deal_goal,
         commission_bullet_hint=commission_bullet_hint,
         commission_rule=commission_rule,

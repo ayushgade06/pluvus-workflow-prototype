@@ -311,12 +311,13 @@ export async function executeNegotiation(
   const priorEvents = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
   const priorContext = buildPriorContextFromEvents(priorEvents);
 
-  const { outcome, message, proposedRate } = await agent.negotiate(
-    instance.negotiationRound,
-    config,
-    creatorReply,
-    priorContext,
-  );
+  // creatorQuestions / pushedFixedTerms: the comprehension /negotiate already did
+  // (the creator's questions + which fixed terms they pushed), threaded across
+  // the seam so /draft answers an explicit checklist instead of re-parsing the
+  // raw reply (spec §6.1). Undefined in rules mode → the `?? []` spreads below
+  // become no-ops, preserving current behavior.
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms } =
+    await agent.negotiate(instance.negotiationRound, config, creatorReply, priorContext);
 
   switch (outcome) {
     case "present_offer": {
@@ -326,10 +327,19 @@ export async function executeNegotiation(
       // must not exhaust the negotiation budget. We reuse the offer-presenting
       // draft (counter_offer purpose) so the email states the fixed fee and, for
       // a hybrid deal, the commission.
+      // §6.3 parity: give present_offer the creatorRequestedRate that only
+      // counter had before (deterministic regex, already computed for the guard
+      // below) so the copy can acknowledge a number if the creator named one.
+      const presentRequestedRate = extractRequestedRate(creatorReply);
       const aiDraft = await agent.draftEmail("counter_offer", creator, config, {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
+        ...(presentRequestedRate !== undefined ? { creatorRequestedRate: presentRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
+        // §6.2: thread the comprehension into /draft so the SENT email answers
+        // every question and acknowledges any pushed fixed term.
+        ...(creatorQuestions?.length ? { creatorQuestions } : {}),
+        ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
       });
       // A present-offer email PRESENTS concrete terms. When the REAL AI copy
       // generator returns null it means generation failed after retries — escalate
@@ -347,7 +357,7 @@ export async function executeNegotiation(
       // not a leak even if it coincides with a bound).
       const guard = scanOutboundDraft(
         draft,
-        guardConstraintsFromConfig(config, proposedRate, extractRequestedRate(creatorReply)),
+        guardConstraintsFromConfig(config, proposedRate, presentRequestedRate),
       );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
@@ -411,10 +421,20 @@ export async function executeNegotiation(
       // Defensive fallback: if (somehow) no rate is present, fall back to the
       // plain acceptance copy so we never send onboarding with a blank rate.
       const purpose = proposedRate !== undefined ? "onboarding" : "acceptance";
+      // §6.3 parity: same creatorRequestedRate the counter branch has (also used
+      // by the guard below), so an acceptance can acknowledge the creator's own
+      // number where relevant.
+      const acceptRequestedRate = extractRequestedRate(creatorReply);
       const extra = {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
+        ...(acceptRequestedRate !== undefined ? { creatorRequestedRate: acceptRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
+        // §6.2: thread the comprehension into /draft (this branch runs only on
+        // legacy graphs without a post-accept email node; on merged flows the
+        // downstream Content Brief node owns the email and this is skipped).
+        ...(creatorQuestions?.length ? { creatorQuestions } : {}),
+        ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
       };
       const aiDraft = await agent.draftEmail(purpose, creator, config, extra);
       // The acceptance/onboarding email confirms the agreed rate and lays out
@@ -434,7 +454,7 @@ export async function executeNegotiation(
       // (their number == a bound) must be able to state that number.
       const guard = scanOutboundDraft(
         draft,
-        guardConstraintsFromConfig(config, proposedRate, extractRequestedRate(creatorReply)),
+        guardConstraintsFromConfig(config, proposedRate, acceptRequestedRate),
       );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
@@ -522,6 +542,10 @@ export async function executeNegotiation(
         ...(creatorReply ? { creatorReply } : {}),
         ...(creatorRequestedRate !== undefined ? { creatorRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
+        // §6.2: thread the comprehension into /draft so the counter email answers
+        // every question and acknowledges any pushed fixed term (Case-10 gap).
+        ...(creatorQuestions?.length ? { creatorQuestions } : {}),
+        ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
       };
       const aiDraft = await agent.draftEmail("counter_offer", creator, config, counterExtra);
       // The counter email presents the fee + commission + deliverables and

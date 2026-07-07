@@ -145,6 +145,10 @@ export interface IAgentProvider {
       creatorReply?: string;
       creatorRequestedRate?: number;
       dealDescription?: string;
+      // Comprehension threaded from /negotiate so the SENT email answers an
+      // explicit checklist and acknowledges pushed fixed terms (spec §6.2).
+      creatorQuestions?: string[];
+      pushedFixedTerms?: string[];
     },
   ): Promise<EmailDraft | null>;
 }
@@ -320,11 +324,26 @@ export function buildNegotiationRequest(
  * MANUAL_REVIEW transition).
  */
 export function mapNegotiationResponse(
-  resp: { action: NegotiateOutcome | string; proposedTerms?: NegotiationTerm; responseDraft?: string; reasoning?: string },
+  resp: {
+    action: NegotiateOutcome | string;
+    proposedTerms?: NegotiationTerm;
+    responseDraft?: string;
+    reasoning?: string;
+    creatorQuestions?: string[];
+    pushedFixedTerms?: string[];
+  },
   round: number,
 ): NegotiateResult {
   const proposedRate =
     typeof resp.proposedTerms?.["rate"] === "number" ? (resp.proposedTerms["rate"] as number) : undefined;
+
+  // Comprehension threaded across the seam (spec §6.1). Only spread when
+  // non-empty so an absent/empty producer (rules mode) leaves the field
+  // undefined and the executor's `?? []` handling stays a no-op.
+  const comprehension = {
+    ...(resp.creatorQuestions?.length ? { creatorQuestions: resp.creatorQuestions } : {}),
+    ...(resp.pushedFixedTerms?.length ? { pushedFixedTerms: resp.pushedFixedTerms } : {}),
+  };
 
   switch (resp.action) {
     case "ACCEPT":
@@ -332,18 +351,21 @@ export function mapNegotiationResponse(
         outcome: "accept",
         message: resp.responseDraft ?? "Partnership confirmed.",
         ...(proposedRate !== undefined ? { proposedRate } : {}),
+        ...comprehension,
       };
     case "COUNTER":
       return {
         outcome: "counter",
         message: resp.responseDraft ?? `Counter-offer for round ${round + 1}.`,
         ...(proposedRate !== undefined ? { proposedRate } : {}),
+        ...comprehension,
       };
     case "PRESENT_OFFER":
       return {
         outcome: "present_offer",
         message: resp.responseDraft ?? "Here are the details of our offer.",
         ...(proposedRate !== undefined ? { proposedRate } : {}),
+        ...comprehension,
       };
     case "REJECT":
       return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
