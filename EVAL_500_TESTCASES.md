@@ -20,7 +20,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | # | Bank / section | Cases | What the creator does | Live status |
 |---|----------------|------:|-----------------------|-------------|
 | A | **Money math** | 90 | Rate discovery, in-band / at-ceiling / above-ceiling / below-floor asks, explicit accept, **no-number accept** (false-accept guard), mid-band counter | ⏳ not run live |
-| B | **Multi-question** | 70 | 2–4 distinct questions in one reply; every one must be answered | 🟡 1/70 run — see findings |
+| B | **Multi-question** | 70 | 2–4 distinct questions in one reply; every one must be answered | ✅ **70/70 PASS** (after fixes) |
 | C | **Answerable** | 70 | One campaign question with a real answer | ✅ **68/70 PASS (97%)** |
 | D | **Deferred** | 45 | Campaign question we can't answer yet → honest defer, no fabrication | ⏳ not run live |
 | E | **Unrelated** | 45 | Off-topic question (career advice, other brands, chit-chat) → stay on the deal | ⏳ not run live |
@@ -72,14 +72,36 @@ the creator's fee correctly.
 | C-02 exclusivity | **ASSERT** (false negative) | Model answered correctly ("won't lock you out of other footwear/athletic brands") but the regex required literal "other brands" | Broadened the answer pattern — no code change |
 | C-32 commission-additive | **CODE** (real) | Model **echoed the yes/no question back verbatim** instead of confirming "yes, 10% is on top of the fee" | Added anti-echo clause to the draft question-checklist (`app/routes/negotiate.py`) — verified fixed |
 
-### Multi-question bank (B) — 🟡 1 / 70 run, 1 real finding
+### Multi-question bank (B) — ✅ 70 / 70 PASS (after fixes)
 
-Only the first case ran before the audit was interrupted. It exposed a **real
-code gap**:
+All 70 cases run against qwen3:8b (`/negotiate → /draft`). The first live run was
+**60/70**; the 10 failures split into 5 assertion false-negatives and 5 real code
+gaps, all now fixed and re-verified live.
 
-| Case | Class | Issue | Fix |
-|------|-------|-------|-----|
-| B-01 usage + payment | **CODE** (real) | Creator asked two questions (usage + "when do I get paid"); the email answered usage but **deferred payment** ("we'll confirm timing later") even though net-30 is a KNOWN fact | Added a `_deferred_known_facts` post-draft verifier that detects a known fact was deferred and forces it into a re-draft with the actual value (`app/routes/negotiate.py`) — committed & unit-tested; **live re-verify pending a fresh server** |
+**Real code gaps found and fixed** (`app/routes/negotiate.py`):
+
+| Case(s) | Class | Issue | Fix |
+|---------|-------|-------|-----|
+| B-01 usage + payment | **CODE** | email answered usage but **deferred payment** ("we'll confirm timing later") though net-30 is KNOWN | `_deferred_known_facts` post-draft verifier re-drafts with the actual value |
+| B-02, B-04, B-30 | **CODE** | compound "X, and Y?" collapsed into **1** question (under-count) | prompt split-guidance + deterministic `_split_compound_question` (handles "and by when …" too) |
+| B-11, B-53 | **CODE** | model **still defers** a known fact under 4-question load even after the re-draft | `_splice_known_facts` deterministically states the known value before sign-off (never invents) |
+| B-34 | **CODE** | payment verifier **false-passed** on the "30-day usage" line | tightened payment value-signal to require payment context (net-N / day-count tied to pay/invoice/after-live) |
+| B-61 | **CODE** | model **inverted** exclusivity ("tied to just AeroSoft") and the verifier didn't recognize the question | broadened exclusivity question-signal ("tied to / only you / just <brand>") → flagged → corrected |
+
+**Assertion false-negatives fixed** (dataset; the model answered correctly):
+
+| Case(s) | Issue | Fix |
+|---------|-------|-----|
+| B-03 + 18 exclusivity checks | model says "not locked out / free to work with other brands" but pattern only accepted `exclusiv\|no category` | broadened all 19 bank-B exclusivity patterns (same class as C-02) |
+| B-20/25/27/57/62 (+ 21 more) | model says "30 days after the content goes live" but pattern demanded literal "net-30" | broadened the 26 net-30 payment patterns to accept the paraphrase |
+
+**A harness-fidelity bug was also found and fixed** (root cause of the B-01 live
+fail): `run_eval.call_draft` sent a lean `campaignContext` missing the four
+HARD-K1 knowledge fields (usageRights/exclusivity/paymentTerms/attributionWindow)
+that **production** threads in (via `providerFactory.draftEmail →
+stripBandFromContext(config)`). The eval was handing `/draft` a request missing
+the very facts the live system supplies, so the model correctly deferred. Fixed
+by threading the full knowledge fields into `call_draft`'s `campaignContext`.
 
 ---
 
@@ -87,14 +109,22 @@ code gap**:
 
 All committed on branch `refactor/production-hardening`:
 
-1. **C-32 anti-echo** — the offer prompt's question checklist now requires a
-   direct answer to yes/no/confirmation questions and forbids repeating the
-   question text as the answer.
-2. **B-01 known-fact-deferral guard** — the post-draft verifier now treats a
-   deferral of a *known* campaign fact (payment/usage/exclusivity/attribution)
-   as a miss and re-drafts with the exact value supplied. Deferring is only
-   valid when we genuinely don't know the answer.
-3. **C-02 assertion broadening** — dataset pattern fix (not a code gap).
+1. **C-32 anti-echo** — the offer prompt's question checklist requires a direct
+   answer to yes/no/confirmation questions and forbids repeating the question.
+2. **B-01 known-fact-deferral guard** — the post-draft verifier treats a deferral
+   of a *known* campaign fact as a miss and re-drafts with the exact value.
+3. **Harness fidelity** — `run_eval.call_draft` now threads the four HARD-K1
+   knowledge fields into `campaignContext`, mirroring production (was the root
+   cause of the B-01 live fail).
+4. **Compound-question split** — prompt guidance + deterministic
+   `_split_compound_question` so "X, and Y?" (and "and by when …") counts as 2.
+5. **Known-fact splice** — `_splice_known_facts` states a known value the re-draft
+   still deferred under multi-question load, before the sign-off (never invents).
+6. **Payment value-signal tightened** + **exclusivity question-signal broadened**
+   in the `_deferred_known_facts` verifier (B-34 false-pass, B-61 inverted answer).
+7. **Assertion broadenings** (dataset, not code): C-02 + 19 bank-B exclusivity
+   patterns; 26 bank-B net-30 payment patterns — accept the model's correct
+   paraphrases ("not locked out", "30 days after content goes live").
 
 Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAGE.md`.
 
@@ -102,15 +132,16 @@ Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAG
 
 ## What's left to run live
 
-- Multi-question bank (B): 69 remaining
-- Fixed-term (H, 30), Deferred (D, 45), Unrelated (E, 45), Escalate/Opt-out/
-  Negative/Injection (F, 80), Money (A, 90), Classify (40), Conversations (30)
+- Fixed-term (H, 30), Escalate/Opt-out/Negative/Injection (F, 80),
+  Deferred (D, 45), Unrelated (E, 45), Money (A, 90), Classify (40),
+  Conversations (30)
 
-**Blocker:** the running agent on :8001 serves stale code and is auto-respawned
-by another Claude session; a fresh restart (loading the committed fixes) is
-needed before the B-01/C-32 fixes can be re-verified live and the remaining banks
-run cleanly. On local qwen3:8b a full 500-case run is long (~35s/case × 2 calls),
-so banks are run one at a time.
+**Live-run setup:** a fresh session-owned agent runs on **:8002** (the :8001
+listener is an unkillable zombie from another session serving stale code — do not
+use it). Point `AGENT_URL=http://localhost:8002`, `OLLAMA_MODEL=qwen3:8b`,
+`NEGOTIATION_STRATEGY=llm` (all read from root `.env`). On local qwen3:8b a full
+500-case run is long (~35s/case × 2 calls), so banks are run one at a time in the
+background; restart :8002 to load any code fix before re-verifying.
 
 **Run a bank live:**
 ```

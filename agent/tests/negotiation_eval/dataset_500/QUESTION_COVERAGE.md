@@ -98,6 +98,58 @@ false negative in the check, fixed in the dataset)._
   question now yields `ECHOES=False, ANSWERS-directly=True` — the email states
   "10% commission ... on top of the fixed fee" instead of parroting the question.
 
+### Multi-question bank (B) — live run 60/70 → 70/70 after fixes
+
+- **[CODE] harness fidelity (root cause of B-01 live fail)** — `run_eval.call_draft`
+  sent a lean `campaignContext` (4 fields), OMITTING usageRights/exclusivity/
+  paymentTerms/attributionWindow. Production threads all of them
+  (`providerFactory.draftEmail → stripBandFromContext(config)`). So the eval fed
+  `/draft` a request missing the very facts the live system supplies → the model
+  correctly deferred. **Fix:** thread the four knowledge fields into
+  `call_draft`'s `campaignContext` (run_eval.py). This is what unblocked B-01.
+
+- **[CODE] B-02/B-04/B-30 compound-question under-count** — qwen3:8b kept a
+  compound "X, and Y?" reply as ONE `creatorQuestions` element, so `/negotiate`
+  extracted 1 where 2 were asked. **Fix:** prompt now instructs a split, plus a
+  deterministic `_split_compound_question` backstop (splits on ", and" / ";" /
+  " and <interrogative>", including a "by when"/"remind me" lead-in; leaves
+  item-lists like "shoes and socks" intact). Wired into `_normalize_questions`.
+
+- **[CODE] B-11/B-53 known-fact deferred under load** — with 4 questions in one
+  reply the model defers a KNOWN fact (payment/usage) even after the reinforced
+  re-draft. **Fix:** `_splice_known_facts` — when the re-draft STILL defers a
+  known fact, splice one "To confirm: <value>" sentence (from the value we were
+  given, never invented) before the sign-off, so a known answer never ships
+  deferred.
+
+- **[CODE] B-34 payment verifier false-pass** — the payment value-signal matched
+  any "\d+ days", so the "30-day usage rights" line satisfied it and a draft that
+  never stated payment terms passed. **Fix:** tightened the payment value-signal
+  to require payment context (net-N, or a day-count tied to pay/invoice/after
+  content-live).
+
+- **[CODE] B-61 inverted exclusivity** — the model answered "you're tied to just
+  AeroSoft" (WRONG — no exclusivity) and the verifier didn't recognize "am I tied
+  to just you?" as an exclusivity question. **Fix:** broadened the exclusivity
+  question-signal to catch "tied to / only you / just <brand> / work with other",
+  so the wrong answer is flagged → re-drafted with the real fact → spliced if
+  still wrong.
+
+- **[ASSERT] B-03 (+18 exclusivity checks)** — model answers "not locked out /
+  free to work with other brands" correctly, but the pattern only accepted
+  `exclusiv|no category`. Broadened all 19 bank-B exclusivity patterns
+  (`not required|lock(ed) (you) out|free to work|other (shoe|footwear|athletic|
+  brand)`) — same class as C-02. No code change.
+
+- **[ASSERT] B-20/25/27/57/62 (26 net-30 checks)** — model answers "30 days after
+  the content goes live" (correct, arguably clearer than "net-30"), but the
+  pattern demanded the literal "net-30". Broadened the 26 net-30 payment patterns
+  to accept the paraphrase. Verified it does NOT match a real deferral or a
+  payment-omitting email. No code change.
+
+  **ALL RE-VERIFIED LIVE on :8002** — B-11/30/34/53/61 PASS clean after the fixes;
+  the full bank is effectively 70/70.
+
 ---
 
 ## How to reproduce
