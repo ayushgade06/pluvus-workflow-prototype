@@ -60,6 +60,24 @@ router.get("/workflow", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /observability/metrics  (HARD-S1)
+// ---------------------------------------------------------------------------
+// Worker-fleet metrics — queue depth per BullMQ queue + stuck-state counts — the
+// scaffolding surface a monitoring backend / autoscaler scrapes. The same numbers
+// are also logged on the scheduler cadence (workerMetrics.logWorkerMetrics). The
+// load-test-to-1,000 acceptance criterion is the infra behind this, not the route.
+
+router.get("/metrics", async (_req, res) => {
+  try {
+    const { collectWorkerMetrics } = await import("../workers/workerMetrics.js");
+    res.json(await collectWorkerMetrics());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "worker_metrics_failed", message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /observability/instances?state=&search=&page=&pageSize=
 // ---------------------------------------------------------------------------
 

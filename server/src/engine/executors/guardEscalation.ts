@@ -1,5 +1,5 @@
 import type { NodeResult } from "../types.js";
-import type { GuardHit } from "../guards/outputGuard.js";
+import { maskGuardHits, type GuardHit } from "../guards/outputGuard.js";
 
 // ---------------------------------------------------------------------------
 // Shared output-guard escalation (FIX-4)
@@ -21,7 +21,8 @@ export function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
       outcome: "ESCALATE",
       reason: "output_guard_blocked",
       round,
-      leaks: hits.map((h) => `${h.kind}:${h.value}`),
+      // EASY-S2: mask the band VALUE — record only which KIND leaked.
+      leaks: maskGuardHits(hits),
     },
   };
 }

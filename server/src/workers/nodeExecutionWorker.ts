@@ -1,6 +1,6 @@
 import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
-import { QUEUE_NODE_EXECUTION, enqueueNodeExecution } from "./queues.js";
+import { QUEUE_NODE_EXECUTION, enqueueNodeExecution, workerConcurrency } from "./queues.js";
 import type { NodeExecutionJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
@@ -209,17 +209,21 @@ async function handleNodeExecution(
 // Worker factory
 // ---------------------------------------------------------------------------
 
-const WORKER_CONCURRENCY = 5;
-
+// HARD-S1: per-worker concurrency is env-tunable (WORKER_CONCURRENCY /
+// NODE_EXECUTION_CONCURRENCY) so a worker fleet can be sized to the agent
+// service's capacity, not pinned at a constant 5. Each in-flight step holds a
+// slot for a 45-120s LLM call, so this is the throughput knob.
 export function createNodeExecutionWorker(): Worker<NodeExecutionJobData> {
+  const concurrency = workerConcurrency("NODE_EXECUTION_CONCURRENCY");
   const worker = new Worker<NodeExecutionJobData>(
     QUEUE_NODE_EXECUTION,
     handleNodeExecution,
     {
       connection: redisConnection(),
-      concurrency: WORKER_CONCURRENCY,
+      concurrency,
     },
   );
+  console.log(`[node-execution] worker started (concurrency ${concurrency})`);
 
   worker.on("failed", (job, err) => {
     console.error(

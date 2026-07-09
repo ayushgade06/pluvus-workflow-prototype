@@ -24,6 +24,13 @@ const BRAND_KEYS = [
   "timeline",
   "rewardDescription",
   "shipsPhysicalProduct",
+  // HARD-K1 knowledge fields — the campaign terms creators ask about that the
+  // agent previously had no source for (so it hallucinated them). Threaded so
+  // /negotiate + /draft can state them as fact when present, defer when absent.
+  "usageRights",
+  "exclusivity",
+  "paymentTerms",
+  "attributionWindow",
 ] as const;
 
 function campaignValueFor(campaign: Campaign, key: (typeof BRAND_KEYS)[number]): unknown {
@@ -42,6 +49,15 @@ function campaignValueFor(campaign: Campaign, key: (typeof BRAND_KEYS)[number]):
       return campaign.rewardDescription ?? undefined;
     case "shipsPhysicalProduct":
       return campaign.shipsPhysicalProduct;
+    // HARD-K1 knowledge fields.
+    case "usageRights":
+      return campaign.usageRights ?? undefined;
+    case "exclusivity":
+      return campaign.exclusivity ?? undefined;
+    case "paymentTerms":
+      return campaign.paymentTerms ?? undefined;
+    case "attributionWindow":
+      return campaign.attributionWindow ?? undefined;
   }
 }
 

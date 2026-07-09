@@ -22,7 +22,7 @@ import {
   buildBrandNameRequestEmail,
   type BrandDecisionLinkAction,
 } from "../../notifications/brandDecisionEmail.js";
-import { resolveBrandRecipient } from "../../notifications/escalation.js";
+import { resolveBrandDecisionRecipient } from "../../notifications/escalation.js";
 import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js";
 
 // ---------------------------------------------------------------------------
@@ -134,7 +134,11 @@ export async function openBrandDecision(
     contextJson: { ...input.context, actions },
   });
 
-  const recipient = resolveBrandRecipient(campaign?.notifyEmail);
+  // MED-A1: a brand DECISION needs a REAL brand recipient (campaign notifyEmail or
+  // the ops BRAND_NOTIFY_EMAIL) — NOT the hardcoded operator fallback, which the
+  // CRITICAL-1 identity gate can never authorize to reply. When none exists the
+  // decision row is still created below and left for the dashboard / 72h sweep.
+  const recipient = resolveBrandDecisionRecipient(campaign?.notifyEmail);
   const brandName = campaign?.brand ?? "your brand";
 
   if (recipient) {

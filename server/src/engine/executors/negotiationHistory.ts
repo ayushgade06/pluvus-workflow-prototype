@@ -1,5 +1,7 @@
-import type { Event } from "@prisma/client";
+import type { Event, Message } from "@prisma/client";
 import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../types.js";
+import type { DraftHistoryEntry } from "../../adapters/negotiation/types.js";
+import { extractReplyText } from "./replyText.js";
 
 // ---------------------------------------------------------------------------
 // Negotiation history assembly (FIX-1 history threading + FIX-2 current offer)
@@ -80,4 +82,100 @@ export function buildPriorContextFromEvents(events: Event[]): PriorNegotiationCo
   }
 
   return { history, ...(currentOffer !== undefined ? { currentOffer } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// HARD-N2: full-conversation history for the copywriter (/draft)
+// ---------------------------------------------------------------------------
+// buildPriorContextFromEvents (above) feeds /negotiate the DECISION history
+// (our-side turns only — that's all the money decision needs). /draft needs
+// MORE: the creator's own words too, so the copy can stay consistent with the
+// prior emails and not repeat wording or contradict an earlier statement. This
+// builder interleaves our NEGOTIATION_TURN events and the creator's inbound
+// Message rows into one chronological transcript.
+//
+// `brandReplyMsgIds` are inbound rows that are actually the BRAND answering an
+// escalation (A1/A2), not the creator — the executor already collects these to
+// exclude them from `latestCreatorInbound`; we exclude them here too so the
+// brand's "approve" never appears as a creator turn.
+
+/** A dated item to sort our-turns and creator-messages into one timeline. */
+interface DatedEntry {
+  at: number;
+  entry: DraftHistoryEntry;
+}
+
+export function buildDraftHistory(
+  events: Event[],
+  creatorMessages: Message[],
+  brandReplyMsgIds: Set<string>,
+): DraftHistoryEntry[] {
+  const items: DatedEntry[] = [];
+
+  for (const e of events) {
+    if (e.type !== "NEGOTIATION_TURN") continue;
+    const payload = asPayload(e.payload);
+    const action = normalizeAction(payload["outcome"]);
+    const message = asString(payload["message"]);
+    // Only turns that actually SENT copy are useful to the copywriter; a
+    // draft-failure escalation with no message contributes nothing.
+    if (!message) continue;
+    const round = asNumber(payload["round"]);
+    const rate = asNumber(payload["rate"]);
+    items.push({
+      at: e.occurredAt.getTime(),
+      entry: {
+        role: "us",
+        ...(round !== undefined ? { round } : {}),
+        ...(action ? { action } : {}),
+        ...(rate !== undefined ? { rate } : {}),
+        message,
+      },
+    });
+  }
+
+  for (const m of creatorMessages) {
+    if (m.direction !== "INBOUND") continue;
+    if (m.externalMessageId && brandReplyMsgIds.has(m.externalMessageId)) continue;
+    const text = extractReplyText(m.body ?? "");
+    if (!text.trim()) continue;
+    // Prefer the received time; fall back to createdAt for older rows.
+    const at = (m.receivedAt ?? m.createdAt).getTime();
+    items.push({ at, entry: { role: "creator", message: text } });
+  }
+
+  items.sort((a, b) => a.at - b.at);
+  return items.map((i) => i.entry);
+}
+
+// HARD-N2 answered-questions ledger. Each NEGOTIATION_TURN event persists the
+// creator's questions for that turn (payload.creatorQuestions). A question the
+// creator raised in an EARLIER round that we never carried forward should be
+// re-surfaced, not silently dropped. We can't perfectly prove "answered", so the
+// ledger is a conservative diff: prior-round questions that are NOT among this
+// turn's questions are treated as still-open and re-listed for the copywriter
+// (which will answer or honestly defer each). De-duplicated case-insensitively.
+export function computeOpenQuestions(
+  events: Event[],
+  currentQuestions: string[] | undefined,
+): string[] {
+  const current = new Set((currentQuestions ?? []).map((q) => q.trim().toLowerCase()));
+  const open: string[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (e.type !== "NEGOTIATION_TURN") continue;
+    const payload = asPayload(e.payload);
+    const qs = payload["creatorQuestions"];
+    if (!Array.isArray(qs)) continue;
+    for (const q of qs) {
+      if (typeof q !== "string") continue;
+      const norm = q.trim();
+      if (!norm) continue;
+      const key = norm.toLowerCase();
+      if (current.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      open.push(norm);
+    }
+  }
+  return open;
 }

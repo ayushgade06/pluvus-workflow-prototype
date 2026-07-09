@@ -53,6 +53,22 @@ function payloadString(p: Record<string, unknown> | null, key: string): string |
   return typeof v === "string" ? v : null;
 }
 
+// EASY-S2: mask the guard-leak band value in an event payload before it is served
+// by the timeline. New rows are already masked at write time (executors use
+// maskGuardHits), but PRE-FIX rows carry the raw value (e.g. "ceiling:500"), and
+// this is the read-path backstop that redacts them too — so the internal band
+// value never leaves the DB raw for anyone hitting the observability API. Returns
+// a shallow copy; the stored row is unchanged (append-only audit log).
+function maskPayloadLeaks(p: Record<string, unknown>): Record<string, unknown> {
+  const leaks = p["leaks"];
+  if (!Array.isArray(leaks)) return p;
+  const masked = leaks.map((l) =>
+    // Shape is "kind:value"; keep the kind, redact everything after the first ":".
+    typeof l === "string" ? l.replace(/^([^:]*:).*/, "$1<redacted>") : l,
+  );
+  return { ...p, leaks: masked };
+}
+
 function payloadNumber(p: Record<string, unknown> | null, key: string): number | null {
   const v = p?.[key];
   return typeof v === "number" ? v : null;
@@ -415,7 +431,9 @@ export async function getTimeline(id: string): Promise<TimelineDTO | null> {
       summary: summarizeEvent(e),
       fromState: e.type === "STATE_TRANSITION" ? payloadString(p, "from") : null,
       toState: e.type === "STATE_TRANSITION" ? payloadString(p, "to") : null,
-      payload: p,
+      // EASY-S2: redact any raw guard-leak band value from a legacy payload before
+      // serving it (new rows are already masked at write time).
+      payload: p ? maskPayloadLeaks(p) : p,
     };
   });
 

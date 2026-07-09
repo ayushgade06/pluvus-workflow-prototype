@@ -1,6 +1,6 @@
 import { Worker, type Job } from "bullmq";
 import { redisConnection } from "./redis.js";
-import { QUEUE_INBOUND_EMAIL, enqueueNodeExecution } from "./queues.js";
+import { QUEUE_INBOUND_EMAIL, enqueueNodeExecution, workerConcurrency } from "./queues.js";
 import type { InboundEmailJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
@@ -323,17 +323,19 @@ async function handleInboundEmail(
 // Worker factory
 // ---------------------------------------------------------------------------
 
-const WORKER_CONCURRENCY = 5;
-
+// HARD-S1: per-worker concurrency is env-tunable (WORKER_CONCURRENCY /
+// INBOUND_EMAIL_CONCURRENCY) so the inbound-reply fleet can be scaled to load.
 export function createInboundEmailWorker(): Worker<InboundEmailJobData> {
+  const concurrency = workerConcurrency("INBOUND_EMAIL_CONCURRENCY");
   const worker = new Worker<InboundEmailJobData>(
     QUEUE_INBOUND_EMAIL,
     handleInboundEmail,
     {
       connection: redisConnection(),
-      concurrency: WORKER_CONCURRENCY,
+      concurrency,
     },
   );
+  console.log(`[inbound-email] worker started (concurrency ${concurrency})`);
 
   worker.on("failed", (job, err) => {
     console.error(

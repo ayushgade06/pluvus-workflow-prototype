@@ -1,0 +1,216 @@
+"""HARD-O1: LLM observability scaffolding — token / latency / cost telemetry.
+
+The audit's Observability finding (score 2): there is NO token/latency/cost
+telemetry anywhere, and `usage_metadata` is never read. This module is the
+CODE-SIDE scaffolding for that: a single seam every LLM call funnels through that
+extracts latency + token usage from the LangChain result and emits ONE structured
+record stamped with {model, promptVersion}.
+
+What this gives you now (code, in this diff):
+  * per-call latency (wall clock around the model invoke),
+  * prompt/completion/total token counts read from the LangChain result's
+    usage_metadata (when the provider returns it),
+  * an estimated USD cost from a configurable per-1K price table,
+  * the model label and prompt version on every record,
+  * a structured, machine-parseable log line (`llm_call ...`) + an in-process
+    ring buffer the /metrics-style surfaces can read.
+
+What still needs INFRA to reach score 8 (the acceptance criterion, NOT in this
+diff): a running metrics backend (OpenTelemetry/Prometheus/Datadog) scraping or
+receiving these records, dashboards, and alert routing (error rate, breaker-open,
+manual-queue growth, stranded instances) + drift monitoring on the negotiation
+distributions. `emit_llm_metric` is the single call site to wire an exporter into
+— replace/extend the log+buffer sink with an OTel span or a Prometheus counter
+and every call is instrumented, no other code changes.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections import deque
+from dataclasses import asdict, dataclass
+
+logger = logging.getLogger("agent.telemetry")
+
+# In-process ring buffer of the most recent LLM-call records. This is the
+# minimal "metrics surface" a health/metrics endpoint can read without a backend;
+# a real deployment swaps this for an exporter (see module docstring).
+_RECENT_MAX = 256
+_recent: "deque[LLMCallRecord]" = deque(maxlen=_RECENT_MAX)
+
+
+@dataclass
+class LLMCallRecord:
+    """One instrumented LLM call. Every field is safe to log/ship (no prompt text,
+    no model output — only counts, timings, and identity)."""
+
+    model: str
+    prompt_version: str | None
+    latency_ms: float
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    est_cost_usd: float | None
+    ok: bool
+    error_kind: str | None = None
+
+
+def _price_table() -> dict[str, tuple[float, float]]:
+    """(input_per_1k, output_per_1k) USD by model-label prefix.
+
+    Overridable via LLM_PRICE_TABLE (a "prefix:in/out,prefix:in/out" string) so a
+    price change is config, not code. Local Ollama defaults to 0 (self-hosted).
+    """
+    table: dict[str, tuple[float, float]] = {
+        # Local models are self-hosted → no per-token cost.
+        "ollama:": (0.0, 0.0),
+        # Rough public list price for the default OpenAI model (per 1K tokens).
+        "openai:gpt-4o-mini": (0.00015, 0.0006),
+        "openai:": (0.005, 0.015),  # generic fallback for other OpenAI models
+    }
+    raw = os.getenv("LLM_PRICE_TABLE", "").strip()
+    if raw:
+        for part in raw.split(","):
+            if ":" not in part or "/" not in part:
+                continue
+            prefix, prices = part.rsplit(":", 1)
+            try:
+                in_s, out_s = prices.split("/", 1)
+                table[prefix.strip()] = (float(in_s), float(out_s))
+            except ValueError:
+                continue
+    return table
+
+
+def _estimate_cost(model: str, input_tokens: int | None, output_tokens: int | None) -> float | None:
+    if input_tokens is None and output_tokens is None:
+        return None
+    table = _price_table()
+    # Longest matching prefix wins (so "openai:gpt-4o-mini" beats "openai:").
+    match = None
+    for prefix in sorted(table, key=len, reverse=True):
+        if model.startswith(prefix):
+            match = table[prefix]
+            break
+    if match is None:
+        return None
+    in_rate, out_rate = match
+    return round((input_tokens or 0) / 1000 * in_rate + (output_tokens or 0) / 1000 * out_rate, 6)
+
+
+def extract_usage(result: object) -> tuple[int | None, int | None, int | None]:
+    """Pull (input, output, total) token counts from a LangChain result.
+
+    Reads `.usage_metadata` (the modern LangChain field, populated by ChatOllama /
+    ChatOpenAI when the backend returns usage). Returns (None, None, None) when the
+    provider didn't report usage — telemetry degrades to latency-only, never fails.
+    """
+    usage = getattr(result, "usage_metadata", None)
+    if isinstance(usage, dict):
+        in_t = usage.get("input_tokens")
+        out_t = usage.get("output_tokens")
+        total = usage.get("total_tokens")
+        if total is None and (in_t is not None or out_t is not None):
+            total = (in_t or 0) + (out_t or 0)
+        return (
+            in_t if isinstance(in_t, int) else None,
+            out_t if isinstance(out_t, int) else None,
+            total if isinstance(total, int) else None,
+        )
+    return (None, None, None)
+
+
+def emit_llm_metric(record: LLMCallRecord) -> None:
+    """The SINGLE sink for an instrumented LLM call. Today it logs a structured
+    line and appends to the in-process ring buffer; wire an OTel/Prometheus
+    exporter HERE to ship the same record to a real backend (the acceptance-
+    criterion infra) without touching any call site."""
+    _recent.append(record)
+    # Structured, grep-/parse-friendly. Keep keys stable — dashboards key on them.
+    logger.info(
+        "llm_call model=%s promptVersion=%s latency_ms=%.0f input_tokens=%s "
+        "output_tokens=%s total_tokens=%s est_cost_usd=%s ok=%s error_kind=%s",
+        record.model,
+        record.prompt_version,
+        record.latency_ms,
+        record.input_tokens,
+        record.output_tokens,
+        record.total_tokens,
+        record.est_cost_usd,
+        record.ok,
+        record.error_kind,
+    )
+
+
+def record_llm_call(
+    *,
+    model: str,
+    latency_ms: float,
+    result: object | None,
+    prompt_version: str | None = None,
+    ok: bool = True,
+    error_kind: str | None = None,
+) -> LLMCallRecord:
+    """Build + emit an LLMCallRecord from a completed (or failed) LLM invoke."""
+    in_t, out_t, total = extract_usage(result) if result is not None else (None, None, None)
+    record = LLMCallRecord(
+        model=model,
+        prompt_version=prompt_version,
+        latency_ms=round(latency_ms, 1),
+        input_tokens=in_t,
+        output_tokens=out_t,
+        total_tokens=total,
+        est_cost_usd=_estimate_cost(model, in_t, out_t),
+        ok=ok,
+        error_kind=error_kind,
+    )
+    emit_llm_metric(record)
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Prompt-version context (item 47: stamp PROMPT_VERSION on every AI call)
+# ---------------------------------------------------------------------------
+# The LLM layer (llm.py) doesn't know which prompt is being run — the routes do.
+# A route sets the active prompt version for the duration of a call so the
+# telemetry record can be stamped with it without threading the string through
+# every function signature. Simple module-global (the agent handles one request
+# per thread at the invoke seam); a real async deployment would use ContextVar.
+
+_active_prompt_version: str | None = None
+
+
+def set_active_prompt_version(version: str | None) -> None:
+    global _active_prompt_version
+    _active_prompt_version = version
+
+
+def get_active_prompt_version() -> str | None:
+    return _active_prompt_version
+
+
+def recent_records() -> list[dict]:
+    """Snapshot of the recent-call ring buffer (for a /metrics-style surface)."""
+    return [asdict(r) for r in _recent]
+
+
+def summary() -> dict:
+    """Coarse aggregate over the ring buffer — the shape a metrics endpoint would
+    expose (call count, error rate, p-ish latency, token + cost totals). This is a
+    convenience for the scaffolding; a real backend computes these server-side."""
+    records = list(_recent)
+    if not records:
+        return {"calls": 0}
+    latencies = sorted(r.latency_ms for r in records)
+    errors = sum(1 for r in records if not r.ok)
+    total_tokens = sum(r.total_tokens or 0 for r in records)
+    total_cost = sum(r.est_cost_usd or 0.0 for r in records)
+    return {
+        "calls": len(records),
+        "error_rate": round(errors / len(records), 4),
+        "latency_ms_p50": latencies[len(latencies) // 2],
+        "latency_ms_max": latencies[-1],
+        "total_tokens": total_tokens,
+        "est_cost_usd": round(total_cost, 6),
+    }

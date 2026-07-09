@@ -24,5 +24,18 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "agent"}
 
 
+@app.get("/metrics")
+def metrics() -> dict:
+    """HARD-O1: the code-side metrics surface. Returns a coarse aggregate over the
+    in-process LLM-call ring buffer (call count, error rate, latency, token + cost
+    totals). This is the SCAFFOLDING seam a real monitoring backend scrapes — the
+    acceptance criterion (dashboards + alert routing) is the infra behind it, not
+    this endpoint. Auth for this endpoint is the parent system's perimeter job
+    (see the CRITICAL-5 scope note)."""
+    from app.telemetry import summary
+
+    return summary()
+
+
 app.include_router(classify_router)
 app.include_router(negotiate_router)

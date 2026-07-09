@@ -9,8 +9,12 @@
  */
 
 import assert from "node:assert/strict";
-import type { Event, EventType } from "@prisma/client";
-import { buildPriorContextFromEvents } from "./negotiationHistory.js";
+import type { Event, EventType, Message } from "@prisma/client";
+import {
+  buildPriorContextFromEvents,
+  buildDraftHistory,
+  computeOpenQuestions,
+} from "./negotiationHistory.js";
 
 let n = 0;
 function test(name: string, fn: () => void): void {
@@ -118,6 +122,107 @@ test("derives round from position when round field absent", () => {
     ctx.history.map((h) => h.round),
     [0, 1],
   );
+});
+
+// ---------------------------------------------------------------------------
+// HARD-N2: buildDraftHistory + computeOpenQuestions
+// ---------------------------------------------------------------------------
+
+function msg(
+  overrides: Partial<Message> & { body: string; direction: Message["direction"] },
+  atMs: number,
+): Message {
+  return {
+    id: `m${atMs}`,
+    instanceId: "i1",
+    subject: null,
+    threadId: null,
+    senderEmail: null,
+    externalMessageId: null,
+    idempotencyKey: null,
+    replyIntent: null,
+    classifyConfidence: null,
+    sentAt: null,
+    receivedAt: new Date(atMs),
+    processedAt: null,
+    createdAt: new Date(atMs),
+    ...overrides,
+  } as Message;
+}
+
+console.log("\nnegotiationHistory.buildDraftHistory (HARD-N2)\n");
+
+test("interleaves our turns and creator inbounds chronologically", () => {
+  const events = [
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, rate: 350, message: "We can offer $350." }, 20),
+  ];
+  const messages = [
+    msg({ body: "What is the commission?", direction: "INBOUND" }, 10),
+    msg({ body: "Sounds good, $350 works.", direction: "INBOUND" }, 30),
+  ];
+  const hist = buildDraftHistory(events, messages, new Set());
+  assert.equal(hist.length, 3);
+  assert.equal(hist[0]!.role, "creator"); // 10
+  assert.equal(hist[1]!.role, "us"); // 20
+  assert.equal(hist[2]!.role, "creator"); // 30
+  assert.equal(hist[1]!.action, "COUNTER");
+  assert.equal(hist[1]!.rate, 350);
+});
+
+test("excludes brand-reply inbound messages from the creator transcript", () => {
+  const messages = [
+    msg({ body: "creator asking a thing", direction: "INBOUND", externalMessageId: "c1" }, 10),
+    msg({ body: "approve", direction: "INBOUND", externalMessageId: "brand1" }, 20),
+  ];
+  const hist = buildDraftHistory([], messages, new Set(["brand1"]));
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0]!.role, "creator");
+});
+
+test("skips outbound messages and empty-bodied turns", () => {
+  const events = [
+    // A draft-failure escalation carries no `message` → contributes nothing.
+    ev("NEGOTIATION_TURN", { outcome: "escalate", round: 1 }, 20),
+  ];
+  const messages = [
+    msg({ body: "our outbound copy", direction: "OUTBOUND" }, 10),
+    msg({ body: "real creator reply", direction: "INBOUND" }, 30),
+  ];
+  const hist = buildDraftHistory(events, messages, new Set());
+  assert.equal(hist.length, 1);
+  assert.equal(hist[0]!.role, "creator");
+});
+
+console.log("\nnegotiationHistory.computeOpenQuestions (HARD-N2)\n");
+
+test("surfaces an earlier-round question not asked again this turn", () => {
+  const events = [
+    ev(
+      "NEGOTIATION_TURN",
+      { outcome: "counter", round: 1, creatorQuestions: ["when do I get paid?", "what's the fee?"] },
+      10,
+    ),
+  ];
+  // This turn only re-asks the fee → "when do I get paid?" is still open.
+  const open = computeOpenQuestions(events, ["what's the fee?"]);
+  assert.deepEqual(open, ["when do I get paid?"]);
+});
+
+test("de-duplicates and excludes this turn's questions case-insensitively", () => {
+  const events = [
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, creatorQuestions: ["Usage rights?"] }, 10),
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 2, creatorQuestions: ["usage rights?", "Exclusivity?"] }, 20),
+  ];
+  const open = computeOpenQuestions(events, ["exclusivity?"]);
+  // "usage rights?" (asked twice) appears once; "Exclusivity?" excluded as it's this turn's.
+  assert.deepEqual(open, ["Usage rights?"]);
+});
+
+test("returns [] when every prior question was re-asked this turn", () => {
+  const events = [
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, creatorQuestions: ["what's the fee?"] }, 10),
+  ];
+  assert.deepEqual(computeOpenQuestions(events, ["what's the fee?"]), []);
 });
 
 console.log(`\n✓ negotiationHistory: all ${n} tests passed\n`);

@@ -38,6 +38,17 @@ export function agentBaseUrl(override?: string): string {
   return (override ?? process.env["AGENT_SERVICE_URL"] ?? "http://localhost:8000").replace(/\/$/, "");
 }
 
+// EASY-S1: how many chars of an agent error body may appear in a SERVER-SIDE log
+// line. The body can quote model output; a short preview is enough to debug a
+// 5xx without spilling the whole response. Never returned to a caller.
+const _ERROR_BODY_PREVIEW_CHARS = 120;
+
+function redactBody(body: string): string {
+  const trimmed = body.trim();
+  if (trimmed.length <= _ERROR_BODY_PREVIEW_CHARS) return trimmed;
+  return `${trimmed.slice(0, _ERROR_BODY_PREVIEW_CHARS)}…[truncated]`;
+}
+
 // Parse a positive-number env var, falling back to `fallback` when unset/invalid.
 function positiveEnvMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -125,8 +136,18 @@ export async function agentPostJson(
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      const err = new Error(`agent service ${path} returned ${res.status}: ${text}`) as Error & {
+      // EASY-S1: the agent's error BODY can echo model output (a quoted rate, a
+      // raw-response preview) — it must not transit TS error strings / console /
+      // worker logs verbatim. Drain the body (so the connection frees) but keep
+      // only the status in the error message; a short redacted preview is logged
+      // server-side only for debugging, never surfaced to a caller.
+      const body = await res.text().catch(() => "");
+      if (body) {
+        console.error(
+          `[agentServiceClient] ${path} ${res.status}; body (redacted preview): ${redactBody(body)}`,
+        );
+      }
+      const err = new Error(`agent service ${path} returned ${res.status}`) as Error & {
         status?: number;
       };
       err.status = res.status;

@@ -35,9 +35,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install fastapi "uvicorn[standard]" httpx python-dotenv pydantic pytest pytest-asyncio
           pip install "langgraph>=0.1.0" "langchain-ollama>=0.2.0"
+          # HARD-K1: pypdf is used by the brief-parser (app/brief.py) + its tests.
+          pip install "pypdf>=4.0.0"
 
       - name: Run pytest
+        # Includes the HARD-T1 deterministic negotiation eval gate
+        # (test_negotiation_eval_gate.py): every run_eval.py case is machine-
+        # asserted, and Case-19 (above-ceiling on the final round) is asserted to
+        # ESCALATE — the offline tripwire for CRITICAL-4. The full 22-case LIVE
+        # eval (run_eval.py, ASSERTS covers every case) is opt-in below because it
+        # needs a running agent + model; it is NOT part of the default CI run.
         run: python -m pytest -q
+
+      # HARD-T1 (live eval gate) — OPT-IN. run_eval.py drives the real
+      # /negotiate + /draft endpoints against a running agent on a real model, so
+      # it cannot run on a stock GitHub runner. To enable it, provision a runner
+      # with the model available (Ollama/qwen or an OpenAI key), start the agent,
+      # and set RUN_LLM_EVAL=1 + AGENT_URL. The step exits non-zero on any ASSERTS
+      # failure, gating the merge on real model behavior. Left disabled by default
+      # so CI stays deterministic and offline.
+      - name: Run live negotiation eval (opt-in)
+        if: ${{ env.RUN_LLM_EVAL == '1' }}
+        env:
+          AGENT_URL: ${{ env.AGENT_URL }}
+        run: python tests/negotiation_eval/run_eval.py
 
   server-tests:
     name: TypeScript server tests

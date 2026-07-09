@@ -2,7 +2,12 @@ import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
-import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
+import {
+  scanOutboundDraft,
+  guardConstraintsFromConfig,
+  maskGuardHits,
+  type GuardHit,
+} from "../guards/outputGuard.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
 
 // H4: the output guard is documented as a MANDATORY net before ANY AI-generated
@@ -18,7 +23,8 @@ function outreachBlockedByGuard(hits: GuardHit[]): NodeResult {
     eventPayload: {
       outcome: "ESCALATE",
       reason: "output_guard_blocked",
-      leaks: hits.map((h) => `${h.kind}:${h.value}`),
+      // EASY-S2: mask the band VALUE — record only which KIND leaked.
+      leaks: maskGuardHits(hits),
     },
   };
 }

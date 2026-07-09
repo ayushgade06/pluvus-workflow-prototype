@@ -123,6 +123,23 @@ export interface DraftRequest {
   /** Fixed terms the creator pushed on (commission|perk|deliverables|timeline),
    *  so the copy ACKNOWLEDGES the ask rather than silently restating the value. */
   pushedFixedTerms?: string[] | undefined;
+  /** HARD-N2: the conversation so far (both sides), so the copywriter can see the
+   *  prior emails and not contradict them or repeat wording. Chronological. */
+  history?: DraftHistoryEntry[] | undefined;
+  /** HARD-N2 answered-questions ledger: questions the creator raised in EARLIER
+   *  rounds that our prior emails never answered, re-surfaced so they aren't
+   *  silently dropped. Distinct from creatorQuestions (this turn's asks). */
+  openQuestions?: string[] | undefined;
+}
+
+/** HARD-N2: one turn of the threaded /draft conversation. `role` is "us" for a
+ *  turn we sent, "creator" for the creator's own inbound message. */
+export interface DraftHistoryEntry {
+  role: "us" | "creator";
+  round?: number | undefined;
+  action?: NegotiationAction | undefined;
+  rate?: number | undefined;
+  message?: string | undefined;
 }
 
 export interface DraftResponse {

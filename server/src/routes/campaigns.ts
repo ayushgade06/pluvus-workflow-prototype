@@ -64,6 +64,10 @@ router.post("/", async (req: Request, res: Response) => {
     timeline,
     rewardDescription,
     shipsPhysicalProduct,
+    usageRights,
+    exclusivity,
+    paymentTerms,
+    attributionWindow,
   } = req.body as {
     name?: string;
     brand?: string;
@@ -75,6 +79,11 @@ router.post("/", async (req: Request, res: Response) => {
     timeline?: string;
     rewardDescription?: string;
     shipsPhysicalProduct?: boolean;
+    // HARD-K1 knowledge fields.
+    usageRights?: string;
+    exclusivity?: string;
+    paymentTerms?: string;
+    attributionWindow?: string;
   };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -105,6 +114,13 @@ router.post("/", async (req: Request, res: Response) => {
       rewardDescription:
         typeof rewardDescription === "string" ? rewardDescription.trim() || null : null,
       shipsPhysicalProduct: shipsPhysicalProduct === true,
+      // HARD-K1 knowledge fields — stated as fact by the agent when the creator
+      // asks, deferred honestly when blank.
+      usageRights: typeof usageRights === "string" ? usageRights.trim() || null : null,
+      exclusivity: typeof exclusivity === "string" ? exclusivity.trim() || null : null,
+      paymentTerms: typeof paymentTerms === "string" ? paymentTerms.trim() || null : null,
+      attributionWindow:
+        typeof attributionWindow === "string" ? attributionWindow.trim() || null : null,
     });
     res.status(201).json({
       id: campaign.id,
@@ -118,6 +134,10 @@ router.post("/", async (req: Request, res: Response) => {
       timeline: campaign.timeline,
       rewardDescription: campaign.rewardDescription,
       shipsPhysicalProduct: campaign.shipsPhysicalProduct,
+      usageRights: campaign.usageRights,
+      exclusivity: campaign.exclusivity,
+      paymentTerms: campaign.paymentTerms,
+      attributionWindow: campaign.attributionWindow,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {

@@ -27,6 +27,7 @@ from app.injection import (
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.structured import StructuredOutputError, invoke_structured
+from app.telemetry import set_active_prompt_version
 
 router = APIRouter()
 logger = logging.getLogger("agent.classify")
@@ -122,6 +123,9 @@ def _langgraph_classify(message: str) -> ClassifyResponse:
 
     def classify_node(state: dict) -> dict:
         prompt = _CLASSIFY_PROMPT.format(message=state["message"])
+        # HARD-O1 / item 47: stamp the classify prompt version on the telemetry
+        # record for this LLM call.
+        set_active_prompt_version(_CLASSIFY_PROMPT_VERSION)
         # FIX-6: validate the model output against _ClassifyLLMOutput AS PRODUCED,
         # retrying the model on invalid output instead of regex-scraping a guess.
         # On total failure, fail SAFE to UNKNOWN/low-confidence so the existing
@@ -151,6 +155,8 @@ def _langgraph_classify(message: str) -> ClassifyResponse:
                 confidence=0.0,
                 reasoning="classifier output invalid after retries",
             )
+        finally:
+            set_active_prompt_version(None)
         return {"result": out}
 
     graph = StateGraph(dict)
@@ -251,4 +257,9 @@ def classify(req: ClassifyRequest) -> ClassifyResponse:
     try:
         return classify_message(req.message)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Classification failed: {exc}") from exc
+        # EASY-S1: log the real error server-side (with any raw preview) but return
+        # a GENERIC detail to the client — the exception text can carry model output
+        # (a quoted figure, a raw response preview) that must not transit the HTTP
+        # response or a caller's logs.
+        logger.exception("classify failed")
+        raise HTTPException(status_code=500, detail="Classification failed") from exc

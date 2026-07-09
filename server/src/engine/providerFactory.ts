@@ -15,7 +15,7 @@ import type { ClassificationProvider } from "../adapters/classification/Classifi
 import { LangGraphNegotiationProvider } from "../adapters/negotiation/LangGraphNegotiationProvider.js";
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
 import type { NegotiationProvider } from "../adapters/negotiation/NegotiationProvider.js";
-import type { NegotiationTerm } from "../adapters/negotiation/types.js";
+import type { NegotiationTerm, DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type {
   ClassifyResult,
   BrandDecisionClassifyResult,
@@ -104,18 +104,45 @@ function warnUnknownProvider(kind: string, raw: string | undefined): void {
 //   EMAIL_PROVIDER=nylas            → NylasEmailProvider (reads NYLAS_* env)
 
 export function emailProvider(): IEmailProvider {
-  const choice = (process.env["EMAIL_PROVIDER"] ?? "mock").toLowerCase();
+  const raw = process.env["EMAIL_PROVIDER"];
 
+  // MED-A1: EMAIL_PROVIDER used to DEFAULT to "mock" even in production, so a
+  // deploy that simply forgot to set it would advance the entire funnel while
+  // sending ZERO real emails — a silent, funnel-wide outage. Fail fast instead:
+  // outside NODE_ENV=test the variable MUST be set explicitly. (In test we
+  // default to mock so the suite needs no env.) The classify/negotiate providers
+  // already resolve env-aware defaults; email is the one that silently no-op'd.
+  if (raw === undefined || raw.trim() === "") {
+    if (isTestEnv()) return new MockEmailProvider();
+    throw new Error(
+      "EMAIL_PROVIDER is not set. Set EMAIL_PROVIDER=nylas (with NYLAS_* env) for " +
+        "real email, or EMAIL_PROVIDER=mock to explicitly opt into the no-op mock. " +
+        "Refusing to default to mock outside NODE_ENV=test — a misconfigured deploy " +
+        "would advance the whole funnel while sending no real emails.",
+    );
+  }
+
+  const choice = raw.toLowerCase();
   if (choice === "nylas") {
     return new NylasEmailProvider();
   }
-
-  if (choice !== "mock") {
-    console.warn(
-      `[providerFactory] unknown EMAIL_PROVIDER="${choice}" — falling back to mock`,
-    );
+  if (choice === "mock") {
+    // Explicit opt-in. Warn outside test so a stray EMAIL_PROVIDER=mock in a real
+    // deploy is at least visible (parity with warnIfProdMock for AI providers).
+    if (!isTestEnv()) {
+      console.warn(
+        "[providerFactory] EMAIL_PROVIDER=mock outside NODE_ENV=test — no real " +
+          "emails will be sent. Set EMAIL_PROVIDER=nylas for real delivery.",
+      );
+    }
+    return new MockEmailProvider();
   }
-  return new MockEmailProvider();
+
+  // An explicit but unrecognized value (a typo). Don't silently no-op the whole
+  // funnel — fail so the typo is caught rather than swallowed to mock.
+  throw new Error(
+    `Unknown EMAIL_PROVIDER="${raw}". Expected "nylas" or "mock".`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +300,9 @@ export class AgentProviderAdapter implements IAgentProvider {
       // explicit checklist and acknowledges pushed fixed terms (spec §6.2).
       creatorQuestions?: string[];
       pushedFixedTerms?: string[];
+      // HARD-N2: prior conversation (both sides) + answered-questions ledger.
+      history?: DraftHistoryEntry[];
+      openQuestions?: string[];
     },
   ): Promise<EmailDraft | null> {
     const request = {
@@ -296,6 +326,11 @@ export class AgentProviderAdapter implements IAgentProvider {
       // acknowledgement instead of re-parsing the raw reply.
       creatorQuestions: extra?.creatorQuestions,
       pushedFixedTerms: extra?.pushedFixedTerms,
+      // HARD-N2: the conversation so far + the answered-questions ledger, so the
+      // copy stays consistent with prior emails and re-surfaces an earlier
+      // unanswered question rather than dropping it.
+      history: extra?.history,
+      openQuestions: extra?.openQuestions,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

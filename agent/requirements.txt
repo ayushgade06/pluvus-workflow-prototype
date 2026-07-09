@@ -4,6 +4,10 @@ uvicorn[standard]>=0.30.0
 httpx>=0.27.0
 python-dotenv>=1.0.1
 
+# HARD-K1: parse the campaign brief PDF so the negotiation agent can source real
+# campaign terms (deliverables/usage/timeline) instead of hallucinating them.
+pypdf>=4.0.0
+
 # AI — LangGraph (provider-agnostic orchestration)
 langgraph>=0.1.0
 

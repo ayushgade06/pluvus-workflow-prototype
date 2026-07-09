@@ -77,6 +77,30 @@ export function resolveBrandRecipient(campaignNotifyEmail: string | null | undef
   return OPERATOR_FALLBACK_EMAIL || null;
 }
 
+// MED-A1: brand DECISION emails (AWAITING_BRAND_DECISION) are a stricter case
+// than the manual-queue FYI above. A decision email asks the brand to make a
+// real-money call by replying, and the CRITICAL-1 sender-identity gate only
+// authorizes a reply that comes from the campaign's notifyEmail. Falling back to
+// the hardcoded platform operator here is worse than useless: the operator isn't
+// the brand, so any reply they send is REJECTED by the identity gate — we'd email
+// a decision request that can never be actioned by its recipient, and worse, we'd
+// invite a non-brand party to approve an over-ceiling spend.
+//
+// So a brand DECISION requires a REAL brand recipient: the campaign's notifyEmail,
+// or the BRAND_NOTIFY_EMAIL env (an ops-configured brand inbox, not a code
+// constant). When neither exists we return null; the caller creates the decision
+// row anyway and leaves it for the dashboard / 72h sweep rather than emailing a
+// dead-end operator address.
+export function resolveBrandDecisionRecipient(
+  campaignNotifyEmail: string | null | undefined,
+): string | null {
+  const fromCampaign = campaignNotifyEmail?.trim();
+  if (fromCampaign) return fromCampaign;
+  const fromEnv = process.env["BRAND_NOTIFY_EMAIL"]?.trim();
+  if (fromEnv) return fromEnv;
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Context loading
 // ---------------------------------------------------------------------------

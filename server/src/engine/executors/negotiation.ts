@@ -5,7 +5,12 @@ import {
 import type { Message } from "@prisma/client";
 import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
-import { buildPriorContextFromEvents } from "./negotiationHistory.js";
+import {
+  buildPriorContextFromEvents,
+  buildDraftHistory,
+  computeOpenQuestions,
+} from "./negotiationHistory.js";
+import { resolveBriefKnowledge } from "./briefKnowledge.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
@@ -58,9 +63,16 @@ function draftUnavailable(round: number, purpose: string): NodeResult {
 //
 // Returns the full Message row (MED-W2 needs its id to key the present-offer
 // send per-reply, not per-round).
-async function latestCreatorInbound(
-  instanceId: string,
-): Promise<Message | undefined> {
+// HARD-N2: the executor needs not just the LATEST creator message but the whole
+// set (to thread the conversation into /draft), plus the brand-reply id set (to
+// exclude A1/A2 brand approvals from the creator transcript). This loads all
+// three in one place so the latest-reply read and the draft-history builder
+// agree on exactly which inbound rows count as "the creator".
+async function loadCreatorInbounds(instanceId: string): Promise<{
+  messages: Message[];
+  brandReplyMsgIds: Set<string>;
+  latest: Message | undefined;
+}> {
   const messages = await listMessagesByInstance(instanceId);
   const events = await listEventsByInstance(instanceId, { type: "INBOUND_REPLY_RECEIVED" });
   const brandReplyMsgIds = new Set(
@@ -69,10 +81,11 @@ async function latestCreatorInbound(
       .map((e) => (e.payload as Record<string, unknown> | null)?.["externalMessageId"])
       .filter((id): id is string => typeof id === "string"),
   );
-  return messages
+  const latest = messages
     .filter((m) => m.direction === "INBOUND")
     .filter((m) => !(m.externalMessageId && brandReplyMsgIds.has(m.externalMessageId)))
     .at(-1);
+  return { messages, brandReplyMsgIds, latest };
 }
 
 // Best-effort REGEX extraction of a dollar amount the creator named in their
@@ -329,7 +342,8 @@ export async function executeNegotiation(
   // the counter copy acknowledges) the creator's ACTUAL words, not our own quoted
   // outreach. Also feeds extractRequestedRate below — a "$500" in our quoted
   // history must not be mistaken for the creator's ask.
-  const latestInbound = await latestCreatorInbound(instance.id);
+  const { messages: allInboundSource, brandReplyMsgIds, latest: latestInbound } =
+    await loadCreatorInbounds(instance.id);
   const creatorReply = latestInbound?.body ? extractReplyText(latestInbound.body) : "";
 
   // Hard stop — enforce maxRounds before calling the agent.
@@ -339,7 +353,12 @@ export async function executeNegotiation(
   // brand-decision round-trip — the brand gets ONE more move (approve the
   // creator's number, name a final counter, reject, or hand off) and the run
   // auto-resumes on their reply. See MANUAL_ESCALATION_RESOLUTION.md §3 B9.
-  if (instance.negotiationRound >= maxRounds) {
+  //
+  // EASY-W1: `maxRounds <= 0` means UNLIMITED — the same semantic the agent uses
+  // (_rounds_exhausted / is_final_round in negotiate.py). Without the `> 0` guard
+  // a `maxRounds: 0` config would open a brand decision on round 0 here while the
+  // agent treats 0 as unlimited — the split semantic this fix removes.
+  if (maxRounds > 0 && instance.negotiationRound >= maxRounds) {
     return openMaxRoundsBrandDecision(ctx, email, config, {
       creatorReply,
       maxRounds,
@@ -357,6 +376,14 @@ export async function executeNegotiation(
   // trajectory and knows its own last offer.
   const priorEvents = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
   const priorContext = buildPriorContextFromEvents(priorEvents);
+
+  // HARD-N2: the full conversation transcript (both sides) + the answered-
+  // questions ledger, threaded into /draft so the SENT email stays consistent
+  // with prior emails, doesn't repeat wording, and re-surfaces any earlier
+  // unanswered question. `draftHistory` interleaves our sent turns and the
+  // creator's inbound messages chronologically. Empty on the first negotiation
+  // turn, so first-contact copy is unchanged.
+  const draftHistory = buildDraftHistory(priorEvents, allInboundSource, brandReplyMsgIds);
 
   // creatorQuestions / pushedFixedTerms: the comprehension /negotiate already did
   // (the creator's questions + which fixed terms they pushed), threaded across
@@ -376,6 +403,24 @@ export async function executeNegotiation(
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
   // prefer the agent's validated comprehension, fall back to the regex read.
   const ackRequestedRate = creatorRequestedRate ?? extractRequestedRate(creatorReply);
+
+  // HARD-K1: parse the campaign brief PDF (once per run, cached by ref) into text
+  // the copy can consult to answer a creator's question from real campaign data
+  // instead of inventing it. Threaded into the draft's campaignContext as
+  // `briefKnowledge`; "" when there's no brief or it can't be read (soft-degrade).
+  const briefKnowledge = await resolveBriefKnowledge(nodeGraph);
+  const draftConfig = briefKnowledge ? { ...config, briefKnowledge } : config;
+
+  // HARD-N2: questions the creator raised in EARLIER rounds that we never carried
+  // forward — re-surfaced so a round-1 question dropped by round 3 isn't lost.
+  // Computed from the creatorQuestions persisted on prior NEGOTIATION_TURN events
+  // (see the eventPayload writes below), minus this turn's questions.
+  const openQuestions = computeOpenQuestions(priorEvents, creatorQuestions);
+  // Shared HARD-N2 draft context threaded into every draftEmail call this turn.
+  const draftHistoryExtra = {
+    ...(draftHistory.length ? { history: draftHistory } : {}),
+    ...(openQuestions.length ? { openQuestions } : {}),
+  };
 
   switch (outcome) {
     case "present_offer": {
@@ -397,7 +442,7 @@ export async function executeNegotiation(
       const presentRound = presentConsumesRound
         ? instance.negotiationRound + 1
         : instance.negotiationRound;
-      const aiDraft = await agent.draftEmail("counter_offer", creator, config, {
+      const aiDraft = await agent.draftEmail("counter_offer", creator, draftConfig, {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
         ...(ackRequestedRate !== undefined ? { creatorRequestedRate: ackRequestedRate } : {}),
@@ -406,6 +451,8 @@ export async function executeNegotiation(
         // every question and acknowledges any pushed fixed term.
         ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
+        // HARD-N2: conversation transcript + earlier-round unanswered questions.
+        ...draftHistoryExtra,
       });
       // A present-offer email PRESENTS concrete terms. When the REAL AI copy
       // generator returns null it means generation failed after retries — escalate
@@ -453,6 +500,9 @@ export async function executeNegotiation(
           round: presentRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          // HARD-N2: persist this turn's creator questions so a future turn's
+          // answered-questions ledger can tell what was asked earlier.
+          ...(creatorQuestions?.length ? { creatorQuestions } : {}),
           ...(presentConsumesRound
             ? { consumedRound: true, consecutivePresentOffers: trailingPresents + 1 }
             : {}),
@@ -506,8 +556,10 @@ export async function executeNegotiation(
         // downstream Content Brief node owns the email and this is skipped).
         ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
+        // HARD-N2: conversation transcript + earlier-round unanswered questions.
+        ...draftHistoryExtra,
       };
-      const aiDraft = await agent.draftEmail(purpose, creator, config, extra);
+      const aiDraft = await agent.draftEmail(purpose, creator, draftConfig, extra);
       // The acceptance/onboarding email confirms the agreed rate and lays out
       // next steps — too important to degrade to the sparse fallback. When the
       // REAL AI generator returns null (retries exhausted), escalate to a human.
@@ -593,7 +645,8 @@ export async function executeNegotiation(
       // auto-resumes on the brand's reply. Previously this was the unreachable-B9
       // gap — a straight counter→counter never entered the hard stop at >=maxRounds
       // because this guard bailed to a dashboard-only MANUAL_REVIEW first.
-      if (newRound >= maxRounds) {
+      // EASY-W1: `maxRounds <= 0` = unlimited (consistent with the entry hard stop).
+      if (maxRounds > 0 && newRound >= maxRounds) {
         return openMaxRoundsBrandDecision(ctx, email, config, {
           creatorReply,
           maxRounds,
@@ -622,8 +675,10 @@ export async function executeNegotiation(
         // every question and acknowledges any pushed fixed term (Case-10 gap).
         ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
+        // HARD-N2: conversation transcript + earlier-round unanswered questions.
+        ...draftHistoryExtra,
       };
-      const aiDraft = await agent.draftEmail("counter_offer", creator, config, counterExtra);
+      const aiDraft = await agent.draftEmail("counter_offer", creator, draftConfig, counterExtra);
       // The counter email presents the fee + commission + deliverables and
       // should answer the creator's questions. When the REAL AI generator returns
       // null (retries exhausted), escalate to a human — do NOT send the sparse
@@ -672,6 +727,9 @@ export async function executeNegotiation(
           round: newRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          // HARD-N2: persist this turn's creator questions for the answered-
+          // questions ledger on any subsequent turn.
+          ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         },
       };
     }

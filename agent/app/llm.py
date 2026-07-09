@@ -217,6 +217,14 @@ def _provider_label(provider: str) -> str:
     return provider
 
 
+def current_model_label() -> str:
+    """HARD-O1: the PRIMARY provider's label ("ollama:qwen3:30b-a3b" /
+    "openai:gpt-4o-mini") for the direct (no-fallback) telemetry path. The failover
+    path stamps each candidate's own label; the direct path only ever uses the
+    primary, so that's what we report here."""
+    return _provider_label(_candidate_chain()[0])
+
+
 # ---------------------------------------------------------------------------
 # Failover wrapper
 # ---------------------------------------------------------------------------
@@ -252,8 +260,17 @@ class FailoverChat:
         return self._cache[label]
 
     def invoke(self, prompt):
+        # HARD-O1: instrument every LLM invoke with latency + token/cost telemetry,
+        # stamped with {model, promptVersion}. Imported lazily to keep llm.py free
+        # of a hard telemetry dependency (and to avoid import cycles).
+        import time
+
+        from app.telemetry import get_active_prompt_version, record_llm_call
+
         errors: list[str] = []
+        prompt_version = get_active_prompt_version()
         for idx, (label, factory) in enumerate(self._candidates):
+            start = time.perf_counter()
             try:
                 model = self._model_for(label, factory)
                 # Per-candidate wall-clock bound (imported here to avoid a circular
@@ -263,10 +280,27 @@ class FailoverChat:
                 result = invoke_model_bounded(model, prompt)
                 if idx > 0:
                     logger.warning("LLM failover: served by fallback %s", label)
+                record_llm_call(
+                    model=label,
+                    latency_ms=(time.perf_counter() - start) * 1000.0,
+                    result=result,
+                    prompt_version=prompt_version,
+                    ok=True,
+                )
                 return result
             except Exception as exc:  # noqa: BLE001 — any failure should try the next
                 errors.append(f"{label}: {exc}")
                 logger.warning("LLM candidate %s failed: %s", label, exc)
+                # Record the failed candidate too (latency + error kind), so the
+                # error rate + failover behavior are observable, not just the wins.
+                record_llm_call(
+                    model=label,
+                    latency_ms=(time.perf_counter() - start) * 1000.0,
+                    result=None,
+                    prompt_version=prompt_version,
+                    ok=False,
+                    error_kind=type(exc).__name__,
+                )
                 continue
         raise RuntimeError(
             "all LLM candidates failed: " + " | ".join(errors)

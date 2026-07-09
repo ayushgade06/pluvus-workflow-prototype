@@ -3,6 +3,7 @@ import { enqueueNodeExecution } from "../workers/queues.js";
 import { logTrace } from "../observability/logger.js";
 import { sweepExpiredBrandDecisions } from "./brandDecisionSweep.js";
 import { reconcileStuckInstances } from "./reconciliation.js";
+import { logWorkerMetrics } from "../workers/workerMetrics.js";
 
 // ---------------------------------------------------------------------------
 // Due-instance poller
@@ -31,6 +32,13 @@ async function poll(): Promise<void> {
   // non-terminal state (crash between OCC commit and enqueue). Same cadence; its
   // own internal try/catch so a failure never affects the due-instance path.
   await reconcileStuckInstances();
+
+  // HARD-S1: emit worker-fleet metrics (queue depth + stuck-state counts) on the
+  // same cadence. logWorkerMetrics swallows its own errors, so a metrics read can
+  // never disturb the due-instance path. This is the scaffolding a monitoring
+  // backend scrapes; the load-test-to-1000 acceptance criterion is the infra
+  // behind it, not this call.
+  await logWorkerMetrics();
 
   let instances;
   try {

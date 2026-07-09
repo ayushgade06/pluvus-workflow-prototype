@@ -61,6 +61,13 @@ services:
       dockerfile: server/Dockerfile
     environment:
       PROCESS_ROLE: worker
+      # HARD-S1: per-worker BullMQ concurrency. Each in-flight step holds a slot
+      # for a 45-120s LLM call, so size this to the agent service's capacity, then
+      # scale replicas for more throughput. Reaching 1,000 concurrent is a
+      # multi-replica deploy + a load test (the acceptance criterion), not a
+      # single knob — this makes the knob exist. Override per queue with
+      # NODE_EXECUTION_CONCURRENCY / INBOUND_EMAIL_CONCURRENCY.
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-5}"
     env_file: [.env]
     depends_on:
       postgres: { condition: service_healthy }

@@ -10,6 +10,38 @@ export const QUEUE_NODE_EXECUTION = "node-execution";
 export const QUEUE_INBOUND_EMAIL = "inbound-email";
 
 // ---------------------------------------------------------------------------
+// Worker concurrency (HARD-S1)
+// ---------------------------------------------------------------------------
+// Concurrency was hardcoded to 5/worker/process, so the whole system's LLM
+// throughput was pinned regardless of how many replicas ran or how much agent-
+// service capacity existed. HARD-A1 (Batch 1) split the process topology so a
+// worker fleet can scale horizontally (PROCESS_ROLE=worker); this makes the
+// PER-WORKER concurrency tunable too, so a fleet can be sized to the agent
+// service's real capacity (each in-flight step holds a slot for a 45-120s LLM
+// call, so the right number is capacity-matched, not a constant).
+//
+//   WORKER_CONCURRENCY               — default for both workers (default 5)
+//   NODE_EXECUTION_CONCURRENCY       — override for the node-execution worker
+//   INBOUND_EMAIL_CONCURRENCY        — override for the inbound-email worker
+//
+// Load-test note (the acceptance criterion, NOT satisfied by this diff): reaching
+// 1,000 concurrent requires a multi-replica worker deployment + a capacity-matched
+// agent service, then a load test proving it. This code makes the knob exist;
+// the score only moves once that deployment + load evidence exist.
+const DEFAULT_WORKER_CONCURRENCY = 5;
+
+function positiveEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+export function workerConcurrency(specificEnv?: string): number {
+  const base = positiveEnvInt("WORKER_CONCURRENCY", DEFAULT_WORKER_CONCURRENCY);
+  return specificEnv ? positiveEnvInt(specificEnv, base) : base;
+}
+
+// ---------------------------------------------------------------------------
 // Default retry / backoff configuration
 // ---------------------------------------------------------------------------
 // 3 attempts: immediate → 5 s → 25 s (exponential, base 5 s)

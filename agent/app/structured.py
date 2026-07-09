@@ -123,9 +123,59 @@ def _invoke_with_timeout(llm, ask: str) -> str:
     A direct single model is bounded here via invoke_model_bounded.
     """
     if hasattr(llm, "_candidates"):
-        # FailoverChat — it bounds each candidate itself; don't re-wrap.
+        # FailoverChat — it bounds each candidate itself AND instruments each
+        # candidate call (HARD-O1); don't re-wrap or double-count here.
         return llm.invoke(ask).content
-    return invoke_model_bounded(llm, ask).content
+
+    # HARD-O1: the direct (single-model, no-fallback) path is the common one and
+    # bypasses FailoverChat, so instrument it HERE — latency + token/cost telemetry
+    # stamped with {model, promptVersion}. Lazy import to avoid a hard dependency /
+    # import cycle. Failures still propagate; we record the error kind first.
+    import time
+
+    from app.telemetry import get_active_prompt_version, record_llm_call
+    from app.llm import current_model_label
+
+    start = time.perf_counter()
+    try:
+        result = invoke_model_bounded(llm, ask)
+    except Exception as exc:
+        record_llm_call(
+            model=current_model_label(),
+            latency_ms=(time.perf_counter() - start) * 1000.0,
+            result=None,
+            prompt_version=get_active_prompt_version(),
+            ok=False,
+            error_kind=type(exc).__name__,
+        )
+        raise
+    record_llm_call(
+        model=current_model_label(),
+        latency_ms=(time.perf_counter() - start) * 1000.0,
+        result=result,
+        prompt_version=get_active_prompt_version(),
+        ok=True,
+    )
+    return result.content
+
+
+# EASY-S1: how many chars of raw model output may appear in an ERROR message.
+# The raw output can quote confidential figures (a floor/ceiling the model
+# echoed, a rate); those must not transit logs / HTTP error details in full.
+# A short, truncated preview is enough to debug a malformed generation without
+# spilling the whole response — and keeps the repair-prompt suffix from bloating
+# past num_ctx on retry (the second half of the EASY-S1 rationale).
+_ERROR_RAW_PREVIEW_CHARS = 80
+
+
+def _redact_raw(raw: str) -> str:
+    """A short, safe preview of raw model output for an error message: the first
+    _ERROR_RAW_PREVIEW_CHARS characters, with a truncation marker. Never the whole
+    thing — a raw response can carry figures the model quoted."""
+    text = raw.strip()
+    if len(text) <= _ERROR_RAW_PREVIEW_CHARS:
+        return repr(text)
+    return repr(text[:_ERROR_RAW_PREVIEW_CHARS]) + " …[truncated]"
 
 
 def extract_json_object(raw: str) -> dict:
@@ -145,10 +195,14 @@ def extract_json_object(raw: str) -> dict:
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
-            raise ValueError(f"No JSON object found in model response: {raw!r}")
+            # EASY-S1: a truncated preview, not the full raw — this ValueError's
+            # str() becomes `last_error`, which flows into the repair suffix AND
+            # the HTTPException detail. Embedding the whole response leaked model
+            # output to logs/clients and could blow num_ctx on the repair retry.
+            raise ValueError(f"No JSON object found in model response: {_redact_raw(raw)}")
         obj = json.loads(m.group())
     if not isinstance(obj, dict):
-        raise ValueError(f"Expected a JSON object, got {type(obj).__name__}: {raw!r}")
+        raise ValueError(f"Expected a JSON object, got {type(obj).__name__}: {_redact_raw(raw)}")
     return obj
 
 

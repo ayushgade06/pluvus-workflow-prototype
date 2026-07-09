@@ -8,7 +8,7 @@ import type {
   PriorNegotiationContext,
 } from "./types.js";
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
-import type { NegotiationTerm, NegotiationHistoryEntry } from "../adapters/negotiation/types.js";
+import type { NegotiationTerm, NegotiationHistoryEntry, DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import { resolveBand } from "./band.js";
 
 // ---------------------------------------------------------------------------
@@ -177,6 +177,11 @@ export interface IAgentProvider {
       // explicit checklist and acknowledges pushed fixed terms (spec §6.2).
       creatorQuestions?: string[];
       pushedFixedTerms?: string[];
+      // HARD-N2: the conversation so far (both sides) + the answered-questions
+      // ledger, so the copy stays consistent across rounds and re-surfaces an
+      // earlier unanswered question rather than dropping it.
+      history?: DraftHistoryEntry[];
+      openQuestions?: string[];
     },
   ): Promise<EmailDraft | null>;
 }

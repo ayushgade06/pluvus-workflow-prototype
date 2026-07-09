@@ -9,6 +9,7 @@ import type { BrandNotification, Creator } from "@prisma/client";
 import {
   notifyBrandOfEscalation,
   resolveBrandRecipient,
+  resolveBrandDecisionRecipient,
   buildEscalationEmail,
   type EscalationDeps,
 } from "./escalation.js";
@@ -121,6 +122,22 @@ async function main() {
     delete process.env["BRAND_NOTIFY_EMAIL"];
     // Falls back to the hard-coded operator address.
     assert.equal(resolveBrandRecipient(null), "affiliatepartner@pluvus.com");
+    if (prev !== undefined) process.env["BRAND_NOTIFY_EMAIL"] = prev;
+  });
+
+  await test("resolveBrandDecisionRecipient: requires a REAL brand recipient (MED-A1)", async () => {
+    // A brand DECISION needs the campaign notifyEmail or the ops BRAND_NOTIFY_EMAIL
+    // — NEVER the hardcoded operator (the identity gate can't authorize a reply
+    // from it, so it would be a dead-end money-decision email).
+    assert.equal(resolveBrandDecisionRecipient("brand@acme.com"), "brand@acme.com");
+    const prev = process.env["BRAND_NOTIFY_EMAIL"];
+    process.env["BRAND_NOTIFY_EMAIL"] = "ops@platform.com";
+    assert.equal(resolveBrandDecisionRecipient(null), "ops@platform.com");
+    delete process.env["BRAND_NOTIFY_EMAIL"];
+    // No campaign notifyEmail AND no env → null (dashboard/sweep handles it),
+    // NOT the operator-fallback that resolveBrandRecipient uses.
+    assert.equal(resolveBrandDecisionRecipient(null), null);
+    assert.equal(resolveBrandDecisionRecipient(" "), null);
     if (prev !== undefined) process.env["BRAND_NOTIFY_EMAIL"] = prev;
   });
 

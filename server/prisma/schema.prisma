@@ -203,6 +203,25 @@ model Campaign {
   /// Stamped into every node's config as `shipsPhysicalProduct`.
   shipsPhysicalProduct Boolean @default(false)
 
+  /// HARD-K1 knowledge fields — the campaign terms creators most often ask about
+  /// that the agent previously had NOWHERE to source, so it hallucinated them by
+  /// construction (see hard.md HARD-K1 / HARD-P2). All free text supplied by the
+  /// brand and stamped into every node's config so /negotiate + /draft can state
+  /// them as fact when present and DEFER honestly when absent (never invent).
+  ///
+  /// usageRights — how the brand may reuse the creator's content (e.g. "6-month
+  /// paid social usage on the brand's handles").
+  usageRights       String?
+  /// exclusivity — any category exclusivity the creator must honor (e.g. "no
+  /// competing footwear brands for 30 days after go-live").
+  exclusivity       String?
+  /// paymentTerms — when/how the creator is paid (e.g. "net-30 after content is
+  /// approved, paid via bank transfer").
+  paymentTerms      String?
+  /// attributionWindow — the affiliate cookie/attribution window (e.g. "30-day
+  /// last-click cookie").
+  attributionWindow String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -227,7 +246,7 @@ model Workflow {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  campaign Campaign?       @relation(fields: [campaignId], references: [id])
+  campaign Campaign?         @relation(fields: [campaignId], references: [id])
   versions WorkflowVersion[]
 }
 
@@ -239,10 +258,10 @@ model Workflow {
 /// nodeGraph shape (array of NodeSnapshot):
 ///   [{ id, type, order, config: { ... node-specific fields ... } }]
 model WorkflowVersion {
-  id         String   @id @default(cuid())
-  workflowId String
-  version    Int
-  nodeGraph  Json
+  id          String   @id @default(cuid())
+  workflowId  String
+  version     Int
+  nodeGraph   Json
   publishedAt DateTime @default(now())
 
   createdAt DateTime @default(now())
@@ -296,7 +315,7 @@ model Creator {
 ///   currentState     — the InstanceState enum value; the state machine's single
 ///                      source of truth for this instance
 model ExecutionInstance {
-  id                String        @id @default(cuid())
+  id                String @id @default(cuid())
   workflowVersionId String
   creatorId         String
 
@@ -306,15 +325,15 @@ model ExecutionInstance {
   negotiationRound Int           @default(0)
   dueAt            DateTime?
 
-  enrolledAt   DateTime  @default(now())
-  completedAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  enrolledAt  DateTime  @default(now())
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  workflowVersion WorkflowVersion @relation(fields: [workflowVersionId], references: [id])
-  creator         Creator         @relation(fields: [creatorId], references: [id])
-  messages        Message[]
-  events          Event[]
+  workflowVersion    WorkflowVersion     @relation(fields: [workflowVersionId], references: [id])
+  creator            Creator             @relation(fields: [creatorId], references: [id])
+  messages           Message[]
+  events             Event[]
   brandNotifications BrandNotification[]
   brandDecisions     BrandDecision[]
   paymentInfo        PaymentInfo?
@@ -340,36 +359,36 @@ model ExecutionInstance {
 ///   replyIntent       — classified intent of an inbound reply
 ///   classifyConfidence — confidence score (0–1) from the classifier
 model Message {
-  id                  String           @id @default(cuid())
-  instanceId          String
-  direction           MessageDirection
-  subject             String?
-  body                String
-  threadId            String?
+  id                 String           @id @default(cuid())
+  instanceId         String
+  direction          MessageDirection
+  subject            String?
+  body               String
+  threadId           String?
   /// The From: address of an INBOUND message (CRITICAL-1). Persisted so a brand
   /// decision reply can be verified to originate from the campaign's notifyEmail
   /// (the brand) rather than the creator — the party the system distrusts must
   /// not be able to resolve their own escalation. NULL for OUTBOUND messages and
   /// for inbound rows created before this field existed.
-  senderEmail         String?
-  externalMessageId   String?          @unique
+  senderEmail        String?
+  externalMessageId  String?          @unique
   /// Deterministic pre-send key for OUTBOUND AI messages (Phase: remediation
   /// FIX-11). Computed BEFORE email.send() from stable inputs
   /// (instanceId + purpose + round), so a crash between send and the row write
   /// can be detected on retry and the send is not duplicated. NULL for inbound
   /// messages and for outbound messages that predate this field.
-  idempotencyKey      String?          @unique
-  replyIntent         ReplyIntent?
-  classifyConfidence  Float?
-  sentAt              DateTime?
-  receivedAt          DateTime?
+  idempotencyKey     String?          @unique
+  replyIntent        ReplyIntent?
+  classifyConfidence Float?
+  sentAt             DateTime?
+  receivedAt         DateTime?
   /// When an INBOUND reply finished PROCESSING (CRITICAL-6). Set only after the
   /// full inbound handler completes (persist → transition → step). The worker's
   /// idempotency short-circuit keys on this, not on mere row existence: a reply
   /// persisted but not yet processed (a crash mid-handler) has processedAt NULL,
   /// so a BullMQ retry re-processes it instead of no-op'ing and losing it. NULL
   /// for OUTBOUND rows and for inbound rows that predate this field.
-  processedAt         DateTime?
+  processedAt        DateTime?
 
   createdAt DateTime @default(now())
 
@@ -469,19 +488,19 @@ enum BrandNotificationStatus {
 }
 
 model BrandNotification {
-  id         String                  @id @default(cuid())
-  instanceId String
+  id             String                  @id @default(cuid())
+  instanceId     String
   /// Resolved recipient address the notice was (or would have been) sent to.
-  recipient  String
+  recipient      String
   /// Why the creator was escalated, e.g. "low_confidence_reply",
   /// "max_rounds_reached", "output_guard_blocked", "escalated".
-  reason     String
-  status     BrandNotificationStatus @default(SENT)
+  reason         String
+  status         BrandNotificationStatus @default(SENT)
   /// Deterministic key (instanceId + reason) enforcing at-most-once delivery
   /// per escalation event.
-  idempotencyKey String              @unique
+  idempotencyKey String                  @unique
   /// Provider error message when status = FAILED. Null otherwise.
-  error      String?
+  error          String?
 
   createdAt DateTime @default(now())
 
@@ -524,14 +543,14 @@ model BrandDecision {
   /// The escalation reason code that triggered this decision (mirrors the codes
   /// used by BrandNotification.reason, e.g. "low_confidence_reply",
   /// "max_rounds_reached", "escalated", "missing_brand_name").
-  reason String
+  reason   String
   /// The human-readable question we asked the brand, persisted for the timeline.
   question String
   /// Opaque, unguessable token embedded in the reply-to + magic links. Matches
   /// inbound replies / link clicks back to this decision. UNIQUE — it is the
   /// capability that authorizes resolving exactly this decision.
-  token  String              @unique
-  status BrandDecisionStatus @default(PENDING)
+  token    String              @unique
+  status   BrandDecisionStatus @default(PENDING)
 
   /// Captured context needed to resume without re-deriving it from the thread:
   /// creator rate, current round, floor/ceiling band, guard details, injection
@@ -542,14 +561,14 @@ model BrandDecision {
   brandReplyRaw String?
   /// The parsed decision: APPROVE | REJECT | COUNTER | HANDOFF | AMBIGUOUS.
   /// Null until parsed.
-  decision String?
+  decision      String?
   /// The numeric value attached to the decision (the counter amount when
   /// decision = COUNTER; the supplied rate/config value for variant cases).
   decisionValue Float?
 
   /// How many clarification round-trips have happened. Capped at 1: a second
   /// ambiguous reply parks the run in the dashboard (MANUAL_REVIEW).
-  reaskCount Int @default(0)
+  reaskCount Int       @default(0)
   /// Silence timeout. A PENDING decision past this instant is swept into
   /// MANUAL_REVIEW by the scheduler (default 72h from creation).
   expiresAt  DateTime

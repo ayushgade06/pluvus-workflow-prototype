@@ -56,6 +56,18 @@ export interface GuardHit {
 
 export type GuardResult = { ok: true } | { ok: false; hits: GuardHit[] };
 
+// EASY-S2: the guard-leak markers written to event payloads (and served raw by
+// the observability timeline) must NOT carry the actual band value. Record only
+// the KIND of thing that leaked (ceiling / floor / a specific term) with the
+// value redacted — an operator can see "a ceiling value leaked into a draft"
+// without the internal number itself sitting raw in event payloads for anyone
+// with DB/log access. Endpoint auth is the parent system's job (CRITICAL-5
+// removal); this masking is the component's own contribution to not leaking the
+// band value. `${kind}:<redacted>` preserves the existing "kind:value" shape.
+export function maskGuardHits(hits: GuardHit[]): string[] {
+  return hits.map((h) => `${h.kind}:<redacted>`);
+}
+
 // Match a specific number as a standalone money-ish token: optional leading $,
 // optional thousands separators, optional .00 — but NOT as a substring of a
 // larger number (so 500 does not match inside 1500). Word boundaries on both
