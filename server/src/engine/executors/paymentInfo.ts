@@ -10,6 +10,7 @@ import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { openMissingBrandDecision } from "./brandDecision.js";
+import { nextNodeAfter } from "./graphNav.js";
 
 // ---------------------------------------------------------------------------
 // Payment Info executor
@@ -57,15 +58,9 @@ export async function resolvePaymentToken(instanceId: string): Promise<string> {
   }
 }
 
-// Resolve the node that follows Payment Info in the graph, if any, so the
-// PAYMENT_RECEIVED transition can hand control to the next connected node
-// (Content Brief, once it exists). Returns null when Payment Info is the last
-// node (the current linear graph), which the engine treats as terminal.
-function nextNodeAfter(ctx: ExecutionContext): string | null {
-  const { node, nodeGraph } = ctx;
-  const next = nodeGraph.find((n) => n.order === node.order + 1);
-  return next?.id ?? null;
-}
+// HARD-A2: the "next node in the linear graph" resolver is shared (graphNav.ts);
+// Payment Info and Reward Setup had byte-identical copies. It returns null when
+// Payment Info is the last node, which the engine treats as terminal.
 
 export async function executePaymentInfo(
   ctx: ExecutionContext,

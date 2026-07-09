@@ -4,6 +4,7 @@ import { listEventsByInstance, listMessagesByInstance } from "../../db/index.js"
 import { sendOnce } from "./idempotentSend.js";
 import { resolveAgreedFee } from "./rewardSetup.js";
 import { renderRateFixedEmail } from "./rateFixedEmail.js";
+import { nextNodeAfter } from "./graphNav.js";
 
 // ---------------------------------------------------------------------------
 // Reward Setup reply handling
@@ -185,11 +186,7 @@ export async function executeRewardReply(
   };
 }
 
-// Resolve the node that follows Reward Setup in the graph, if any, so
-// REWARD_CONFIRMED can carry the pointer for the future Payment Info node.
-// Returns null when Reward Setup is the last node (the current linear graph).
-function nextNodeAfter(ctx: ExecutionContext): string | null {
-  const { node, nodeGraph } = ctx;
-  const next = nodeGraph.find((n) => n.order === node.order + 1);
-  return next?.id ?? null;
-}
+// HARD-A2: "next node in the linear graph" is shared (graphNav.ts) — Reward Setup
+// and Payment Info had byte-identical copies. Returns null when Reward Setup is
+// the last node, so REWARD_CONFIRMED carries the pointer to the next node (e.g.
+// Payment Info) when one exists.

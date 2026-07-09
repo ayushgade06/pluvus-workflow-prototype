@@ -5,37 +5,23 @@ import {
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { buildPriorContextFromEvents } from "./negotiationHistory.js";
-import { scanOutboundDraft, guardConstraintsFromConfig, type GuardHit } from "../guards/outputGuard.js";
+import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
 import { extractReplyText } from "./replyText.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
 import { openBrandDecision } from "./brandDecision.js";
 import { resolveBand } from "../band.js";
+// HARD-A2: the output-guard-blocked MANUAL_REVIEW result is the SAME shape used
+// by other executors, so it lives in one place (guardEscalation.ts) rather than
+// being duplicated inline here. Previously negotiation.ts and guardEscalation.ts
+// each carried a byte-identical copy — a drift hazard on a safety path.
+import { blockedByGuard } from "./guardEscalation.js";
 
 // FIX-11: outbound AI sends use the shared reserve-before-send helper
 // (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
 // so a crash between email.send() and the row write cannot double-send a turn on
 // a BullMQ retry.
-
-// Build the MANUAL_REVIEW NodeResult emitted when the output guard blocks a
-// draft. The email is NOT sent — a human reviews before anything reaches the
-// creator (FIX-4). The leaked tokens are recorded for audit, but the offending
-// draft body is deliberately not persisted as an outbound message.
-function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
-  return {
-    nextState: "MANUAL_REVIEW",
-    nextNodeId: null,
-    completedAt: new Date(),
-    eventType: "NEGOTIATION_TURN",
-    eventPayload: {
-      outcome: "ESCALATE",
-      reason: "output_guard_blocked",
-      round,
-      leaks: hits.map((h) => `${h.kind}:${h.value}`),
-    },
-  };
-}
 
 // Build the MANUAL_REVIEW NodeResult emitted when AI copy generation for an
 // OFFER turn (present_offer / accept / counter) fails after retries. These turns
