@@ -30,6 +30,11 @@ from app.structured import StructuredOutputError, invoke_structured
 router = APIRouter()
 logger = logging.getLogger("agent.classify")
 
+# HARD-T2: prompt version stamped on every classifier LLM call so classifications
+# are attributable to a prompt revision (eval regression gates + drift
+# monitoring). Bump on any wording change to _CLASSIFY_PROMPT below.
+_CLASSIFY_PROMPT_VERSION = "classify-v1.0"
+
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
@@ -127,8 +132,19 @@ def _langgraph_classify(message: str) -> ClassifyResponse:
                 confidence=parsed.confidence,
                 reasoning=parsed.reasoning,
             )
+            # HARD-T2: stamp the prompt revision on the classifier LLM call.
+            logger.info(
+                "classify promptVersion=%s intent=%s confidence=%.2f",
+                _CLASSIFY_PROMPT_VERSION,
+                out.intent,
+                out.confidence,
+            )
         except StructuredOutputError as exc:
-            logger.warning("classify structured-output failed, routing to UNKNOWN: %s", exc)
+            logger.warning(
+                "classify promptVersion=%s structured-output failed, routing to UNKNOWN: %s",
+                _CLASSIFY_PROMPT_VERSION,
+                exc,
+            )
             out = ClassifyResponse(
                 intent="UNKNOWN",
                 confidence=0.0,

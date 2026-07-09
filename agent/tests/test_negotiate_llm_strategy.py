@@ -167,8 +167,69 @@ def test_llm_strategy_routes_and_uses_model_rate(monkeypatch):
     resp = neg_mod._langgraph_negotiate(_req())
     assert resp.action == "COUNTER"
     assert resp.proposedTerms == {"rate": 420.0}
+    # HARD-N1 §4: guards left the decision UNCHANGED (420 in band), so the model's
+    # pre-guard draft is kept as an advisory draft.
     assert resp.responseDraft == "How about $420?"
     assert resp.reasoning == "meet in the middle"
+
+
+# ---------------------------------------------------------------------------
+# HARD-N1 §4 — the pre-guard email is DROPPED whenever a guard changed the
+# action/rate, so the executor is forced to re-draft from the guarded decision
+# (the outgoing email can never state a number that contradicts the deal).
+# ---------------------------------------------------------------------------
+
+
+def test_llm_draft_dropped_when_guard_clamps_below_floor(monkeypatch):
+    # Model wrote "How about $20?" but $20 is below the floor (100). The guard
+    # clamps the counter UP to 100; the model's "$20" email now contradicts the
+    # recorded number, so responseDraft MUST be dropped (executor re-drafts).
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 20, "response": "How about $20?", "reasoning": "lowball"}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req())
+    assert resp.action == "COUNTER"
+    assert resp.proposedTerms == {"rate": 100.0}  # raised to floor
+    assert resp.responseDraft is None  # pre-guard "$20" email must not ship
+
+
+def test_llm_draft_dropped_when_over_ceiling_accept_escalates(monkeypatch):
+    # Model wrote "Deal at $900!" (ACCEPT over ceiling 500) → guard ESCALATE. No
+    # acceptance email may ship; the pre-guard draft is dropped.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "ACCEPT", "rate": 900, "response": "Deal at $900!", "reasoning": "eager"}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req())
+    assert resp.action == "ESCALATE"
+    assert resp.proposedTerms is None
+    assert resp.responseDraft is None  # no acceptance email ships
+
+
+def test_llm_draft_kept_when_guard_clamps_above_ceiling_but_still_counter(monkeypatch):
+    # Model COUNTER@900 → clamped to ceiling 500 (rate changed) → draft dropped.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 900, "response": "How about $900?", "reasoning": "high"}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req())
+    assert resp.action == "COUNTER"
+    assert resp.proposedTerms == {"rate": 500.0}
+    assert resp.responseDraft is None  # "$900" contradicts the clamped $500
+
+
+def test_guards_changed_decision_helper():
+    # Direct unit coverage of the change-detector: cosmetic diffs are NOT changes.
+    from app.routes.negotiate import NegotiationDecision, _guards_changed_decision
+
+    kept = NegotiationDecision(action="COUNTER", proposed_rate=420.0)
+    assert _guards_changed_decision("counter", "420", kept) is False  # case/str only
+    assert _guards_changed_decision("COUNTER", 420, kept) is False
+    clamped = NegotiationDecision(action="COUNTER", proposed_rate=100.0)
+    assert _guards_changed_decision("COUNTER", 20, clamped) is True  # rate changed
+    escalated = NegotiationDecision(action="ESCALATE", proposed_rate=None)
+    assert _guards_changed_decision("ACCEPT", 900, escalated) is True  # action changed
 
 
 def test_llm_strategy_guards_over_ceiling_acceptance(monkeypatch):
@@ -226,9 +287,28 @@ def test_llm_strategy_falls_back_to_rules_on_bad_llm_output(monkeypatch):
     assert resp.proposedTerms == {"rate": 290.0}
 
 
-def test_rules_is_the_default_strategy(monkeypatch):
-    # No env set → deterministic path (proves llm is opt-in).
+def test_llm_is_the_default_strategy(monkeypatch):
+    # MED-L1: no env set → the LLM path now drives the turn (llm is the default;
+    # rules is a fallback). Feed a VALID llm-decision output (action + rate) and
+    # assert the model's own COUNTER@420 is used (the rules path would have
+    # computed the deterministic midpoint 290 instead — proving the LLM path ran).
     monkeypatch.delenv("NEGOTIATION_STRATEGY", raising=False)
+    monkeypatch.setattr(
+        neg_mod,
+        "get_llm",
+        lambda temperature=0.3: FakeLLM(
+            ['{"action": "COUNTER", "rate": 420, "response": "How about $420?", "reasoning": "mid"}']
+        ),
+    )
+    resp = neg_mod._langgraph_negotiate(_req())
+    assert resp.action == "COUNTER"
+    assert resp.proposedTerms == {"rate": 420.0}
+
+
+def test_rules_strategy_when_forced(monkeypatch):
+    # NEGOTIATION_STRATEGY=rules forces the deterministic path (e.g. reproducible
+    # audit). A rules-shaped extraction output → the _decide_action ladder.
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "rules")
     monkeypatch.setattr(
         neg_mod,
         "get_llm",

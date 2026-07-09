@@ -5,15 +5,21 @@ POST /draft    — email copy generation
 LLM backend is chosen by the LLM_PROVIDER env var (ollama | openai) via
 app.llm.get_llm — see app/llm.py. No code edits to swap providers.
 
-Negotiation decision engine is chosen by NEGOTIATION_STRATEGY (rules | llm):
-  * rules (default) — the model only CLASSIFIES intent + EXTRACTS the creator's
-    rate; the deterministic `_decide_action` ladder makes the accept/counter/
-    escalate call and computes the counter amount. Reproducible + auditable.
-  * llm — the model reads the FULL negotiation history and picks the action AND
-    the rate itself (marketplace-style agent). `_apply_decision_guards` then
-    bounds the choice to the campaign's money invariants (clamp to
-    [floor, ceiling], escalate on an over-ceiling ACCEPT / unreadable rate, close
-    on the final round). Any LLM/transport failure falls back to `rules`.
+Negotiation decision engine is chosen by NEGOTIATION_STRATEGY (llm | rules):
+  * llm (DEFAULT, the production path — see PRINCIPLES.md) — the model reads the
+    FULL negotiation history and picks the action AND the rate itself
+    (marketplace-style agent). `_apply_decision_guards` then bounds the choice to
+    the campaign's HARD money invariants (clamp to [floor, ceiling], escalate on
+    an over-ceiling ACCEPT / unreadable rate, close on the final round) and, when
+    a guard changes the action/rate, drops the model's pre-guard email so the
+    executor re-drafts from the guarded decision (HARD-N1). Soft discipline
+    (don't regress, don't exceed the ask) is prompt-level, not code-clamped.
+  * rules (SAFETY FALLBACK) — the deterministic `_decide_action` ladder: the
+    model only CLASSIFIES intent + EXTRACTS the creator's rate, and code makes
+    the accept/counter/escalate call. Reproducible + auditable. It runs ONLY when
+    the LLM strategy is unavailable or its output is malformed (ANY model/
+    transport failure degrades here — MED-L1 — never a 500), or when forced with
+    NEGOTIATION_STRATEGY=rules.
 
 Negotiation input:
   { creatorReply, currentOffer, round, maxRounds, negotiationHistory, campaignConstraints }
@@ -47,6 +53,27 @@ from app.structured import invoke_structured, StructuredOutputError
 logger = logging.getLogger("agent.negotiate")
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Prompt versioning (HARD-T2)
+# ---------------------------------------------------------------------------
+# A stable revision tag per prompt, stamped on every AI-call log line (and, via
+# the response header below, on every /negotiate + /draft response) so eval
+# results and production behavior are attributable to a specific prompt
+# revision. BUMP the relevant constant whenever you edit that prompt's wording —
+# this is what makes a regression gate (HARD-T1) and drift monitoring (HARD-O1)
+# able to say "this run used prompt vX". Kept as plain module constants (no
+# infra dependency) so any log/metric/event can read them.
+#
+# Convention: "<prompt>-v<major>.<minor>". Bump minor for wording tweaks, major
+# for a structural rewrite (e.g. HARD-P1 converting _NEGOTIATE_PROMPT to pure
+# extraction would bump _NEGOTIATE_PROMPT_VERSION to v2.0).
+_LLM_NEGOTIATE_PROMPT_VERSION = "llm-negotiate-v1.0"
+_NEGOTIATE_PROMPT_VERSION = "rules-negotiate-v1.0"
+_DRAFT_PROMPT_VERSION = "draft-v1.0"
+_OFFER_PROMPT_VERSION = "offer-v1.0"
+_ONBOARDING_PROMPT_VERSION = "onboarding-v1.0"
+_FOLLOWUP_PROMPT_VERSION = "followup-v1.0"
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -340,15 +367,25 @@ def _decide_action(
     *,
     recommended_offer: float,
     ceiling_rate: float,
+    floor_rate: float = 0.0,
     prior_offer: float | None = None,
     is_final_round: bool = False,
 ) -> NegotiationDecision:
     """Map the model's classified intent + mentioned rate to a bounded action.
 
-    This is the financial decision boundary. It is deliberately pure and
-    deterministic so it can be unit-tested without the LLM, and so the
-    accept/counter/escalate split is an explicit ``if`` ladder rather than an
-    implicit consequence of model sampling.
+    This is the financial decision boundary (the deterministic **safety
+    fallback**, per PRINCIPLES.md — it runs only when the LLM strategy is
+    unavailable/malformed). It is deliberately pure and deterministic so it can
+    be unit-tested without the LLM, and so the accept/counter/escalate split is
+    an explicit ``if`` ladder rather than an implicit consequence of model
+    sampling.
+
+    ``floor_rate`` is the campaign's hard minimum (HARD-N1 §3). A below-floor
+    ACCEPT is clamped UP to the floor here, exactly as ``_apply_decision_guards``
+    does on the LLM path — so the floor invariant is unified across BOTH paths
+    (previously the fallback could ACCEPT below floor while the LLM path clamped
+    up). Defaults to 0.0 so pure unit tests that don't care about the floor are
+    unaffected (a 0 floor never clamps a real, positive rate).
 
     ``prior_offer`` is the concrete rate WE have already put in front of the
     creator on a previous turn (None on the first turn / when we've never named
@@ -385,10 +422,13 @@ def _decide_action(
             if rate > ceiling_rate:
                 # They "accepted" but at a number above what's workable.
                 return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-            return NegotiationDecision(action="ACCEPT", proposed_rate=rate)
+            # HARD-N1 §3: clamp a below-floor acceptance UP to the floor (never
+            # pay below the minimum), unifying the invariant with the LLM path.
+            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
         if prior_offer is not None:
-            # Accepting the number we already offered — close at that number.
-            return NegotiationDecision(action="ACCEPT", proposed_rate=prior_offer)
+            # Accepting the number we already offered — close at that number
+            # (raised to the floor if a stale prior offer somehow sits below it).
+            return NegotiationDecision(action="ACCEPT", proposed_rate=max(prior_offer, floor_rate))
         # Interested, but no number has ever been on the table. PRESENT the
         # recommended fee (+ commission in the copy) — informational, does not
         # consume a negotiation round.
@@ -432,18 +472,19 @@ def _decide_action(
             # Above what's workable — human (unchanged).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
         if rate <= our_offer:
-            # They met or beat our current offer — accept their number.
-            return NegotiationDecision(action="ACCEPT", proposed_rate=rate)
+            # They met or beat our current offer — accept their number (clamped
+            # up to the floor per HARD-N1 §3; never below the minimum).
+            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
         if is_final_round:
             # Last round, within the ceiling — close at their ask rather than
-            # escalating into a dead end.
-            return NegotiationDecision(action="ACCEPT", proposed_rate=rate)
+            # escalating into a dead end (clamped up to the floor per HARD-N1 §3).
+            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
         # Negotiation band — step our offer UP toward their ask (midpoint of our
         # offer and theirs), never exceeding their ask or the ceiling.
         step = _step_offer(our_offer, rate, ceiling_rate)
         if step >= rate:
-            return NegotiationDecision(action="ACCEPT", proposed_rate=rate)
-        return NegotiationDecision(action="COUNTER", proposed_rate=step)
+            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+        return NegotiationDecision(action="COUNTER", proposed_rate=max(step, floor_rate))
 
     # RATE_PROPOSAL but no readable number — the model claimed a rate we can't
     # parse. Do not guess; escalate to a human.
@@ -457,31 +498,42 @@ def _decide_action(
 
 
 # ---------------------------------------------------------------------------
-# LLM-driven negotiation decision (NEGOTIATION_STRATEGY=llm)
+# LLM-driven negotiation decision (NEGOTIATION_STRATEGY=llm — the DEFAULT)
 # ---------------------------------------------------------------------------
 #
-# The default strategy is the deterministic `_decide_action` ladder above: the
-# model only classifies + extracts, code makes the money call. When
-# NEGOTIATION_STRATEGY=llm, the model instead reads the FULL negotiation history
-# and picks the action AND the counter rate itself (a marketplace-style agent).
-# Its output is never trusted blindly — `_apply_decision_guards` re-imposes the
-# same financial invariants the deterministic path guarantees:
+# Per PRINCIPLES.md this is the INTENDED PRODUCTION PATH: the model reads the FULL
+# negotiation history and picks the action AND the counter rate itself (a
+# marketplace-style agent). The deterministic `_decide_action` ladder above is
+# the SAFETY FALLBACK, used only when this path is unavailable/malformed.
+#
+# The model's output is never trusted blindly — `_apply_decision_guards` re-imposes
+# the HARD financial invariants (soft discipline stays in the prompt, not code):
 #   * the agreed/countered rate is clamped to [floor, ceiling]
 #   * an ACCEPT above the ceiling becomes an ESCALATE (never agree over budget)
 #   * a COUNTER below the floor is raised to the floor
 #   * an action that needs a number but has none becomes ESCALATE (fail safe)
 #   * on the final round we close (accept within ceiling) rather than counter
-# and on ANY LLM/transport failure the route falls back to `_decide_action`.
+# and when a guard CHANGES the action/rate, the model's pre-guard email is dropped
+# so the executor re-drafts from the guarded decision (HARD-N1 §4). On ANY LLM/
+# transport failure the route falls back to the `_decide_action` safety net (MED-L1).
 
 
 def _negotiation_strategy() -> str:
-    """Which decision engine to use: "llm" or "rules" (default).
+    """Which decision engine to use: "llm" (default) or "rules".
+
+    Per PRINCIPLES.md, ``llm`` is the intended PRODUCTION default — the model
+    decides the action AND the number every turn, bounded by the hard
+    floor/ceiling/escalate guards. The deterministic ``rules`` ladder is demoted
+    to a **safety fallback** that runs only when the model is unavailable or its
+    output is malformed (see ``_langgraph_negotiate``'s except clause).
 
     Read per-request from NEGOTIATION_STRATEGY so it can be toggled without a
-    code change. Any value other than "llm" (case-insensitive) means rules — the
-    deterministic path — so a typo fails safe to the audited default.
+    code change. Set NEGOTIATION_STRATEGY=rules to force the deterministic path
+    (e.g. for a reproducible audit); any other value — including unset or a typo
+    — resolves to ``llm``, the intended default. (MED-L1: this reverses the prior
+    default of ``rules``.)
     """
-    return "llm" if os.getenv("NEGOTIATION_STRATEGY", "rules").strip().lower() == "llm" else "rules"
+    return "rules" if os.getenv("NEGOTIATION_STRATEGY", "llm").strip().lower() == "rules" else "llm"
 
 
 # Actions that put a concrete number on the table and therefore require a
@@ -604,6 +656,29 @@ def _apply_decision_guards(
         return NegotiationDecision(action="ACCEPT", proposed_rate=guarded)
 
     return NegotiationDecision(action=action, proposed_rate=guarded)
+
+
+def _guards_changed_decision(
+    model_action_raw: str, model_rate_raw: Any, decision: NegotiationDecision
+) -> bool:
+    """True when ``_apply_decision_guards`` altered the model's chosen action or
+    number (HARD-N1 §4).
+
+    Used by the LLM path to decide whether the model's pre-guard email may be
+    reused as an advisory draft. If the guards escalated, clamped, or otherwise
+    changed the action/rate, the model's email may name a number that no longer
+    matches the recorded decision, so it must be dropped and re-drafted from the
+    guarded decision. Comparison is on the *normalized* action + *coerced* rate,
+    so a purely cosmetic difference (e.g. ``"accept"`` vs ``"ACCEPT"``, or the
+    numeric string ``"420"`` vs ``420.0``) is NOT treated as a change.
+    """
+    normalized_action = (model_action_raw or "").strip().upper()
+    if normalized_action != decision.action:
+        return True
+    # Same action — compare the numbers. A None-vs-None match is unchanged;
+    # any numeric difference (clamp) counts as a change.
+    model_rate = _coerce_rate(model_rate_raw)
+    return model_rate != decision.proposed_rate
 
 
 _LLM_NEGOTIATE_PROMPT = """\
@@ -887,23 +962,41 @@ def _llm_negotiate_decision(
         is_final_round=is_final_round,
     )
 
+    # HARD-N1 §4 (the load-bearing rule from PRINCIPLES.md): a guard can change the
+    # action or the number AFTER the model already wrote its email, so the model's
+    # pre-guard `response` may state a rate/decision that contradicts the guarded
+    # one (e.g. it wrote "How about $20?" but the floor clamps the counter to
+    # $100; or it wrote "Deal at $600!" but that's over ceiling → ESCALATE). Such
+    # a draft must NEVER ship. When the guards altered the decision we drop the
+    # pre-guard draft to None; the executor then ALWAYS re-drafts the outgoing
+    # email from the *guarded* decision via /draft. `responseDraft` is advisory
+    # only — a hint the executor may reuse when the guards left the decision
+    # untouched, never the authoritative email.
+    guards_altered = _guards_changed_decision(parsed.action, parsed.rate, decision)
+
     # Audit line: the strategy used + what the model chose vs. what the guards
     # allowed. Makes it verifiable from the agent log that the LLM path (not the
     # rules fallback) drove this turn, and flags any clamp/escalate the guards
-    # applied to a rogue model choice.
+    # applied to a rogue model choice (and whether the pre-guard draft was dropped).
     logger.info(
-        "negotiate strategy=llm round=%s model_action=%s model_rate=%s -> action=%s rate=%s",
+        "negotiate strategy=llm promptVersion=%s round=%s model_action=%s model_rate=%s "
+        "-> action=%s rate=%s guards_altered=%s",
+        _LLM_NEGOTIATE_PROMPT_VERSION,
         req.round,
         parsed.action,
         parsed.rate,
         decision.action,
         decision.proposed_rate,
+        guards_altered,
     )
 
     resp = NegotiateResponse(action=decision.action)
     if decision.proposed_rate is not None:
         resp.proposedTerms = {"rate": decision.proposed_rate}
-    resp.responseDraft = parsed.response
+    # Advisory draft only when the guards did NOT change the decision; otherwise
+    # None so the executor is forced to re-draft from the guarded decision (the
+    # email can never state a number that contradicts the recorded deal).
+    resp.responseDraft = None if guards_altered else parsed.response
     # Store the model's own reasoning for auditability; fall back to the action.
     resp.reasoning = (parsed.reasoning or "").strip() or decision.action
     # Thread the comprehension across the seam (spec §5.3): normalize the model's
@@ -1125,12 +1218,21 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
                 current_offer=current_offer,
                 is_final_round=is_final_round,
             )
-        except StructuredOutputError as exc:
-            # Model unavailable / timed out / persistently malformed. Fall back to
-            # the deterministic path rather than failing the negotiation — the
-            # rules engine is the audited default and always produces a decision.
-            logger.warning(
-                "negotiate strategy=llm failed (%s); falling back to rules", exc
+        except Exception as exc:  # noqa: BLE001 — ANY model failure degrades, never 500s
+            # MED-L1: widen the fallback catch to ANY failure, not just
+            # StructuredOutputError. A model outage surfaces as many types —
+            # ConnectionError (backend down), LLMTimeoutError (hung generation),
+            # or RuntimeError("all LLM candidates failed") from the failover
+            # wrapper (llm.py) — and previously only StructuredOutputError
+            # degraded; the rest propagated to the route → HTTP 500, stranding
+            # the negotiation. Now ANY exception falls back to the deterministic
+            # `rules` safety net, which always produces a decision. Guard-layer
+            # bugs would be caught here too, so we log at ERROR with the type to
+            # keep a real code bug visible rather than silently masked.
+            logger.error(
+                "negotiate strategy=llm failed (%s: %s); falling back to rules safety net",
+                type(exc).__name__,
+                exc,
             )
 
     return _rules_negotiate(
@@ -1218,18 +1320,39 @@ def _rules_negotiate(
     # strictly above the floor so the floor default isn't mistaken for an offer).
 
     # Map intent + creator rate → NegotiationAction via the pure decision fn.
+    # HARD-N1 §3: floor_rate is now threaded so the deterministic fallback clamps
+    # a below-floor accept UP to the floor, exactly as the LLM path's guards do —
+    # a single, unified floor invariant across both strategies.
     decision = _decide_action(
         intent,
         creator_rate,
         recommended_offer=recommended_offer,
         ceiling_rate=ceiling_rate,
+        floor_rate=floor_rate,
         prior_offer=prior_offer,
         is_final_round=is_final_round,
+    )
+
+    # HARD-T2: stamp the prompt version on the (deterministic safety-fallback)
+    # rules decision so this turn is attributable to a prompt revision, same as
+    # the LLM path. Also records the model's intent vs. the guarded action.
+    logger.info(
+        "negotiate strategy=rules promptVersion=%s round=%s intent=%s -> action=%s rate=%s",
+        _NEGOTIATE_PROMPT_VERSION,
+        req.round,
+        intent,
+        decision.action,
+        decision.proposed_rate,
     )
 
     resp = NegotiateResponse(action=decision.action)
     if decision.proposed_rate is not None:
         resp.proposedTerms = {"rate": decision.proposed_rate}
+    # HARD-N1 §4: advisory only. The extraction-mode `response` was written before
+    # the deterministic decision was computed, so it can disagree with the guarded
+    # action/rate. The executor always re-drafts rate-bearing outcomes from the
+    # guarded decision (the real adapter escalates rather than send this), so it
+    # can never contradict the recorded deal.
     resp.responseDraft = response_text
     resp.reasoning = intent
     # Thread comprehension across the seam (spec §5.2/§5.3). These are [] unless
@@ -1831,13 +1954,17 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
     # Stated as fact when present; omitted (never invented) when blank.
     scope_lines = _scope_lines(req, ctx)
 
+    # HARD-T2: track which prompt revision generated this email so the log line
+    # below stamps it (attributable copy generation).
     if req.purpose in ("onboarding", "reward_confirmation"):
         # M3: reward_confirmation is the post-agreement confirmation email —
         # same shape as onboarding (confirm the agreed rate + lay out next
         # steps), so it reuses the onboarding prompt.
         prompt = _build_onboarding_prompt(req, sender, scope_lines)
+        prompt_version = _ONBOARDING_PROMPT_VERSION
     elif req.purpose in ("counter_offer", "acceptance"):
         prompt = _build_offer_prompt(req, sender, ctx, brand_context, scope_lines)
+        prompt_version = _OFFER_PROMPT_VERSION
     elif req.purpose == "follow_up":
         # H3: a dedicated brief-nudge prompt so follow-ups don't re-pitch the
         # brand from scratch (the initial-outreach prompt mandates a full product
@@ -1855,6 +1982,7 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
             brand_context=brand_context,
             extra="\n".join(extra_parts),
         )
+        prompt_version = _FOLLOWUP_PROMPT_VERSION
     else:
         # Build the personalization block. NOTE: we deliberately do NOT pass the
         # budget range (minBudget/maxBudget) here — the email may reference only
@@ -1908,6 +2036,7 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
             brand_context=brand_context,
             extra="\n".join(extra_parts),
         )
+        prompt_version = _DRAFT_PROMPT_VERSION
 
     def draft_node(state: dict) -> dict:
         # FIX-6: validate subject/body AS PRODUCED with retry, replacing the
@@ -1925,6 +2054,14 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
 
     subject = _scrub_brand(parsed.subject, sender)
     body = _scrub_brand(parsed.body, sender)
+
+    # HARD-T2: stamp the prompt revision that produced this email.
+    logger.info(
+        "draft promptVersion=%s purpose=%s creator=%s",
+        prompt_version,
+        req.purpose,
+        req.creatorName,
+    )
 
     return DraftResponse(subject=subject, body=body)
 

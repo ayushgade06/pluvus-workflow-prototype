@@ -236,6 +236,55 @@ def test_rejection():
     assert decision.proposed_rate is None
 
 
+# ---------------------------------------------------------------------------
+# HARD-N1 §3 — the deterministic fallback also clamps a below-floor accept UP to
+# the floor, unifying the floor invariant with the LLM path's guards. (Before
+# this fix _decide_action never received the floor, so it could ACCEPT below it
+# while the LLM path clamped up — a split invariant.)
+# ---------------------------------------------------------------------------
+
+
+def _decide_with_floor(intent, rate, floor, prior_offer=None, is_final_round=False):
+    return _decide_action(
+        intent,
+        rate,
+        recommended_offer=RECOMMENDED,
+        ceiling_rate=CEILING,
+        floor_rate=floor,
+        prior_offer=prior_offer,
+        is_final_round=is_final_round,
+    )
+
+
+def test_acceptance_below_floor_is_clamped_up_to_floor():
+    # Creator "accepts" at 50 but the floor is 100 → ACCEPT clamped up to 100.
+    d = _decide_with_floor("ACCEPTANCE", 50, floor=100)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 100.0
+
+
+def test_rate_proposal_below_floor_is_clamped_up_to_floor():
+    # They propose 40 (<= our offer 300, so we'd accept their number) but floor
+    # 100 raises it to 100. Never accept below the minimum.
+    d = _decide_with_floor("RATE_PROPOSAL", 40, floor=100)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 100.0
+
+
+def test_prior_offer_accept_below_floor_is_clamped_up():
+    # "Yes" to a stale prior offer of 60 that somehow sits below a 100 floor.
+    d = _decide_with_floor("ACCEPTANCE", None, floor=100, prior_offer=60.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 100.0
+
+
+def test_floor_zero_default_never_clamps_a_real_rate():
+    # Default floor 0.0 is a no-op — a positive rate passes through unchanged.
+    d = _decide_with_floor("ACCEPTANCE", 250, floor=0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250.0
+
+
 @pytest.mark.parametrize("intent", ["NEGOTIATION", "OBJECTION", "WAT"])
 def test_other_intents_counter_toward_recommended(intent):
     # NEGOTIATION/OBJECTION/unknown with no number → hold at our offer (COUNTER).
