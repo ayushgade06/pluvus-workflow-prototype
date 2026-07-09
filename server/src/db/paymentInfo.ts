@@ -16,6 +16,18 @@ export function generatePaymentToken(): string {
   return randomUUID();
 }
 
+// MED-S5: how long a payout link stays usable. The token is a bearer
+// capability, so a leaked/forwarded link must not work forever. 30 days is
+// generous for "fill in your payout details"; tunable via PAYMENT_TOKEN_TTL_DAYS.
+const DEFAULT_PAYMENT_TOKEN_TTL_DAYS = 30;
+
+export function paymentTokenExpiry(now: Date = new Date()): Date {
+  const raw = Number(process.env["PAYMENT_TOKEN_TTL_DAYS"]);
+  const days =
+    Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PAYMENT_TOKEN_TTL_DAYS;
+  return new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
 /**
  * Create the PaymentInfo row for an instance in the pending state.
  *
@@ -33,6 +45,8 @@ export async function createPaymentInfo(data: {
     data: {
       token: data.token,
       status: "PAYMENT_PENDING",
+      // MED-S5: stamp the token lifecycle at mint time.
+      expiresAt: paymentTokenExpiry(),
       instance: { connect: { id: data.instanceId } },
     },
   });

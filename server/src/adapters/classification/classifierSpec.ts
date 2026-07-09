@@ -91,3 +91,18 @@ export function compiledGates(): CompiledGates {
   };
   return _compiled;
 }
+
+/**
+ * Deterministic opt-out gate over the shared spec patterns (MED-W1).
+ *
+ * Used by the reply handlers that DON'T go through the first-reply classifier
+ * (mid-negotiation short-circuit, reward/payment replies, creator noise while
+ * AWAITING_BRAND_DECISION) so "unsubscribe" / "stop emailing me" is honored on
+ * EVERY inbound, not only on round 0. Compliance-critical (CAN-SPAM): this is
+ * code, not a model call, so nothing can suppress it. Same normalization subset
+ * as the Python sanitizer so both sides see the same text.
+ */
+export function looksLikeOptOut(text: string): boolean {
+  const clean = (text ?? "").normalize("NFKC").slice(0, 4000);
+  return compiledGates().optOut.some((re) => re.test(clean));
+}

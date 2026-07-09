@@ -5,6 +5,8 @@ import { sendOnce } from "./idempotentSend.js";
 import { resolveAgreedFee } from "./rewardSetup.js";
 import { renderRateFixedEmail } from "./rateFixedEmail.js";
 import { nextNodeAfter } from "./graphNav.js";
+import { extractReplyText } from "./replyText.js";
+import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js";
 
 // ---------------------------------------------------------------------------
 // Reward Setup reply handling
@@ -16,30 +18,23 @@ import { nextNodeAfter } from "./graphNav.js";
 // advances to REWARD_CONFIRMED; anything else keeps the instance in REWARD_PENDING
 // so a human or a later reply can still confirm.
 //
-// Detection reuses the existing classification agent (POSITIVE ⇒ confirm), with
-// a deterministic fast-path for the explicit agreement phrases the confirmation
-// email asks for ("I Agree", "confirmed", "looks good", "I accept", …). The
-// deterministic layer guarantees those exact phrases confirm even under the
-// keyword-based mock classifier, whose POSITIVE bucket doesn't list them all.
+// MED-N4 (per PRINCIPLES.md — LLM decides, code guards): whether a reply forms
+// the contract is a COMPREHENSION decision, so it belongs to the classification
+// agent (POSITIVE ⇒ confirm). The deterministic layer is narrowed to exactly two
+// jobs code can own:
+//   * an allowlist for the LITERAL "I Agree" the confirmation email requests —
+//     the one phrase we explicitly asked for, so it must always confirm even
+//     under the keyword mock;
+//   * a renegotiation SUPPRESSION guard, which can only ever BLOCK confirmation
+//     (never form it) — "yes, but can you do $600?" must not close at the old
+//     rate no matter how affirmative the model reads it.
+// The old broad phrase list ("looks good", "sounds good", a leading "yes", …)
+// let a hedged "yes, assuming we can revisit X" form a contract by regex; those
+// replies now go to the model, which reads the whole sentence.
 
-// Explicit agreement phrases. Matched as whole-ish tokens (word boundaries) on
-// the lower-cased reply so "disagree" never matches "agree".
-const AGREEMENT_PATTERNS: RegExp[] = [
-  /\bi\s*agree\b/,
-  /\bagreed\b/,
-  /\bi\s*accept\b/,
-  /\baccepted\b/,
-  // "confirmed" (past tense = they confirmed) is an affirmation. A bare "confirm"
-  // is deliberately NOT matched so questions like "how do I confirm?" or "before
-  // I confirm" fall through to the classifier and stay pending.
-  /\bconfirmed\b/,
-  /\blooks?\s+good\b/,
-  /\bsounds?\s+good\b/,
-  /\blet'?s\s+do\s+it\b/,
-  /\bthat\s+works\b/,
-  /\bworks\s+for\s+me\b/,
-  /^\s*yes\b/, // a leading "yes" (bare affirmative)
-];
+// The ONE deterministic agreement phrase: the literal cue the confirmation email
+// asks the creator to reply with. Word-bounded so "disagree" never matches.
+const AGREEMENT_PATTERNS: RegExp[] = [/\bi\s*agree\b/];
 
 // Signals that the reply is trying to RE-OPEN the price rather than agree, even
 // when it also contains an affirmative word ("yes, but can you do $600?"). If any
@@ -65,10 +60,11 @@ export function looksLikeRenegotiation(text: string | undefined): boolean {
   return RENEGOTIATION_PATTERNS.some((re) => re.test(lower));
 }
 
-/** True when the reply text explicitly agrees, by deterministic phrase match.
- *  A reply that also tries to re-open the fee (see looksLikeRenegotiation) is
- *  NOT treated as a deterministic agreement, so "yes, but $600?" no longer
- *  silently confirms the deal at the already-agreed rate. */
+/** True when the reply is the LITERAL "I Agree" the confirmation email asked
+ *  for (MED-N4: the only phrase that confirms deterministically). A reply that
+ *  also tries to re-open the fee (see looksLikeRenegotiation) is NOT treated as
+ *  an agreement, so "I agree, but can you do $600?" never silently confirms the
+ *  deal at the already-agreed rate. */
 export function isDeterministicAgreement(text: string | undefined): boolean {
   if (!text) return false;
   if (looksLikeRenegotiation(text)) return false;
@@ -77,12 +73,14 @@ export function isDeterministicAgreement(text: string | undefined): boolean {
 }
 
 /**
- * Decide whether a Reward Setup reply confirms the agreement.
+ * Decide whether a Reward Setup reply confirms the agreement (MED-N4).
  *
- * 1. Deterministic phrase match wins immediately (the phrases the email asked
- *    for). 2. Otherwise defer to the classification agent and treat POSITIVE as
- *    confirmation. Any other intent (question, negative, unknown) does NOT
- *    confirm — the instance stays in REWARD_PENDING.
+ * 1. The literal "I Agree" the email requested confirms deterministically.
+ * 2. A renegotiation attempt never confirms (suppression guard — code may block
+ *    contract formation, never form it).
+ * 3. Everything else is a comprehension call: the classification agent decides,
+ *    and POSITIVE ⇒ confirm. Any other intent (question, negative, unknown)
+ *    does NOT confirm — the instance stays in REWARD_PENDING.
  */
 export async function isAgreementReply(
   text: string,
@@ -126,8 +124,29 @@ export async function executeRewardReply(
   const messages = await listMessagesByInstance(instance.id);
   const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
   const body = latestInbound?.body ?? "";
+  // H1: decide on the creator's ACTUAL words, not the quoted thread/signature.
+  const replyText = extractReplyText(body);
 
-  const { confirmed, intent, confidence } = await isAgreementReply(body, agent);
+  // ── Deterministic opt-out gate (MED-W1) ───────────────────────────────────
+  // An "unsubscribe" while awaiting the agreement confirmation must opt the
+  // creator out — not get classified toward confirm/keep-waiting, and never
+  // receive the "rate is fixed" auto-reply. Code, not a model call.
+  if (looksLikeOptOut(replyText)) {
+    return {
+      nextState: "OPTED_OUT",
+      nextNodeId: null,
+      completedAt: new Date(),
+      eventType: "REPLY_CLASSIFIED",
+      eventPayload: {
+        intent: "OPT_OUT",
+        confidence: 1,
+        deterministicOptOut: true,
+        ...(latestInbound ? { messageId: latestInbound.id } : {}),
+      },
+    };
+  }
+
+  const { confirmed, intent, confidence } = await isAgreementReply(replyText, agent);
 
   if (confirmed) {
     return {

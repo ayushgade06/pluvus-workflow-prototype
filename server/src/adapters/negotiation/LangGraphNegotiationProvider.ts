@@ -62,6 +62,12 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
     if (pushedFixedTerms) {
       response.pushedFixedTerms = pushedFixedTerms;
     }
+    // MED-N3: the creator's own validated ask — copied explicitly (this adapter
+    // reconstructs the response field-by-field, so an uncopied field is silently
+    // dropped before the executor's money path ever sees it).
+    if (typeof data["creatorRequestedRate"] === "number" && Number.isFinite(data["creatorRequestedRate"])) {
+      response.creatorRequestedRate = data["creatorRequestedRate"];
+    }
     return response;
   }
 

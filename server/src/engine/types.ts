@@ -104,6 +104,15 @@ export interface NegotiateResult {
    */
   creatorQuestions?: string[];
   pushedFixedTerms?: string[];
+  /**
+   * MED-N3: the creator's OWN stated ask this turn, as comprehended by the
+   * /negotiate model and validated in the agent (digits must appear verbatim in
+   * the reply; ranges rejected). This is the number the MONEY path may record
+   * (context.creatorRate on a brand decision → the deal rate on APPROVE) — the
+   * executor must not substitute a regex read for it. Undefined when the
+   * creator named no single figure.
+   */
+  creatorRequestedRate?: number;
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and

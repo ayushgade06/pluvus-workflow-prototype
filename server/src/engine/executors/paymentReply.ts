@@ -9,6 +9,8 @@ import { sendOnce } from "./idempotentSend.js";
 import { resolveAgreedFee } from "./rewardSetup.js";
 import { paymentFormLink } from "./paymentEmail.js";
 import { renderRateFixedEmail } from "./rateFixedEmail.js";
+import { extractReplyText } from "./replyText.js";
+import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js";
 
 // ---------------------------------------------------------------------------
 // Payment Info reply handling
@@ -43,6 +45,26 @@ export async function executePaymentReply(
 
   const messages = await listMessagesByInstance(instance.id);
   const latestInbound = messages.filter((m) => m.direction === "INBOUND").at(-1);
+
+  // ── Deterministic opt-out gate (MED-W1) ───────────────────────────────────
+  // The old behavior auto-replied marketing copy ("the rate is fixed, here's
+  // your payout link") to EVERY email at this stage — including "stop emailing
+  // me", a CAN-SPAM violation. Honor an unambiguous opt-out first, on the
+  // creator's actual words (quoted thread stripped). Code, not a model call.
+  if (latestInbound && looksLikeOptOut(extractReplyText(latestInbound.body))) {
+    return {
+      nextState: "OPTED_OUT",
+      nextNodeId: null,
+      completedAt: new Date(),
+      eventType: "REPLY_CLASSIFIED",
+      eventPayload: {
+        intent: "OPT_OUT",
+        confidence: 1,
+        deterministicOptOut: true,
+        messageId: latestInbound.id,
+      },
+    };
+  }
 
   // Resolve the agreed fee (to name the locked figure) and the existing payout
   // form link (to re-share). The PaymentInfo row was created when the payout

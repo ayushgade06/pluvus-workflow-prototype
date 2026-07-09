@@ -69,6 +69,10 @@ export interface NegotiationResponse {
   /** Which FIXED terms the creator pushed to change, from the closed vocabulary
    *  commission|perk|deliverables|timeline. */
   pushedFixedTerms?: string[];
+  /** MED-N3: the creator's own stated fee this turn, extracted by the model and
+   *  substring-validated agent-side (digits must appear in the reply; ranges
+   *  rejected). Feeds the engine's money path; absent when none was named. */
+  creatorRequestedRate?: number;
 }
 
 // ---------------------------------------------------------------------------

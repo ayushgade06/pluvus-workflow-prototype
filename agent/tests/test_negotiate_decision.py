@@ -29,7 +29,7 @@ RECOMMENDED = 300.0
 CEILING = 500.0
 
 
-def decide(intent, rate, prior_offer=None, is_final_round=False):
+def decide(intent, rate, prior_offer=None, is_final_round=False, consecutive_holds=0):
     return _decide_action(
         intent,
         rate,
@@ -37,6 +37,7 @@ def decide(intent, rate, prior_offer=None, is_final_round=False):
         ceiling_rate=CEILING,
         prior_offer=prior_offer,
         is_final_round=is_final_round,
+        consecutive_holds=consecutive_holds,
     )
 
 
@@ -286,11 +287,27 @@ def test_floor_zero_default_never_clamps_a_real_rate():
 
 
 @pytest.mark.parametrize("intent", ["NEGOTIATION", "OBJECTION", "WAT"])
-def test_other_intents_counter_toward_recommended(intent):
-    # NEGOTIATION/OBJECTION/unknown with no number → hold at our offer (COUNTER).
+def test_other_intents_hold_without_consuming_round(intent):
+    # MED-N2: NEGOTIATION/OBJECTION/unknown with no number → HOLD at our offer
+    # (PRESENT_OFFER, which doesn't burn a round), asking them for a number —
+    # not a COUNTER that repeats the identical figure while consuming rounds.
     decision = decide(intent, None)
-    assert decision.action == "COUNTER"
+    assert decision.action == "PRESENT_OFFER"
     assert decision.proposed_rate == RECOMMENDED
+
+
+@pytest.mark.parametrize("intent", ["NEGOTIATION", "OBJECTION", "WAT"])
+def test_no_number_pushback_escalates_after_two_holds(intent):
+    # MED-N2: two consecutive holds with still no number is a stalemate code
+    # can't resolve — escalate to a human instead of looping the same offer.
+    decision = decide(intent, None, consecutive_holds=2)
+    assert decision.action == "ESCALATE"
+    assert decision.proposed_rate is None
+
+
+def test_first_and_second_holds_do_not_escalate():
+    assert decide("OBJECTION", None, consecutive_holds=0).action == "PRESENT_OFFER"
+    assert decide("OBJECTION", None, consecutive_holds=1).action == "PRESENT_OFFER"
 
 
 def test_rate_discovery_presents_offer_without_consuming_round():
@@ -322,12 +339,12 @@ def test_rate_present_under_any_intent_uses_stepping(intent):
 
 
 def test_counter_never_regresses_below_prior_offer():
-    """Once we've offered 425, a later round must never counter BELOW 425 — that
+    """Once we've offered 425, a later round must never offer BELOW 425 — that
     would look like we're walking back our own offer."""
-    # Vague reply (no number) at a later round: hold at our prior offer, not
-    # recommended (which is lower).
+    # Vague reply (no number) at a later round: HOLD (MED-N2) at our prior
+    # offer, not recommended (which is lower).
     d_vague = decide("NEGOTIATION", None, prior_offer=425.0)
-    assert d_vague.action == "COUNTER"
+    assert d_vague.action == "PRESENT_OFFER"
     assert d_vague.proposed_rate == 425.0
     # Numbered reply: step UP from 425, never down.
     d_num = decide("NEGOTIATION", 500, prior_offer=425.0)

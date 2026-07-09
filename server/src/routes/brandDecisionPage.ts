@@ -127,6 +127,97 @@ export function renderBrandDecisionResultPage(
   return shell(`Decision · ${v.title}`, inner);
 }
 
+/** MED-S4: the confirm interstitial served on the GET link. Email security
+ *  gateways speculatively prefetch GET links, so the GET must NOT resolve the
+ *  decision — it renders this page, and only the explicit button press (a POST)
+ *  resolves. The POST form targets the same URL, so the query (e.g. ?amount=)
+ *  survives. */
+export function renderBrandDecisionConfirmPage(
+  action: "approve" | "reject" | "counter" | "handoff",
+  input: BrandDecisionResultPageInput & { amount?: number },
+): string {
+  const brand = esc(input.brandName);
+  const creator = esc(input.creatorName);
+
+  const variants: Record<
+    typeof action,
+    { title: string; badgeClass: string; icon: string; body: string; button: string }
+  > = {
+    approve: {
+      title: "Confirm approval",
+      badgeClass: "ok",
+      icon: "✓",
+      body: `You're about to approve the deal with ${creator}. We'll finalize the agreement and take it from here.`,
+      button: "Yes, approve",
+    },
+    reject: {
+      title: "Confirm pass",
+      badgeClass: "danger",
+      icon: "✕",
+      body: `You're about to pass on ${creator}. We'll close out this conversation.`,
+      button: "Yes, pass",
+    },
+    counter: {
+      title: "Confirm final counter",
+      badgeClass: "info",
+      icon: "→",
+      body:
+        input.amount !== undefined
+          ? `You're about to record a final counter of ${esc(String(input.amount))} for ${creator}. This is a take-it-or-leave-it offer — we won't negotiate further.`
+          : `You're about to record a final counter for ${creator}. This is a take-it-or-leave-it offer — we won't negotiate further.`,
+      button: "Yes, send counter",
+    },
+    handoff: {
+      title: "Confirm handoff",
+      badgeClass: "warn",
+      icon: "⤳",
+      body: `You're about to route ${creator} to your manual review queue for a human on your team to take over.`,
+      button: "Yes, hand off",
+    },
+  };
+
+  const v = variants[action];
+  const inner = `
+    <div class="head">
+      <div class="brand">${brand}</div>
+      <h1>${esc(v.title)}</h1>
+    </div>
+    <div class="note">
+      <div class="badge ${v.badgeClass}">${v.icon}</div>
+      <p class="sub">${v.body}</p>
+      <form method="post" style="margin-top:18px;">
+        <button type="submit" style="
+          background: var(--accent); color: #fff; border: none; border-radius: 8px;
+          padding: 10px 22px; font-size: 14px; font-weight: 600; cursor: pointer;">
+          ${esc(v.button)}
+        </button>
+      </form>
+      <p class="sub" style="margin-top:14px; font-size:12px;">
+        Nothing happens until you press the button — you can safely close this page.
+      </p>
+    </div>`;
+  return shell(`Decision · ${v.title}`, inner);
+}
+
+/** MED-S4: shown when the decision link is past its expiresAt. The run has been
+ *  (or will be) swept to the manual review queue; the link can no longer act. */
+export function renderBrandDecisionExpiredPage(
+  input: BrandDecisionResultPageInput,
+): string {
+  const inner = `
+    <div class="head">
+      <div class="brand">${esc(input.brandName)}</div>
+      <h1>Link expired</h1>
+    </div>
+    <div class="note">
+      <div class="badge warn">!</div>
+      <p class="sub">This decision link for ${esc(input.creatorName)} has expired.<br/>
+      The conversation has been routed to your manual review queue — please use the
+      Pluvus dashboard to take it from there.</p>
+    </div>`;
+  return shell("Decision · Link expired", inner);
+}
+
 /** Shown when the decision was already resolved (link clicked twice / prefetched
  *  / already answered by an email reply). Idempotent, not an error. */
 export function renderBrandDecisionAlreadyDonePage(

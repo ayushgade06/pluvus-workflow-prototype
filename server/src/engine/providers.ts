@@ -361,6 +361,7 @@ export function mapNegotiationResponse(
     reasoning?: string;
     creatorQuestions?: string[];
     pushedFixedTerms?: string[];
+    creatorRequestedRate?: number;
   },
   round: number,
 ): NegotiateResult {
@@ -370,9 +371,16 @@ export function mapNegotiationResponse(
   // Comprehension threaded across the seam (spec §6.1). Only spread when
   // non-empty so an absent/empty producer (rules mode) leaves the field
   // undefined and the executor's `?? []` handling stays a no-op.
+  //
+  // creatorRequestedRate (MED-N3) rides along on EVERY outcome — the escalate
+  // path needs it most (it becomes the ask quoted to the brand, and the deal
+  // rate on a brand APPROVE).
   const comprehension = {
     ...(resp.creatorQuestions?.length ? { creatorQuestions: resp.creatorQuestions } : {}),
     ...(resp.pushedFixedTerms?.length ? { pushedFixedTerms: resp.pushedFixedTerms } : {}),
+    ...(typeof resp.creatorRequestedRate === "number" && Number.isFinite(resp.creatorRequestedRate)
+      ? { creatorRequestedRate: resp.creatorRequestedRate }
+      : {}),
   };
 
   switch (resp.action) {
@@ -398,9 +406,17 @@ export function mapNegotiationResponse(
         ...comprehension,
       };
     case "REJECT":
-      return { outcome: "reject", message: resp.responseDraft ?? "Unable to reach agreement." };
+      return {
+        outcome: "reject",
+        message: resp.responseDraft ?? "Unable to reach agreement.",
+        ...comprehension,
+      };
     case "ESCALATE":
-      return { outcome: "escalate", message: resp.reasoning ?? "Escalated for human review." };
+      return {
+        outcome: "escalate",
+        message: resp.reasoning ?? "Escalated for human review.",
+        ...comprehension,
+      };
     default:
       // Defensive: an unknown action escalates to a human rather than guessing.
       return { outcome: "escalate", message: resp.reasoning ?? "Unrecognized negotiation action." };

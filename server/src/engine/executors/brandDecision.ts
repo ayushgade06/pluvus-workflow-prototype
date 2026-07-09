@@ -23,6 +23,7 @@ import {
   type BrandDecisionLinkAction,
 } from "../../notifications/brandDecisionEmail.js";
 import { resolveBrandRecipient } from "../../notifications/escalation.js";
+import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js";
 
 // ---------------------------------------------------------------------------
 // executeBrandDecision — the generic brand-decision loop (§2.3)
@@ -318,6 +319,26 @@ export async function executeBrandDecision(
   // stays on the thread for the brand's context but cannot steer the decision.
   const brandNotifyEmail = ctx.campaign?.notifyEmail;
   if (!isAuthorizedBrandSender(latestInbound?.senderEmail, brandNotifyEmail)) {
+    // MED-W1: a NON-brand reply while parked is (in practice) the creator on
+    // their own thread. Their "unsubscribe" must still be honored — the run
+    // opts out instead of holding for a brand answer about a creator who has
+    // withdrawn. The still-PENDING BrandDecision row is reconciled to EXPIRED
+    // by the sweep's orphan branch (EASY-W2), so nothing lingers.
+    if (looksLikeOptOut(replyText)) {
+      return {
+        nextState: "OPTED_OUT",
+        nextNodeId: null,
+        completedAt: new Date(),
+        eventType: "REPLY_CLASSIFIED",
+        eventPayload: {
+          intent: "OPT_OUT",
+          confidence: 1,
+          deterministicOptOut: true,
+          brandDecisionId: decision.id,
+          ...(latestInbound ? { messageId: latestInbound.id } : {}),
+        },
+      };
+    }
     return holdForNonBrandSender(latestInbound?.senderEmail ?? null, decision.id, decision.reason);
   }
 

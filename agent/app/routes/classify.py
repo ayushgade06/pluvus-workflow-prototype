@@ -21,6 +21,7 @@ from app.injection import (
     looks_like_opt_out,
     looks_like_question,
     mentions_rate,
+    normalize_untrusted_text,
     sanitize_creator_text,
 )
 from app.llm import get_llm
@@ -182,10 +183,16 @@ def classify_message(message: str) -> ClassifyResponse:
     Pure orchestration over the gates + the LLM call — unit-testable with a
     fake/patched LLM.
     """
+    # MED-S2: gates scan the NORMALIZED text (NFKC, control chars stripped) but
+    # NOT the fully-sanitized one — sanitize_creator_text now also NEUTRALIZES
+    # role markers ("system:" → "system -"), and gating on that would blind
+    # looks_like_injection to the very sequences the sanitizer defused. The
+    # model, by contrast, gets the fully sanitized text below.
+    gated = normalize_untrusted_text(message)
     clean = sanitize_creator_text(message)
 
     # 2 — OPT_OUT is decided by code, never by the (injectable) model.
-    if looks_like_opt_out(clean):
+    if looks_like_opt_out(gated):
         return ClassifyResponse(
             intent="OPT_OUT",
             confidence=1.0,
@@ -193,7 +200,7 @@ def classify_message(message: str) -> ClassifyResponse:
         )
 
     # 3 — injection/jailbreak attempt → don't trust the classification.
-    if looks_like_injection(clean):
+    if looks_like_injection(gated):
         return ClassifyResponse(
             intent="UNKNOWN",
             confidence=0.0,
@@ -206,7 +213,7 @@ def classify_message(message: str) -> ClassifyResponse:
     # never let the negotiation agent compare the rate to the band. The gate is
     # conservative (suppressed when rejection language is present), so this only
     # fires on an unambiguous "I'm naming my number" reply.
-    if mentions_rate(clean):
+    if mentions_rate(gated):
         return ClassifyResponse(
             intent="POSITIVE",
             confidence=1.0,
@@ -217,7 +224,7 @@ def classify_message(message: str) -> ClassifyResponse:
     # budget, or deal terms is engaged — small models return UNKNOWN or low
     # confidence on question-heavy replies, pushing them to MANUAL_REVIEW.
     # Conservative: suppressed when rejection language is present.
-    if looks_like_question(clean):
+    if looks_like_question(gated):
         return ClassifyResponse(
             intent="QUESTION",
             confidence=1.0,

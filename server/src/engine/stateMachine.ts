@@ -67,8 +67,10 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   ACCEPTED: ["PAYMENT_PENDING", "REWARD_PENDING", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
   // Reward Setup waiting state. Stays here on a non-confirming reply
   // (REWARD_PENDING → REWARD_PENDING), advances on an agreement reply, and can
-  // still be escalated to a human.
-  REWARD_PENDING: ["REWARD_PENDING", "REWARD_CONFIRMED", "MANUAL_REVIEW"],
+  // still be escalated to a human. MED-W1: OPTED_OUT is reachable — an
+  // "unsubscribe" reply while awaiting agreement must opt the creator out, not
+  // get a "rate is fixed" auto-reply (CAN-SPAM).
+  REWARD_PENDING: ["REWARD_PENDING", "REWARD_CONFIRMED", "OPTED_OUT", "MANUAL_REVIEW"],
   // Reward Setup success. No longer terminal: a confirmed agreement auto-advances
   // into the Payment Info node, which collects the creator's payout details.
   // MANUAL_REVIEW reachable (L4) on a missing brand name in the payment email;
@@ -79,7 +81,9 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // submission lands directly on the CONTENT_BRIEF_SENT terminal; in legacy graphs
   // the Payment Info node owns it and the submission lands on PAYMENT_RECEIVED
   // (which then chains into Content Brief). Both edges are kept. Can be escalated.
-  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT", "MANUAL_REVIEW"],
+  // MED-W1: OPTED_OUT is reachable — an "unsubscribe" email while awaiting the
+  // payout form must opt the creator out, not get the marketing auto-reply.
+  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT", "OPTED_OUT", "MANUAL_REVIEW"],
   // Payment Info success. No longer terminal: the payout submission auto-advances
   // into the Content Brief node. Content Brief has NO waiting state — it sends the
   // brief email and completes in a single step — so PAYMENT_RECEIVED transitions

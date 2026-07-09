@@ -50,7 +50,7 @@ export interface GuardConstraints {
 }
 
 export interface GuardHit {
-  kind: "floor" | "ceiling" | "term" | "commission";
+  kind: "floor" | "ceiling" | "term" | "commission" | "amount";
   value: string;
 }
 
@@ -76,6 +76,82 @@ function numberAppears(text: string, n: number): boolean {
     if (re.test(text)) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Word-number matching (MED-S1)
+// ---------------------------------------------------------------------------
+// "our ceiling is five hundred dollars" leaked straight past the digit-only
+// scan. We render the bound as English words and match it with flexible
+// separators (spaces / hyphens / an optional "and"), so "five hundred",
+// "Five-Hundred", and "four hundred and seventy five" all register. Bounds are
+// small round integers in practice; anything outside 1..999,999 (or fractional)
+// simply isn't word-matched — the digit scan still covers it.
+
+const ONES = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+  "sixteen", "seventeen", "eighteen", "nineteen",
+];
+const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+
+function wordsBelowThousand(n: number): string[] {
+  const words: string[] = [];
+  const hundreds = Math.floor(n / 100);
+  const rest = n % 100;
+  if (hundreds) words.push(ONES[hundreds]!, "hundred");
+  if (rest) {
+    if (rest < 20) words.push(ONES[rest]!);
+    else {
+      words.push(TENS[Math.floor(rest / 10)]!);
+      if (rest % 10) words.push(ONES[rest % 10]!);
+    }
+  }
+  return words;
+}
+
+/** The word renderings of a positive integer — the canonical form plus the
+ *  spoken "<tens> hundred" form for round hundreds (1500 → "fifteen hundred"). */
+function wordVariants(n: number): string[][] {
+  if (!Number.isInteger(n) || n <= 0 || n >= 1_000_000) return [];
+  const variants: string[][] = [];
+  const thousands = Math.floor(n / 1000);
+  const rest = n % 1000;
+  const canonical: string[] = [];
+  if (thousands) canonical.push(...wordsBelowThousand(thousands), "thousand");
+  if (rest) canonical.push(...wordsBelowThousand(rest));
+  variants.push(canonical);
+  // Spoken form: 1100..9900 in whole hundreds ("fifteen hundred" = 1500).
+  if (n % 100 === 0 && n >= 1100 && n <= 9900) {
+    variants.push([...wordsBelowThousand(n / 100), "hundred"]);
+  }
+  return variants;
+}
+
+function numberAppearsAsWords(text: string, n: number): boolean {
+  const variants = wordVariants(n);
+  if (variants.length === 0) return false;
+  const lower = text.toLowerCase();
+  return variants.some((words) => {
+    const pattern = "\\b" + words.join("(?:[\\s-]+(?:and[\\s-]+)?)") + "\\b";
+    return new RegExp(pattern).test(lower);
+  });
+}
+
+// Every explicit "$" amount in the text, as numeric values (thousands separators
+// tolerated). Used by the MED-S1 allowlist-only rule: an outbound draft may state
+// ONLY the money figures we deliberately put there.
+const DOLLAR_AMOUNT_RE = /\$\s*(\d[\d,]*(?:\.\d+)?)/g;
+
+function dollarAmountsMentioned(text: string): number[] {
+  const found = new Set<number>();
+  let m: RegExpExecArray | null;
+  DOLLAR_AMOUNT_RE.lastIndex = 0;
+  while ((m = DOLLAR_AMOUNT_RE.exec(text)) !== null) {
+    const n = Number(m[1]!.replace(/,/g, ""));
+    if (Number.isFinite(n)) found.add(n);
+  }
+  return [...found];
 }
 
 // Find every percentage in the text that is used as a COMMISSION rate, i.e. a
@@ -125,11 +201,33 @@ export function scanOutboundDraft(draft: GuardDraft, constraints: GuardConstrain
   if (allowedRate !== undefined) allow.add(allowedRate);
   for (const r of allowedRates ?? []) allow.add(r);
 
-  if (floor !== undefined && !allow.has(floor) && numberAppears(haystack, floor)) {
+  // MED-S1: a bound leaks in digits OR in words ("five hundred dollars").
+  if (
+    floor !== undefined &&
+    !allow.has(floor) &&
+    (numberAppears(haystack, floor) || numberAppearsAsWords(haystack, floor))
+  ) {
     hits.push({ kind: "floor", value: String(floor) });
   }
-  if (ceiling !== undefined && !allow.has(ceiling) && numberAppears(haystack, ceiling)) {
+  if (
+    ceiling !== undefined &&
+    !allow.has(ceiling) &&
+    (numberAppears(haystack, ceiling) || numberAppearsAsWords(haystack, ceiling))
+  ) {
     hits.push({ kind: "ceiling", value: String(ceiling) });
+  }
+
+  // MED-S1 allowlist-only rule: EVERY explicit "$" amount in the draft must be a
+  // figure we deliberately put on the table — the presented/agreed rate
+  // (`allowedRate`) or an `allowedRates` entry (the creator's own stated ask +
+  // any $ value appearing in brand-authored copy like the perk description).
+  // Anything else — a fabricated "$2,000 upfront bonus", an invented number that
+  // equals neither bound — is a promise nobody authorized and blocks the send.
+  // (A leaked bound is caught here too even when it slipped the checks above.)
+  for (const amount of dollarAmountsMentioned(haystack)) {
+    if (!allow.has(amount)) {
+      hits.push({ kind: "amount", value: `$${amount} (not an authorized figure)` });
+    }
   }
 
   const lower = haystack.toLowerCase();
@@ -177,8 +275,29 @@ export function guardConstraintsFromConfig(
   // is not a disclosure of an internal bound, even when the two coincide. This
   // is what lets a deal close/counter AT the ceiling or floor without the guard
   // falsely flagging the creator's number as a leak.
-  const allowedRates =
-    typeof creatorRate === "number" && Number.isFinite(creatorRate) ? [creatorRate] : undefined;
+  //
+  // Note on the ceiling-guessing concern (MED-S1 "reconsider"): this allowlist
+  // is kept deliberately. The creator wrote the number first, so echoing it
+  // discloses nothing internal; removing it would force every legitimate
+  // at-bound negotiation into MANUAL_REVIEW. What a guessed-ceiling reply can
+  // extract is at most an echo — the model is still prompt-forbidden from
+  // CONFIRMING that a number is the bound, and the internal-terms scan blocks
+  // "ceiling"/"maximum budget" style wording when configured.
+  //
+  // MED-S1: with the new allowlist-only "$" rule, any $ figure the BRAND put in
+  // its own public copy (perk blurb "a $200 gift box", deliverables, timeline)
+  // must also be allowed — those strings are threaded into the email verbatim
+  // by design and are not leaks.
+  const allowedRates: number[] = [];
+  if (typeof creatorRate === "number" && Number.isFinite(creatorRate)) {
+    allowedRates.push(creatorRate);
+  }
+  for (const key of ["rewardDescription", "deliverables", "timeline", "brandDescription"]) {
+    const v = config[key];
+    if (typeof v === "string" && v) {
+      for (const amount of extractConfigDollarAmounts(v)) allowedRates.push(amount);
+    }
+  }
 
   // Brand-set commission % (hybrid deals). Non-negotiable — the guard blocks a
   // draft that states any other commission %. Absent for cash-only campaigns.
@@ -191,8 +310,14 @@ export function guardConstraintsFromConfig(
     ...(floor !== undefined ? { floor } : {}),
     ...(ceiling !== undefined ? { ceiling } : {}),
     ...(allowedRate !== undefined ? { allowedRate } : {}),
-    ...(allowedRates ? { allowedRates } : {}),
+    ...(allowedRates.length > 0 ? { allowedRates } : {}),
     ...(commissionRate !== undefined ? { commissionRate } : {}),
     ...(internalTerms ? { internalTerms } : {}),
   };
+}
+
+// $ amounts appearing in a brand-authored config string (perk blurb etc.) —
+// these are public-by-design and allowlisted for the MED-S1 "$" rule.
+function extractConfigDollarAmounts(text: string): number[] {
+  return dollarAmountsMentioned(text);
 }

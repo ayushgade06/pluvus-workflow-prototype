@@ -607,6 +607,12 @@ model PaymentInfo {
   /// exists (tax id, routing number, invoice ref, verification result, …).
   extra             Json?
 
+  /// MED-S5: token lifecycle. A payout link is a bearer capability, so a leaked
+  /// or forwarded link must not work forever — the hosted routes reject an
+  /// unsubmitted token past this instant. Set at creation (default 30 days);
+  /// nullable for rows created before the column existed (treated as no expiry).
+  expiresAt DateTime?
+
   createdAt   DateTime  @default(now())
   submittedAt DateTime?
   updatedAt   DateTime  @updatedAt

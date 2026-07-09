@@ -5,6 +5,7 @@ import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { extractReplyText } from "./replyText.js";
 import { openBrandDecision } from "./brandDecision.js";
+import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js";
 
 // Replies with confidence below this threshold are treated as UNKNOWN and
 // routed to MANUAL_REVIEW rather than auto-advanced.
@@ -62,6 +63,34 @@ export async function executeReplyDetection(
     throw new Error(`No inbound messages found for instance ${instance.id}`);
   }
 
+  // H1: classify/gate the creator's ACTUAL reply, not the raw body (see the
+  // fuller note above the classify call below). Computed BEFORE the
+  // active-negotiation short-circuit so the opt-out gate scans every inbound.
+  const replyText = extractReplyText(latestInbound.body);
+
+  // ── Deterministic opt-out gate — EVERY inbound, EVERY round (MED-W1) ──────
+  // "unsubscribe" / "stop emailing me" must be honored regardless of where the
+  // conversation is. Round 0 already gets this via the classifier's own opt-out
+  // gate, but the round >= 1 short-circuit below skips classification entirely —
+  // which meant a mid-negotiation opt-out got a counter-offer instead of an
+  // opt-out (CAN-SPAM exposure). This is code, not a model call: no prompt
+  // injection or model failure can suppress it.
+  if (looksLikeOptOut(replyText)) {
+    await deps.updateMessageClassification(latestInbound.id, "OPT_OUT", 1);
+    return {
+      nextState: "OPTED_OUT",
+      nextNodeId: null,
+      completedAt: new Date(),
+      eventType: "REPLY_CLASSIFIED",
+      eventPayload: {
+        intent: "OPT_OUT",
+        confidence: 1,
+        deterministicOptOut: true,
+        messageId: latestInbound.id,
+      },
+    };
+  }
+
   // ── Active-negotiation short-circuit ──────────────────────────────────────
   // A reply that arrives AFTER we've already sent at least one counter
   // (negotiationRound >= 1) is a negotiation turn, NOT a fresh first reply. It
@@ -100,8 +129,8 @@ export async function executeReplyDetection(
   // creator's signature; classifying that lets the quoted history dominate the
   // signal (a "No." can read POSITIVE). extractReplyText strips quoted thread +
   // signature and falls back to the raw body if it would over-cut. The raw body
-  // remains persisted on the Message row for audit.
-  const replyText = extractReplyText(latestInbound.body);
+  // remains persisted on the Message row for audit. (replyText is computed
+  // above, before the opt-out gate + short-circuit.)
   let { intent, confidence } = await agent.classify(replyText);
 
   // Enforce low-confidence threshold: if the classifier is not confident

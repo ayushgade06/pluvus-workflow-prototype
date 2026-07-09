@@ -2,7 +2,8 @@ import {
   listMessagesByInstance,
   listEventsByInstance,
 } from "../../db/index.js";
-import type { ExecutionContext, NodeResult } from "../types.js";
+import type { Message } from "@prisma/client";
+import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { buildPriorContextFromEvents } from "./negotiationHistory.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
@@ -54,9 +55,12 @@ function draftUnavailable(round: number, purpose: string): NodeResult {
 // Brand-decision replies are tagged on the INBOUND_REPLY_RECEIVED event with
 // `brandDecisionReply: true` + the message's externalMessageId; we collect those
 // ids and drop the matching messages. (Normal creator replies have no such tag.)
+//
+// Returns the full Message row (MED-W2 needs its id to key the present-offer
+// send per-reply, not per-round).
 async function latestCreatorInbound(
   instanceId: string,
-): Promise<{ body: string } | undefined> {
+): Promise<Message | undefined> {
   const messages = await listMessagesByInstance(instanceId);
   const events = await listEventsByInstance(instanceId, { type: "INBOUND_REPLY_RECEIVED" });
   const brandReplyMsgIds = new Set(
@@ -71,13 +75,26 @@ async function latestCreatorInbound(
     .at(-1);
 }
 
-// Best-effort extraction of a dollar amount the creator named in their reply
-// (e.g. "I charge $480" / "480 dollars" / "my rate is 480" / "can you do 900").
-// Used purely to let the counter/escalation copy ACKNOWLEDGE their ask — never to
-// make the money decision (that stays deterministic in the agent). Returns
-// undefined when no clear amount is present.
+// Best-effort REGEX extraction of a dollar amount the creator named in their
+// reply (e.g. "I charge $480" / "480 dollars" / "my rate is 480").
+//
+// MED-N3 role note: the comprehension source of truth for the creator's ask is
+// the /negotiate LLM's `creatorRequestedRate` (validated in the agent so its
+// digits provably appear in the reply). This regex remains for two narrower
+// jobs: (a) acknowledgment copy / guard allowlisting when the agent didn't
+// return a rate, and (b) the pre-agent max-rounds entry stop, which by design
+// never calls the model. By construction every number it returns appears
+// verbatim in the reply; a RANGE ("480-500") is rejected below rather than
+// half-read.
 export function extractRequestedRate(text: string | undefined): number | undefined {
   if (!text) return undefined;
+  // MED-N3: blank out RANGE expressions ("480-500", "400 to 500", "between 400
+  // and 500") before scanning. A range is not a single ask — matching one side
+  // of it would record a price the creator never named alone. Stripping (rather
+  // than bailing) keeps a genuine single ask elsewhere in the reply readable.
+  text = text
+    .replace(/\bbetween\s+\$?\s*\d[\d,]*(?:\.\d+)?\s+and\s+\$?\s*\d[\d,]*(?:\.\d+)?/gi, " ")
+    .replace(/\$?\s*\d[\d,]*(?:\.\d+)?\s*(?:[-–—]|\bto\b)\s*\$?\s*\d[\d,]*(?:\.\d+)?/gi, " ");
   // Priority 1: an explicit "$" amount. Priority 2: a number tagged "dollars"/
   // "usd". Priority 3: a BARE number adjacent to a rate-signalling word — this
   // catches the common "my rate is 900" / "I need 900" / "can you do 900" phrasing
@@ -112,6 +129,26 @@ export function extractRequestedRate(text: string | undefined): number | undefin
   return bare;
 }
 
+// MED-W3: how many CONSECUTIVE present-offer turns are "free" (don't consume a
+// negotiation round). PRESENT_OFFER deliberately doesn't burn the round budget —
+// a curious creator's questions shouldn't exhaust it — but with no cap a
+// persistently curious creator (or a model mislabeling proposals) loops forever,
+// each turn an LLM call. Past this many consecutive presents without progress,
+// each further present COUNTS as a round, so the max-rounds machinery (B9 brand
+// decision) bounds the loop.
+const MAX_FREE_PRESENT_OFFERS = 3;
+
+// Trailing run of PRESENT_OFFER turns at the end of the (chronological) history.
+// Any other action (counter/accept/…) is "progress" and resets the run.
+function countTrailingPresentOffers(history: NegotiationHistoryEntryLite[]): number {
+  let n = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.action !== "PRESENT_OFFER") break;
+    n++;
+  }
+  return n;
+}
+
 // Open the B9 max-rounds brand decision (§3 B9). Shared by BOTH callers that can
 // reach the ceiling:
 //   1. the hard stop at entry (instance re-enters already at negotiationRound >=
@@ -125,12 +162,20 @@ function openMaxRoundsBrandDecision(
   ctx: ExecutionContext,
   email: IEmailProvider,
   config: Record<string, unknown>,
-  args: { creatorReply: string; maxRounds: number; round: number },
+  args: {
+    creatorReply: string;
+    maxRounds: number;
+    round: number;
+    /** The creator's stated ask for the MONEY path (context.creatorRate → the
+     *  recorded deal rate on a brand APPROVE). MED-N3: post-agent callers pass
+     *  the /negotiate LLM's validated extraction; only the pre-agent entry stop
+     *  falls back to the deterministic regex read. */
+    creatorRate: number | undefined;
+  },
 ): Promise<NodeResult> {
   const { instance, node, creator } = ctx;
-  const { creatorReply, maxRounds, round } = args;
+  const { creatorReply, maxRounds, round, creatorRate } = args;
   const { floor, ceiling } = resolveBand(config);
-  const creatorRate = extractRequestedRate(creatorReply);
   const band =
     floor !== undefined && ceiling !== undefined
       ? ` (your ceiling was ${ceiling}, floor ${floor})`
@@ -188,12 +233,19 @@ function openOverCeilingBrandDecision(
   ctx: ExecutionContext,
   email: IEmailProvider,
   config: Record<string, unknown>,
-  args: { creatorReply: string; round: number; message: string },
+  args: {
+    creatorReply: string;
+    round: number;
+    message: string;
+    /** MED-N3: the /negotiate LLM's validated extraction of the creator's ask —
+     *  this is the number a brand APPROVE records as the deal rate, so it must
+     *  come from comprehension (substring-validated in the agent), not a regex. */
+    creatorRate: number | undefined;
+  },
 ): Promise<NodeResult> {
   const { node, creator } = ctx;
-  const { creatorReply, round, message } = args;
+  const { creatorReply, round, message, creatorRate } = args;
   const { floor, ceiling } = resolveBand(config);
-  const creatorRate = extractRequestedRate(creatorReply);
 
   // Build the ask. When we could read the creator's number, quote it against the
   // ceiling; when we couldn't, ask the brand to read the reply and decide.
@@ -292,6 +344,11 @@ export async function executeNegotiation(
       creatorReply,
       maxRounds,
       round: instance.negotiationRound,
+      // Pre-agent by design (never consult the model past the round ceiling), so
+      // the LLM extraction isn't available here — the deterministic regex read
+      // (range-rejecting; digits provably in the reply) is the documented
+      // fallback for this one money-path caller (MED-N3).
+      creatorRate: extractRequestedRate(creatorReply),
     });
   }
 
@@ -306,25 +363,44 @@ export async function executeNegotiation(
   // the seam so /draft answers an explicit checklist instead of re-parsing the
   // raw reply (spec §6.1). Undefined in rules mode → the `?? []` spreads below
   // become no-ops, preserving current behavior.
-  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms } =
+  //
+  // creatorRequestedRate (MED-N3): the creator's own stated ask as COMPREHENDED
+  // by the /negotiate model and substring-validated in the agent (digits must
+  // appear in the reply; ranges rejected). This — not the local regex — is what
+  // feeds the MONEY path (context.creatorRate on a brand decision, which a brand
+  // APPROVE records as the deal rate). The regex remains a fallback for copy
+  // acknowledgment and guard allowlisting only.
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate } =
     await agent.negotiate(instance.negotiationRound, config, creatorReply, priorContext);
+
+  // For acknowledgment copy + the output-guard allowlist (NOT the money path):
+  // prefer the agent's validated comprehension, fall back to the regex read.
+  const ackRequestedRate = creatorRequestedRate ?? extractRequestedRate(creatorReply);
 
   switch (outcome) {
     case "present_offer": {
       // The creator ASKED about terms (no number proposed). Present the fee
       // (+ commission) as information and wait for their actual response —
-      // WITHOUT consuming a negotiation round. A curious creator's questions
-      // must not exhaust the negotiation budget. We reuse the offer-presenting
-      // draft (counter_offer purpose) so the email states the fixed fee and, for
-      // a hybrid deal, the commission.
-      // §6.3 parity: give present_offer the creatorRequestedRate that only
-      // counter had before (deterministic regex, already computed for the guard
-      // below) so the copy can acknowledge a number if the creator named one.
-      const presentRequestedRate = extractRequestedRate(creatorReply);
+      // normally WITHOUT consuming a negotiation round. A curious creator's
+      // questions must not exhaust the negotiation budget. We reuse the
+      // offer-presenting draft (counter_offer purpose) so the email states the
+      // fixed fee and, for a hybrid deal, the commission.
+      //
+      // MED-W3: but "free" present_offers cannot be UNBOUNDED — a persistently
+      // curious creator (or a model mislabeling proposals) would loop forever,
+      // each turn an LLM call (cost + abuse vector). After
+      // MAX_FREE_PRESENT_OFFERS consecutive present-offer turns without
+      // progress, each further one COUNTS toward the round budget, so the
+      // existing max-rounds machinery (B9 brand decision) bounds the loop.
+      const trailingPresents = countTrailingPresentOffers(priorContext.history);
+      const presentConsumesRound = trailingPresents >= MAX_FREE_PRESENT_OFFERS;
+      const presentRound = presentConsumesRound
+        ? instance.negotiationRound + 1
+        : instance.negotiationRound;
       const aiDraft = await agent.draftEmail("counter_offer", creator, config, {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
-        ...(presentRequestedRate !== undefined ? { creatorRequestedRate: presentRequestedRate } : {}),
+        ...(ackRequestedRate !== undefined ? { creatorRequestedRate: ackRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
         // §6.2: thread the comprehension into /draft so the SENT email answers
         // every question and acknowledges any pushed fixed term.
@@ -347,33 +423,39 @@ export async function executeNegotiation(
       // not a leak even if it coincides with a bound).
       const guard = scanOutboundDraft(
         draft,
-        guardConstraintsFromConfig(config, proposedRate, presentRequestedRate),
+        guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
       }
 
-      // Idempotent send keyed on (instance, present, round) — re-asking at the
-      // same round (e.g. a duplicate webhook) won't double-send.
-      await sendOnce(
-        email,
-        instance.id,
-        creator,
-        draft,
-        `negotiation:present:${instance.id}:${instance.negotiationRound}`,
-      );
+      // Idempotent send keyed on (instance, present, round, inbound message id).
+      // MED-W2: PRESENT_OFFER deliberately doesn't consume a round, so a
+      // creator's SECOND question at the same round is a distinct reply that
+      // must get its own email — keying on the round alone deduped it into
+      // silence. The message id is unique per reply, so each question gets an
+      // answer while a worker retry of the SAME reply still cannot double-send.
+      const presentKey = latestInbound
+        ? `negotiation:present:${instance.id}:${instance.negotiationRound}:${latestInbound.id}`
+        : `negotiation:present:${instance.id}:${instance.negotiationRound}`;
+      await sendOnce(email, instance.id, creator, draft, presentKey);
 
-      // Back to AWAITING_REPLY at the SAME node and the SAME round (no increment).
+      // Back to AWAITING_REPLY at the SAME node. The round is unchanged on a
+      // "free" present turn; past the MED-W3 cap it advances so the loop is
+      // bounded by max-rounds.
       return {
         nextState: "AWAITING_REPLY",
         nextNodeId: node.id,
-        // negotiationRound intentionally omitted → unchanged.
+        ...(presentConsumesRound ? { negotiationRound: presentRound } : {}),
         eventType: "NEGOTIATION_TURN",
         eventPayload: {
           outcome: "present_offer",
-          round: instance.negotiationRound,
+          round: presentRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          ...(presentConsumesRound
+            ? { consumedRound: true, consecutivePresentOffers: trailingPresents + 1 }
+            : {}),
         },
       };
     }
@@ -414,11 +496,10 @@ export async function executeNegotiation(
       // §6.3 parity: same creatorRequestedRate the counter branch has (also used
       // by the guard below), so an acceptance can acknowledge the creator's own
       // number where relevant.
-      const acceptRequestedRate = extractRequestedRate(creatorReply);
       const extra = {
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
-        ...(acceptRequestedRate !== undefined ? { creatorRequestedRate: acceptRequestedRate } : {}),
+        ...(ackRequestedRate !== undefined ? { creatorRequestedRate: ackRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
         // §6.2: thread the comprehension into /draft (this branch runs only on
         // legacy graphs without a post-accept email node; on merged flows the
@@ -444,7 +525,7 @@ export async function executeNegotiation(
       // (their number == a bound) must be able to state that number.
       const guard = scanOutboundDraft(
         draft,
-        guardConstraintsFromConfig(config, proposedRate, acceptRequestedRate),
+        guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
         return blockedByGuard(instance.negotiationRound, guard.hits);
@@ -490,10 +571,13 @@ export async function executeNegotiation(
       // internal ceiling (or the rate was unreadable). Instead of dead-ending in
       // MANUAL_REVIEW, page the brand for an approve/reject/handoff decision and
       // park in AWAITING_BRAND_DECISION; the run auto-resumes on the brand's reply.
+      // MED-N3: the ask quoted to the brand — and recorded as the deal rate on a
+      // brand APPROVE — is the model's validated extraction, never the regex.
       return openOverCeilingBrandDecision(ctx, email, config, {
         creatorReply,
         round: instance.negotiationRound,
         message,
+        creatorRate: creatorRequestedRate,
       });
     }
 
@@ -515,6 +599,9 @@ export async function executeNegotiation(
           maxRounds,
           // Report the ceiling round we've reached, not a half-advanced counter.
           round: maxRounds,
+          // MED-N3: post-agent, so the money path gets the model's validated
+          // extraction of the creator's ask (never the regex).
+          creatorRate: creatorRequestedRate,
         });
       }
 
@@ -525,12 +612,11 @@ export async function executeNegotiation(
       // thread the creator's reply + the rate they asked for so the counter
       // acknowledges their request ("we considered your $480 …") and reads like
       // an ongoing conversation rather than a cold first contact.
-      const creatorRequestedRate = extractRequestedRate(creatorReply);
       const counterExtra = {
         round: newRound,
         ...(proposedRate !== undefined ? { proposedTerms: { rate: proposedRate } } : {}),
         ...(creatorReply ? { creatorReply } : {}),
-        ...(creatorRequestedRate !== undefined ? { creatorRequestedRate } : {}),
+        ...(ackRequestedRate !== undefined ? { creatorRequestedRate: ackRequestedRate } : {}),
         ...(dealDescription ? { dealDescription } : {}),
         // §6.2: thread the comprehension into /draft so the counter email answers
         // every question and acknowledges any pushed fixed term (Case-10 gap).
@@ -559,7 +645,7 @@ export async function executeNegotiation(
       // a leak, so a legitimate at-bound negotiation isn't forced to MANUAL_REVIEW.
       const guard = scanOutboundDraft(
         draft,
-        guardConstraintsFromConfig(config, proposedRate, creatorRequestedRate),
+        guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
         return blockedByGuard(newRound, guard.hits);

@@ -45,27 +45,34 @@ function stubAgent(intent: ClassifyResult["intent"], confidence = 0.9): IAgentPr
 
 console.log("\nReward Setup reply detection\n");
 
-// ── Deterministic agreement phrases (the ones the email asks for) ──────────
+// ── Deterministic agreement: ONLY the literal "I Agree" (MED-N4) ────────────
+// Contract formation is a comprehension decision that belongs to the model; the
+// deterministic allowlist is exactly the phrase the confirmation email requests.
 test("'I Agree' matches", () => {
   assert.equal(isDeterministicAgreement("I Agree"), true);
 });
 test("'i agree' lowercase + trailing text matches", () => {
   assert.equal(isDeterministicAgreement("i agree, let's get started!"), true);
 });
-test("'Confirmed' matches", () => {
-  assert.equal(isDeterministicAgreement("Confirmed"), true);
+
+// ── Everything else is NOT deterministic — it goes to the classifier ───────
+// (MED-N4: the old broad list let a hedged "yes, assuming…" form a contract by
+// regex. These phrases still confirm when the classifier reads them POSITIVE —
+// see the fallback tests below.)
+test("'Confirmed' is no longer a deterministic match (classifier decides)", () => {
+  assert.equal(isDeterministicAgreement("Confirmed"), false);
 });
-test("'Looks good' matches", () => {
-  assert.equal(isDeterministicAgreement("Looks good to me"), true);
+test("'Looks good' is no longer a deterministic match", () => {
+  assert.equal(isDeterministicAgreement("Looks good to me"), false);
 });
-test("'I accept' matches", () => {
-  assert.equal(isDeterministicAgreement("I accept the terms"), true);
+test("'I accept' is no longer a deterministic match", () => {
+  assert.equal(isDeterministicAgreement("I accept the terms"), false);
 });
-test("leading 'Yes' matches", () => {
-  assert.equal(isDeterministicAgreement("Yes, sounds perfect"), true);
+test("leading 'Yes' is no longer a deterministic match", () => {
+  assert.equal(isDeterministicAgreement("Yes, sounds perfect"), false);
 });
-test("'sounds good' matches", () => {
-  assert.equal(isDeterministicAgreement("that sounds good"), true);
+test("'sounds good' is no longer a deterministic match", () => {
+  assert.equal(isDeterministicAgreement("that sounds good"), false);
 });
 
 // ── Non-agreement text must NOT deterministically match ────────────────────
@@ -80,9 +87,6 @@ test("'before I confirm' (bare confirm in a question) does NOT match", () => {
 });
 test("'how do I confirm?' does NOT match", () => {
   assert.equal(isDeterministicAgreement("how do I confirm this?"), false);
-});
-test("standalone 'Confirmed' still matches", () => {
-  assert.equal(isDeterministicAgreement("Confirmed, thanks!"), true);
 });
 test("empty / undefined → false", () => {
   assert.equal(isDeterministicAgreement(""), false);
@@ -147,6 +151,14 @@ await runAsync("deterministic agreement confirms without consulting the agent", 
 // ── Classifier fallback: POSITIVE confirms, others do not ──────────────────
 await runAsync("classifier POSITIVE confirms", async () => {
   const r = await isAgreementReply("great, count me in", stubAgent("POSITIVE"));
+  assert.equal(r.confirmed, true);
+  assert.equal(r.intent, "POSITIVE");
+});
+
+// MED-N4: the phrases dropped from the deterministic list still confirm when
+// the model comprehends them as agreement.
+await runAsync("'Confirmed, thanks!' confirms via the classifier", async () => {
+  const r = await isAgreementReply("Confirmed, thanks!", stubAgent("POSITIVE"));
   assert.equal(r.confirmed, true);
   assert.equal(r.intent, "POSITIVE");
 });

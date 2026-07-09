@@ -57,6 +57,24 @@ export function isPayoutFinalized(
   );
 }
 
+// MED-S5: a payout token is a bearer capability, so an UNSUBMITTED link past its
+// expiresAt no longer works (a leaked/forwarded link can't collect payout info
+// forever). Scoped to still-pending rows on purpose: once the creator has
+// submitted (status PAYMENT_RECEIVED), expiry never blocks the idempotent
+// "already submitted" notice — nor the EASY-W3 stuck-instance re-submit
+// recovery, which must stay available. Rows minted before the column existed
+// have expiresAt null → no expiry (grandfathered).
+export function isPaymentTokenExpired(
+  payment: NonNullable<Awaited<ReturnType<typeof findPaymentInfoByToken>>>,
+  now: Date = new Date(),
+): boolean {
+  return (
+    payment.status === "PAYMENT_PENDING" &&
+    payment.expiresAt !== null &&
+    payment.expiresAt.getTime() <= now.getTime()
+  );
+}
+
 // Resolve the brand name for the page from the payment row's joined relations,
 // falling back gracefully when a campaign isn't linked.
 function brandNameOf(
@@ -117,6 +135,12 @@ router.get("/:token", async (req: Request, res: Response) => {
       return;
     }
 
+    // MED-S5: an unsubmitted token past its lifecycle no longer renders the form.
+    if (isPaymentTokenExpired(payment)) {
+      res.status(410).type("html").send(renderPaymentInvalidPage());
+      return;
+    }
+
     const showShippingAddress = shipsPhysicalProductOf(payment);
     res
       .type("html")
@@ -153,6 +177,13 @@ router.post("/:token", async (req: Request, res: Response) => {
       res
         .type("html")
         .send(renderPaymentAlreadySubmittedPage({ creatorName, brandName }));
+      return;
+    }
+
+    // MED-S5: reject a submission on an expired, unsubmitted token — checked on
+    // POST too so a form loaded before expiry can't be submitted after it.
+    if (isPaymentTokenExpired(payment)) {
+      res.status(410).type("html").send(renderPaymentInvalidPage());
       return;
     }
 
