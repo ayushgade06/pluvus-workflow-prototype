@@ -19,22 +19,30 @@ below.
 
 | Question topic (section) | Source fact in code | Offline audit | Live answer audit | Status |
 |--------------------------|---------------------|:-------------:|:-----------------:|--------|
-| Usage rights             | `usageRights` field / ctx → `_knowledge_block` | ✅ present | _pending_ | DONE (offline) |
-| Category exclusivity     | `exclusivity` field / ctx → `_knowledge_block` | ✅ present | _pending_ | DONE (offline) |
-| Payment terms / schedule | `paymentTerms` field / ctx → `_knowledge_block` | ✅ present | _pending_ | DONE (offline) |
-| Attribution / cookie win | `attributionWindow` field / ctx → `_knowledge_block` | ✅ present | _pending_ | DONE (offline) |
-| Commission %             | `campaignContext.commissionRate` → commission bullet | ✅ present | _pending_ | DONE (offline) |
-| Deliverables            | `deliverables` field / ctx → `_scope_lines` | ✅ present | _pending_ | DONE (offline) |
-| Timeline / go-live       | `timeline` field / ctx → `_scope_lines` | ✅ present | _pending_ | DONE (offline) |
-| Reward / product perk    | `rewardDescription` field / ctx → `_scope_lines` | ✅ present | _pending_ | DONE (offline) |
-| Fee echo (creator's ask) | `proposedTerms` / `creatorRequestedRate` (executor-threaded) | ✅ present | _pending_ | DONE (offline) |
+| Usage rights             | `usageRights` field / ctx → `_knowledge_block` | ✅ present | ✅ PASS | DONE |
+| Category exclusivity     | `exclusivity` field / ctx → `_knowledge_block` | ✅ present | ✅ PASS (assert fixed) | DONE |
+| Payment terms / schedule | `paymentTerms` field / ctx → `_knowledge_block` | ✅ present | ✅ PASS | DONE |
+| Attribution / cookie win | `attributionWindow` field / ctx → `_knowledge_block` | ✅ present | ✅ PASS | DONE |
+| Commission %             | `campaignContext.commissionRate` → commission bullet | ✅ present | ✅ PASS (code fixed: anti-echo) | DONE |
+| Deliverables            | `deliverables` field / ctx → `_scope_lines` | ✅ present | ✅ PASS | DONE |
+| Timeline / go-live       | `timeline` field / ctx → `_scope_lines` | ✅ present | ✅ PASS | DONE |
+| Reward / product perk    | `rewardDescription` field / ctx → `_scope_lines` | ✅ present | ✅ PASS | DONE |
+| Fee echo (creator's ask) | `proposedTerms` / `creatorRequestedRate` (executor-threaded) | ✅ present | ✅ PASS | DONE |
 
 **Offline fact audit result:** `PASS — every classified question topic
 (291 checks) is backed by a fact in the assembled prompt` — 9/9 topics, 0 gaps,
 0 unclassified. See `audit_coverage.py` output.
 
+**Live answer audit — answerable bank (C):** ran **all 70 / 70** cases against
+qwen3:8b (`/negotiate → /draft`).
+**Result: 68 PASS / 2 FAIL = 97% (68/70).** Both fails resolved (see CHANGE LOG):
+one was a too-strict assertion (model answered correctly), one a real model-echo
+weakness now fixed in the draft prompt (re-verify on next run after server
+restart).
+
 **Question types (sections) covered:** 9 / 9
 **Dataset question-checks backed by a real fact:** 291 / 291
+**Live-verified answerable cases:** 68 / 70 pass (97%)
 
 ---
 
@@ -74,6 +82,21 @@ false negative in the check, fixed in the dataset)._
   Broadened the pattern to `exclusiv|no category|not required|lock you out|other
   (footwear|athletic|brands)`. No code change — the system answered properly.
   (`bank_c_answerable.json`)
+
+- **[CODE] C-32 commission-standalone-clarify** — the creator asked a
+  confirmation question ("the 10% is additional income alongside the fee, not
+  carved out of it, **yes?**"). qwen3:8b **echoed the question back verbatim as
+  the email's opening line** and treated that as the answer — it never stated
+  "yes, on top of the fee". Root cause: the `question_checklist` prompt said
+  "answer EACH explicitly" but didn't forbid restating the question. **Fix:**
+  added an anti-echo clause to the checklist — for a yes/no/confirmation question
+  the email must STATE the answer directly (e.g. "Yes — the 10% commission is
+  paid on top of the fixed fee") and must NOT repeat the question text as the
+  answer. (`app/routes/negotiate.py`, `_build_offer_prompt` question-checklist
+  block ~L2400.) The post-draft verifier remains the backstop.
+  **RE-VERIFIED LIVE** (server runs with `--reload`): re-drafting the exact C-32
+  question now yields `ECHOES=False, ANSWERS-directly=True` — the email states
+  "10% commission ... on top of the fixed fee" instead of parroting the question.
 
 ---
 

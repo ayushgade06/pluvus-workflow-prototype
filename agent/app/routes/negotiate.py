@@ -2397,13 +2397,23 @@ def _build_offer_prompt(
             _seen.add(q.lower())
     if questions:
         numbered = "\n".join(f"  {i}) {q}" for i, q in enumerate(questions, start=1))
+        # Anti-echo clause (audit finding C-32): a small model tends to paste the
+        # creator's confirmation question back verbatim ("The 10% is on top of the
+        # fee, yes?") and treat that as "answering" it — it is NOT. So the
+        # checklist now explicitly demands a DIRECT answer (a stated yes/no for
+        # confirmation questions) and forbids repeating the question text as the
+        # answer. Cheap prompt fix; the post-draft verifier is the backstop.
         question_checklist = (
             "The creator asked the following (including any question they raised "
             "in an earlier message that is still unanswered) — your email MUST "
             "answer EACH one explicitly (if we don't have a specific, say in one "
             "honest sentence it'll be confirmed together — never invent a number "
             "or term):\n"
-            f"{numbered}\n\n"
+            f"{numbered}\n"
+            "For a yes/no or confirmation question (\"..., right?\", \"..., yes?\", "
+            "\"is X true?\"), STATE the answer directly (e.g. \"Yes — the 10% "
+            "commission is paid on top of the fixed fee\"). Do NOT repeat the "
+            "creator's question text back as if that were the answer.\n\n"
         )
     else:
         question_checklist = ""
