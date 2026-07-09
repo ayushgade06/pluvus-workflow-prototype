@@ -893,7 +893,18 @@ def _split_compound_question(q: str) -> list[str]:
     # Connective candidates, most explicit first. ", and" is the strongest signal
     # of two clauses; a bare " and " is weaker (item lists use it) so it relies
     # harder on the both-sides-look-like-questions guard.
-    for sep in (r",\s+and\s+", r";\s+", r",\s+(?=(?:what|when|how|do|does|can|could|is|are|any|whether)\b)", r"\s+and\s+(?=(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"):
+    for sep in (
+        r",\s+and\s+",
+        r";\s+",
+        r",\s+(?=(?:what|when|how|do|does|can|could|is|are|any|whether)\b)",
+        # " and <interrogative>" — the second clause opens with a question word,
+        # optionally after a short lead-in like "by"/"for"/"remind me" (e.g.
+        # "...on sales and BY WHEN does everything post?", "...and REMIND ME is it
+        # one reel?"). The both-sides-look-like-a-question guard below still blocks
+        # item-lists ("shoes and socks"), which have no interrogative on either side.
+        r"\s+and\s+(?=(?:by\s+|for\s+|remind me\s+|honestly\s+)?"
+        r"(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)",
+    ):
         parts = re.split(sep, q, maxsplit=1, flags=re.IGNORECASE)
         if len(parts) != 2:
             continue
@@ -2701,14 +2712,24 @@ def _draft_questions_to_verify(req: DraftRequest) -> list[str]:
 _KNOWN_FACT_QA = {
     "paymentTerms": (
         r"paid|payment|net[- ]?\d|invoic|when.*(get|do).*pay",
-        r"net[- ]?\d|\d+\s*days|after (the )?content|after.*(goes|is) live",
+        # The value-signal must prove PAYMENT timing specifically — not just any
+        # "\d+ days" (which matched the "30-day usage rights" line and false-passed
+        # a draft that never stated payment terms, e.g. bank-B B-34). Require net-N,
+        # or a day-count tied to a payment/invoice/after-live context.
+        r"net[- ]?\d"
+        r"|\b(pay(ment|s|out)?|invoic\w*|paid)\b[^.]*\b\d+\s*days?"
+        r"|\b\d+\s*days?\b[^.]*\b(pay(ment|s|out)?|invoic\w*|paid|after (the )?content|after.*(goes|is) live|after post)",
     ),
     "usageRights": (
         r"usage|reshare|reuse|use my|use the content|licen[cs]e|rights",
         r"\d+[- ]?day|usage|reshare|licen[cs]e",
     ),
     "exclusivity": (
-        r"exclusiv|locked? out|lock me|other brand|competitor|category",
+        # The creator asks about exclusivity many ways: "exclusive?", "locked out?",
+        # "other brands?", "tied to just you?", "only work with AeroSoft?". Catch the
+        # "tied to / only / just you" phrasings too (bank-B B-61) so the verifier
+        # recognizes it as an exclusivity question and checks the answer.
+        r"exclusiv|locked? out|lock me|other brand|competitor|category|tied to|only (you|work|with)|just (you|aerosoft|one brand)|work with other",
         r"exclusiv|no category|not required|lock you out|free to work|other brand",
     ),
     "attributionWindow": (
@@ -2734,6 +2755,44 @@ def _deferred_known_facts(body: str, questions: list[str], facts_present: set[st
         if not re.search(val_sig, body_lower):
             out.append(field)  # asked, but the value isn't stated -> deferred/dropped
     return out
+
+
+def _splice_known_facts(body: str, fields: list[str], known_facts: dict[str, str]) -> str:
+    """Deterministic backstop for a re-draft that STILL deferred a known fact
+    (bank-B B-11/B-53: qwen3:8b defers payment under 4-question load even after the
+    reinforced re-draft). Rather than ship a deferral of an answer we actually have,
+    splice one plain sentence stating each still-deferred fact's value, inserted
+    before the sign-off. Never invents — only writes values we were given.
+
+    `fields` are knowledge field names (e.g. "paymentTerms"); `known_facts` maps
+    LABEL -> value. Returns the body unchanged when there's nothing to splice."""
+    label_by_field = dict(_KNOWLEDGE_LABELS)
+    sentences: list[str] = []
+    for field in fields:
+        label = label_by_field.get(field)
+        value = known_facts.get(label) if label else None
+        if value:
+            sentences.append(f"To confirm: {value}")
+    if not sentences:
+        return body
+    insert = " ".join(sentences)
+    lines = body.rstrip().split("\n")
+    # Find the sign-off ("Best," / "Thanks," / "Sincerely," ...) and insert the
+    # confirmation just above it so the email keeps a natural shape. Fall back to
+    # appending at the end when no sign-off is found.
+    signoff_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip().lower()
+        if stripped.rstrip(",").strip() in ("best", "thanks", "thank you", "sincerely",
+                                            "regards", "warm regards", "cheers", "best regards"):
+            signoff_idx = i
+            break
+    block = ["", insert, ""]
+    if signoff_idx is not None:
+        lines[signoff_idx:signoff_idx] = block
+    else:
+        lines += block
+    return "\n".join(lines)
 
 
 def _unanswered_questions(body: str, questions: list[str]) -> list[str]:
@@ -2968,6 +3027,20 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
                 parsed = _run_draft(reinforced)
                 still_missed = _unanswered_questions(parsed.body, must_answer)
                 still_deferred = _deferred_known_facts(parsed.body, must_answer, facts_present)
+                # A KNOWN fact the creator asked about is not allowed to ship
+                # deferred (B-01 invariant). When the reinforced re-draft STILL
+                # defers it (the 8B model does under multi-question load), splice
+                # the exact value in deterministically rather than lose it. Only
+                # writes values we were given — never invents.
+                if still_deferred:
+                    spliced = _splice_known_facts(parsed.body, still_deferred, known_facts)
+                    if spliced != parsed.body:
+                        parsed = parsed.model_copy(update={"body": spliced})
+                        logger.info(
+                            "draft verification: spliced %d known-fact(s) the re-draft "
+                            "still deferred (%s)", len(still_deferred), ", ".join(still_deferred),
+                        )
+                    still_deferred = _deferred_known_facts(parsed.body, must_answer, facts_present)
                 if still_missed or still_deferred:
                     logger.warning(
                         "draft verification: after re-draft still %d unanswered + %d "

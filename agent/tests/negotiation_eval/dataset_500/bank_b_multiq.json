@@ -5,7 +5,7 @@
     "num_questions": 2,
     "answer_patterns": [
       "30[\\s-]?day",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -49,7 +49,7 @@
     "reply": "Three quick ones: when do I get paid, do I keep the shoes and socks, and when does this all need to be posted by?",
     "num_questions": 3,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "keep|yours|sock",
       "october\\s*10|oct"
     ]
@@ -71,7 +71,7 @@
     "answer_patterns": [
       "reel.*stor|(1|one).*(3|three)",
       "10\\s?%|10\\s?percent",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -99,7 +99,7 @@
     "reply": "Okay, four things running through my head: when am I paid, how long do you use the content, am I exclusive to you, and do I keep the shoes?",
     "num_questions": 4,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "30[\\s-]?day",
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
       "keep|yours"
@@ -122,7 +122,7 @@
     "num_questions": 2,
     "answer_patterns": [
       "30[\\s-]?day",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -168,7 +168,7 @@
     "num_questions": 3,
     "answer_patterns": [
       "460|fee|rate",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "october\\s*10|oct"
     ]
   },
@@ -188,7 +188,7 @@
     "num_questions": 3,
     "answer_patterns": [
       "keep|yours|sock",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "440|fee|rate"
     ]
   },
@@ -217,7 +217,7 @@
     "reply": "Two quick checks: net terms on payment, and am I free to post competitor brands or not?",
     "num_questions": 2,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)|free"
     ]
   },
@@ -237,7 +237,7 @@
     "answer_patterns": [
       "october\\s*10|oct",
       "30[\\s-]?day",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -257,7 +257,7 @@
     "answer_patterns": [
       "10\\s?%|10\\s?percent",
       "30[\\s-]?day|attribut|window",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -277,7 +277,7 @@
     "num_questions": 2,
     "answer_patterns": [
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -306,7 +306,7 @@
     "answer_patterns": [
       "reel.*stor|(1|one).*(3|three)",
       "october\\s*10|oct",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -326,7 +326,7 @@
     "answer_patterns": [
       "455|fee|rate",
       "30[\\s-]?day",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "october\\s*10|oct"
     ]
   },
@@ -371,7 +371,7 @@
     "reply": "When do I get paid, do I keep the Cloudstrides, and how long can you use the content I make?",
     "num_questions": 3,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "keep|yours|cloudstride",
       "30[\\s-]?day"
     ]
@@ -393,7 +393,7 @@
     "answer_patterns": [
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
       "30[\\s-]?day",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "keep|yours|sock"
     ]
   },
@@ -422,7 +422,7 @@
     "reply": "So excited about this collab! Two things — what payment terms do you run, and is the fee open to a little negotiation? I'd love $405.",
     "num_questions": 2,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "405|fee|rate"
     ]
   },
@@ -441,7 +441,7 @@
     "num_questions": 2,
     "answer_patterns": [
       "october\\s*10|oct",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -479,7 +479,7 @@
     "num_questions": 3,
     "answer_patterns": [
       "10\\s?%|10\\s?percent",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "30[\\s-]?day|attribut|window"
     ]
   },
@@ -510,7 +510,7 @@
     "answer_patterns": [
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
       "october\\s*10|oct",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "30[\\s-]?day"
     ]
   },
@@ -538,7 +538,7 @@
     "num_questions": 3,
     "answer_patterns": [
       "30[\\s-]?day",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
     ]
   },
@@ -549,7 +549,7 @@
     "answer_patterns": [
       "reel.*stor|(1|one).*(3|three)",
       "465|fee|rate",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -577,7 +577,7 @@
     "reply": "Such a dreamy brand for my aesthetic! Quick — payment terms, and how long do you hang onto usage rights?",
     "num_questions": 2,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "30[\\s-]?day"
     ]
   },
@@ -597,7 +597,7 @@
     "answer_patterns": [
       "10\\s?%|10\\s?percent",
       "october\\s*10|oct",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   },
   {
@@ -627,7 +627,7 @@
     "answer_patterns": [
       "30[\\s-]?day",
       "475|fee|rate",
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "keep|yours|shoe"
     ]
   },
@@ -654,7 +654,7 @@
     "reply": "When does the money come, how long does a sale stay attributed to me, and do I keep the product?",
     "num_questions": 3,
     "answer_patterns": [
-      "net[\\s-]?30",
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)",
       "30[\\s-]?day|attribut|window",
       "keep|yours|product|shoe"
     ]
@@ -677,7 +677,7 @@
       "10\\s?%|10\\s?percent",
       "reel.*stor|(1|one).*(3|three)",
       "october\\s*10|oct",
-      "net[\\s-]?30"
+      "net[\\s-]?30|30[\\s-]?days? after.*(content|post|goes? live|is live)"
     ]
   }
 ]
