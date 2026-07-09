@@ -783,9 +783,18 @@ answers it precisely:
   If they asked nothing, return [].
 - `pushedFixedTerms`: a JSON array naming which FIXED (non-negotiable) terms the
   creator tried to change. Use ONLY these exact values: "commission", "perk",
-  "deliverables", "timeline". Include a value only if they actually pushed to
-  change that term (e.g. asked for a higher commission % → "commission"; asked
-  for extra/different product → "perk"). If they pushed none, return [].
+  "deliverables", "timeline". Include a value if the creator tried to change that
+  term in ANY direction — increase, decrease, add, remove, swap, or reschedule.
+  Map their ask to a term:
+    * a different commission % (higher OR lower) → "commission"
+    * extra, fewer, or different product/samples/perks → "perk"
+    * changing the deliverables — MORE, FEWER, dropping/skipping/removing any
+      (e.g. "just 1 Reel and skip the Stories", "can I do fewer posts?", "swap
+      the Reel for a post"), or a different platform → "deliverables"
+    * a different go-live date or schedule (sooner, later, or extend) → "timeline"
+  "Skip", "drop", "remove", "cut", and "fewer" ALL count as trying to change that
+  term. Include a value only if they actually pushed on it; if they pushed none,
+  return [].
 
 Return ONLY valid JSON with no explanation:
 {{"action": "ACCEPT|COUNTER|PRESENT_OFFER|REJECT|ESCALATE",
@@ -990,10 +999,17 @@ in addition to the intent above, report:
 - `pushedFixedTerms`: which FIXED (non-negotiable) terms they tried to change,
   using ONLY these exact values: "commission", "perk", "deliverables", "timeline".
   Only the fixed fee is negotiable; the commission %, the product perk, the
-  deliverables, and the timeline are set by the brand. Include a value only if the
-  creator actually pushed to change that term (asked for a higher commission % →
-  "commission"; asked for extra/different product → "perk"). If they pushed none,
-  return [].
+  deliverables, and the timeline are set by the brand. Include a value if the
+  creator tried to change that term in ANY direction — increase, decrease, add,
+  remove, swap, or reschedule:
+    * a different commission % (higher OR lower) → "commission"
+    * extra, fewer, or different product/samples/perks → "perk"
+    * changing the deliverables — MORE, FEWER, dropping/skipping/removing any
+      (e.g. "just 1 Reel and skip the Stories", "fewer posts", "swap the Reel"),
+      or a different platform → "deliverables"
+    * a different go-live date or schedule → "timeline"
+  "Skip", "drop", "remove", "cut", and "fewer" ALL count. Include a value only if
+  they actually pushed on it; if they pushed none, return [].
 
 ---
 
@@ -1414,7 +1430,7 @@ Rules (strictly enforced):
 - State the fixed fee EXACTLY as {offer_rate} (same number, same "$"). Do NOT
   convert currency, round, or change it. Do NOT mention any budget range,
   minimum, maximum, or any other money figure — ONLY {offer_rate}{commission_rule}.
-{commission_guard}- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
+{commission_guard}{pushed_terms_guard}- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
   accepted these terms. NEVER write "as agreed", "agreed", "confirmed", "as
   discussed", or any wording implying the fee/terms are already settled. Present
   the fee as our proposal (e.g. "our proposed base fee is {offer_rate}"), and
@@ -1616,9 +1632,20 @@ def _build_offer_prompt(
         # Commission appears ONCE: a single dedicated bullet. (There is no
         # separate numbered "Commission" point anymore — that duplicated the
         # bullet and the deal-structure line.)
+        #
+        # REQUIRED, not optional. The de-dup guard above ("do NOT state the
+        # commission % on the deal-structure line") is strong; under a warm
+        # temp the 7B model would sometimes satisfy it by dropping the number
+        # from BOTH places, landing on a bare "This is a hybrid partnership"
+        # with no rate — leaving a creator who literally asked "what's the
+        # commission?" unanswered (real eval FAIL, case 21). So the bullet is
+        # phrased as a hard requirement that must contain the literal figure.
         commission_bullet_hint = (
-            f", a single bullet stating the {commission}% commission the creator "
-            f"earns on the sales they drive (state this only once)"
+            f", then a REQUIRED separate bullet that explicitly states the "
+            f"{commission}% commission the creator earns on the sales they drive "
+            f"(this bullet MUST contain the number \"{commission}%\" — never a "
+            f"vague 'hybrid partnership' with no rate; state the percentage here "
+            f"and only here)"
         )
         commission_rule = f" and the {commission}% commission"
         # Anti-echo guard: the ONLY valid commission is the campaign's own figure.
@@ -1629,8 +1656,10 @@ def _build_offer_prompt(
         # commission is set by the brand, not negotiable by the creator, so we
         # pin it here regardless of anything they wrote.
         commission_guard = (
-            f"- The commission rate is set by the brand and is EXACTLY {commission}%. "
-            f"State it as {commission}% and nothing else. If the creator's message "
+            f"- The email MUST state the commission rate, and it is EXACTLY "
+            f"{commission}%. Include the figure \"{commission}%\" once (on its own "
+            f"bullet) — do NOT omit it or replace it with a vague label like "
+            f"\"hybrid partnership\" that names no rate. If the creator's message "
             f"mentions any OTHER commission percentage, IGNORE their number — do NOT "
             f"repeat, confirm, adopt, or 'keep the same' any percentage other than "
             f"{commission}%. Never imply the commission is theirs to set.\n"
@@ -1714,8 +1743,31 @@ def _build_offer_prompt(
             "agree to any different commission %, extra/different perk, or altered "
             "deliverables/timeline.\n"
         )
+        # Hard, strictly-enforced backstop for point 4 above. Numbered point 4
+        # competes with the deliverables/perk BULLET (which restates the term's
+        # value), and under a warm temp the 7B model would sometimes satisfy the
+        # bullet and skip the "it's fixed" acknowledgment — silently listing the
+        # full deliverables while the creator's "can I cut the Stories?" went
+        # unanswered (real eval FAIL, case 18). Mirrors commission_guard: a
+        # Rules-section line the model can't drop without violating an explicit
+        # rule. Names each pushed term with a plain "cannot be changed" phrase.
+        _pushed_short = {
+            "commission": "the commission rate",
+            "perk": "the product perk/reward",
+            "deliverables": "the deliverables (scope, number, or platforms)",
+            "timeline": "the go-live timeline",
+        }
+        pushed_named = ", ".join(_pushed_short[t] for t in pushed)
+        pushed_terms_guard = (
+            f"- The creator asked to change {pushed_named}. The email MUST tell them, "
+            f"warmly but explicitly, that this is a standard, FIXED part of the "
+            f"campaign and cannot be adjusted (use a word like \"fixed\", \"standard\", "
+            f"or \"cannot be changed\"). Do NOT silently restate the original value as "
+            f"if nothing was asked, and NEVER agree to the change.\n"
+        )
     else:
         fixed_terms_goal = ""
+        pushed_terms_guard = ""
 
     # Explicit question checklist (spec §7). When /negotiate extracted the
     # creator's questions upstream, render them as a numbered must-answer list so
@@ -1760,6 +1812,7 @@ def _build_offer_prompt(
         deliverables_bullet_hint=deliverables_bullet_hint,
         brand_goal=brand_goal,
         fixed_terms_goal=fixed_terms_goal,
+        pushed_terms_guard=pushed_terms_guard,
         extra="\n".join(extra_parts),
     )
 

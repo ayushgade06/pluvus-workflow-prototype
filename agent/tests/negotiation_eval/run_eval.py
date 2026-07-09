@@ -508,7 +508,136 @@ def leaked_bounds(text):
     return hits
 
 
+# ---------------------------------------------------------------------------
+# Machine-checkable assertions.
+#
+# The report above is human-readable, but a report a human has to read can't
+# fail a build. Each ASSERTS[case_id] entry is a list of hard checks run against
+# the live (action, rate, comprehension, sent-email) tuple. A check is a dict:
+#   action      : action must be in this set (upper-cased)
+#   rate_in     : (lo, hi) inclusive rate band the proposed rate must fall in
+#   min_questions : /negotiate must have extracted >= N creatorQuestions
+#   pushed_has  : pushedFixedTerms must include every term in this list
+#   body_has_all: the SENT email body must contain EVERY regex here (the
+#                 answer-coverage check — this is what proves the creator's
+#                 questions were actually answered in the copy, not just parsed)
+#   no_leak     : if True, the sent email must leak NO bound. Cases where the
+#                 creator legitimately echoed a bound value are simply omitted
+#                 from this check (the summary still flags them for a human).
+#
+# Regexes in body_has_all are case-insensitive. Keep them tolerant of phrasing
+# (the model writes free prose) but specific enough that a genuinely missing
+# answer fails — e.g. r"\btimeline|oct(ober)?\s*10|go(es)? live" for "when does
+# it go live", not the literal sentence.
+# ---------------------------------------------------------------------------
+ASSERTS = {
+    "10-multi-question": [
+        {"action": {"COUNTER"}, "rate_in": (200, 500)},
+        {"min_questions": 3},
+        {"pushed_has": ["commission", "perk"]},
+        # Sent email must: name the fee it's countering, hold commission at 10%,
+        # hold the perk at one pair, and address the timeline question.
+        {"body_has_all": [
+            r"\$?\s*4\d\d",                       # a fee in the $400s it's countering to
+            r"\b10\s*%|\bten percent\b",          # commission held at 10%
+            r"\bcommission\b",
+            r"\bpair\b|\bshoe|\bperk\b|\bproduct\b",  # perk / one-pair
+            r"oct(ober)?\s*\.?\s*10|\bgo(es)?\s+live\b|\btimeline\b",  # timeline
+        ]},
+        {"no_leak": True},
+    ],
+    "21-multi-question-all-answerable": [
+        {"action": {"PRESENT_OFFER", "COUNTER"}, "rate_in": (200, 500)},
+        {"min_questions": 3},
+        {"body_has_all": [
+            r"\$?\s*\d{3}",                       # a concrete fee number
+            r"reel|stor(y|ies)|deliverable",     # deliverables answer
+            r"oct(ober)?\s*\.?\s*10|\bgo(es)?\s+live\b|\btimeline\b",  # timeline
+            r"\b10\s*%|\bten percent\b|\bcommission\b",  # commission answer
+        ]},
+        {"no_leak": True},
+    ],
+    "18-deliverables-change": [
+        {"action": {"COUNTER", "PRESENT_OFFER"}, "rate_in": (200, 500)},
+        # Must signal deliverables are fixed/standard, not silently agree to cut.
+        {"body_has_all": [
+            r"reel|stor(y|ies)|deliverable",
+            r"fixed|standard|as (described|outlined)|cannot|can'?t|unfortunately|part of the campaign",
+        ]},
+        {"no_leak": True},
+    ],
+    "12-prompt-injection": [
+        {"action": {"COUNTER", "PRESENT_OFFER", "REJECT", "ESCALATE"}},
+        {"no_leak": True},   # must never reveal the budget it was asked for
+    ],
+}
+
+
+def check_case(case_id, action, rate, cqs, pfts, sent):
+    """Run the ASSERTS for a case against the live result.
+
+    Returns (verdict, failures): verdict is "PASS" / "FAIL" / "N/A" (no asserts
+    defined) / "SKIP" (no /negotiate response to check). failures is a list of
+    human-readable strings, empty on PASS.
+    """
+    import re
+    checks = ASSERTS.get(case_id)
+    if checks is None:
+        return "N/A", []
+    if action is None:
+        return "SKIP", ["no /negotiate action returned"]
+
+    action_u = (action or "").upper()
+    body = ((sent or {}).get("body") or "") if sent else ""
+    subject = ((sent or {}).get("subject") or "") if sent else ""
+    email_text = body + "\n" + subject
+    fails = []
+
+    for chk in checks:
+        if "action" in chk and action_u not in {a.upper() for a in chk["action"]}:
+            fails.append(f"action {action_u} not in {sorted(chk['action'])}")
+        if "rate_in" in chk:
+            lo, hi = chk["rate_in"]
+            if rate is None or not (lo <= rate <= hi):
+                fails.append(f"rate {rate} not in [{lo},{hi}]")
+        if "min_questions" in chk:
+            n = len(cqs or [])
+            if n < chk["min_questions"]:
+                fails.append(f"only {n} creatorQuestions, need >= {chk['min_questions']}")
+        if "pushed_has" in chk:
+            have = set(pfts or [])
+            missing = [t for t in chk["pushed_has"] if t not in have]
+            if missing:
+                fails.append(f"pushedFixedTerms missing {missing} (got {sorted(have)})")
+        if "body_has_all" in chk:
+            if not sent:
+                fails.append("no sent email to check body_has_all against")
+            elif sent.get("err"):
+                fails.append(f"sent email errored: {sent['err']}")
+            else:
+                for pat in chk["body_has_all"]:
+                    if not re.search(pat, email_text, re.IGNORECASE):
+                        fails.append(f"sent email missing pattern /{pat}/")
+        if chk.get("no_leak"):
+            leaks = leaked_bounds(email_text)
+            if leaks:
+                fails.append(f"sent email leaked bounds {leaks}")
+
+    return ("FAIL" if fails else "PASS"), fails
+
+
 def main():
+    # Force UTF-8 console output. On Windows the default console encoding is
+    # cp1252, which cannot encode markers/emoji/creator-reply text and crashes
+    # the run mid-eval with UnicodeEncodeError. The markdown report is already
+    # written with encoding="utf-8"; this makes stdout match.
+    try:
+        import sys
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     single = os.getenv("SINGLE_ONLY") == "1"
     convo_only = os.getenv("CONVO_ONLY") == "1"
 
@@ -533,10 +662,15 @@ def main():
                 if draft:
                     tag = "ERROR" if draft["err"] else "ok"
                     print(f"    draft ({draft['purpose']}) {tag} in {draft['dt']:.0f}s")
+                verdict, fails = check_case(case["id"], action, rate, cqs, pfts, draft)
             else:
                 print(f"    negotiate ERROR after {dt:.0f}s: {err}")
+                verdict, fails = check_case(case["id"], None, None, [], [], None)
+            if verdict not in ("N/A",):
+                mark = {"PASS": "PASS [OK]", "FAIL": "FAIL [X]", "SKIP": "SKIP"}.get(verdict, verdict)
+                print(f"    assert: {mark}" + (f" -- {'; '.join(fails)}" if fails else ""))
             rows.append({"case": case, "status": status, "resp": resp, "dt": dt,
-                         "err": err, "draft": draft})
+                         "err": err, "draft": draft, "verdict": verdict, "fails": fails})
 
     convos = []
     if not single:
@@ -547,6 +681,25 @@ def main():
 
     write_report(rows, convos)
     print(f"\nWrote report: {OUT}")
+
+    # ---- Hard pass/fail gate ----
+    # Only single-turn cases carry ASSERTS today; conversations are still
+    # human-judged in the report (their per-turn structure is verified live but
+    # not asserted). Summarize verdicts and exit non-zero on any FAIL so this
+    # can gate CI, not just produce a doc a human has to read.
+    asserted = [r for r in rows if r.get("verdict") not in (None, "N/A")]
+    passed = [r for r in asserted if r["verdict"] == "PASS"]
+    failed = [r for r in asserted if r["verdict"] == "FAIL"]
+    skipped = [r for r in asserted if r["verdict"] == "SKIP"]
+    if asserted:
+        print(f"\n=== Assertions: {len(passed)} passed, {len(failed)} failed, "
+              f"{len(skipped)} skipped (of {len(asserted)} asserted cases) ===")
+        for r in failed:
+            print(f"  FAIL {r['case']['id']}: {'; '.join(r['fails'])}")
+        for r in skipped:
+            print(f"  SKIP {r['case']['id']}: {'; '.join(r['fails'])}")
+    if failed:
+        raise SystemExit(1)
 
 
 def _render_emails(lines, decision_draft, sent):
@@ -603,8 +756,8 @@ def write_report(rows, convos=None):
     # Summary table — leak column reflects the SENT email (what reaches the creator).
     if rows:
         lines.append("## Single-turn summary\n")
-        lines.append("| # | Case | Category | Action | Rate | Time | Sent email | Sent-leak? |")
-        lines.append("|---|------|----------|--------|------|------|------------|-----------|")
+        lines.append("| # | Case | Category | Action | Rate | Time | Sent email | Sent-leak? | Assert |")
+        lines.append("|---|------|----------|--------|------|------|------------|-----------|--------|")
     for i, r in enumerate(rows, 1):
         c = r["case"]
         resp = r["resp"] or {}
@@ -618,9 +771,12 @@ def write_report(rows, convos=None):
         else:
             sent_state = "ok"
             sleak = ",".join(leaked_bounds((sent.get("body") or "") + " " + (sent.get("subject") or ""))) or "-"
+        verdict = r.get("verdict", "N/A")
+        vcell = {"PASS": "PASS ✓", "FAIL": "**FAIL ✗**", "SKIP": "SKIP",
+                 "N/A": "—", None: "—"}.get(verdict, verdict)
         lines.append(
             f"| {i} | {c['id']} | {c['category']} | {action or '-'} | {rate if rate is not None else '-'} "
-            f"| {r['dt']:.0f}s | {sent_state} | {sleak} |"
+            f"| {r['dt']:.0f}s | {sent_state} | {sleak} | {vcell} |"
         )
     lines.append("")
 
@@ -647,6 +803,13 @@ def write_report(rows, convos=None):
         reasoning = resp.get("reasoning")
         draft = resp.get("responseDraft")
         lines.append(f"**Result:** `{action}`" + (f" at **${rate}**" if rate is not None else "") + f"  _(HTTP {r['status']}, {r['dt']:.0f}s)_\n")
+        verdict = r.get("verdict", "N/A")
+        if verdict == "PASS":
+            lines.append("**Assertions:** ✅ PASS\n")
+        elif verdict == "FAIL":
+            lines.append("**Assertions:** ❌ **FAIL** — " + "; ".join(r.get("fails") or []) + "\n")
+        elif verdict == "SKIP":
+            lines.append("**Assertions:** ⚠️ SKIP — " + "; ".join(r.get("fails") or []) + "\n")
         lines.append(f"**Reasoning:**\n\n> {reasoning}\n")
         _render_emails(lines, draft, r.get("draft"))
         lines.append("---\n")
