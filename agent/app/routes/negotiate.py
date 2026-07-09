@@ -865,10 +865,58 @@ def _normalize_pushed_terms(raw: Any) -> list[str]:
     return out
 
 
+# A clause "looks like a question/request" if it carries an interrogative word,
+# an ask verb, or a modal. Used to decide whether a compound string is really two
+# questions (safe to split) vs one flowing phrase or an item list (leave alone).
+_QUESTION_CLAUSE_SIGNAL = re.compile(
+    r"\b(what|when|where|which|who|why|how|do|does|did|can|could|would|will|is|are|"
+    r"any|whether|confirm|clarify|wondering|wanted to know|let me know|tell me|"
+    r"paid|pay|fee|rate|deadline|date|timeline|exclusiv|usage|commission|keep|"
+    r"attribution|deliverable)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_compound_question(q: str) -> list[str]:
+    """Split ONE creator-question string into its parts when it fuses two distinct
+    asks joined by ", and" / " and " / ";" (the compound the 8B model tends to keep
+    as a single element, under-counting creatorQuestions — bank-B B-02/B-04).
+
+    Conservative: only splits when BOTH sides independently look like a
+    question/request (via _QUESTION_CLAUSE_SIGNAL) and each side is substantive
+    (>= 3 words). This leaves item-lists ("keep the shoes and socks?", "a reel and
+    stories") and single flowing asks intact — those have a non-question noun
+    phrase on one side, so the guard fails and the whole string is returned as-is.
+    Returns [q] when no safe split applies. Splits on at most the FIRST connective
+    (two parts) to avoid shredding a genuinely single ask.
+    """
+    # Connective candidates, most explicit first. ", and" is the strongest signal
+    # of two clauses; a bare " and " is weaker (item lists use it) so it relies
+    # harder on the both-sides-look-like-questions guard.
+    for sep in (r",\s+and\s+", r";\s+", r",\s+(?=(?:what|when|how|do|does|can|could|is|are|any|whether)\b)", r"\s+and\s+(?=(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"):
+        parts = re.split(sep, q, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) != 2:
+            continue
+        a, b = parts[0].strip(" ,;?"), parts[1].strip()
+        if len(a.split()) < 3 or len(b.split()) < 3:
+            continue
+        if not (_QUESTION_CLAUSE_SIGNAL.search(a) and _QUESTION_CLAUSE_SIGNAL.search(b)):
+            continue
+        # Re-attach a trailing "?" to each part for readability when the original
+        # ended in one; harmless for coverage checks (they match on content words).
+        if q.rstrip().endswith("?"):
+            a = a if a.endswith("?") else a + "?"
+            b = b if b.endswith("?") else b + "?"
+        return [a, b]
+    return [q]
+
+
 def _normalize_questions(raw: Any) -> list[str]:
     """Coerce the model's ``creatorQuestions`` to a clean ``list[str]``.
 
-    Keeps non-empty string items (trimmed), drops blanks/non-strings, and
+    Keeps non-empty string items (trimmed), splits a fused compound "X, and Y?"
+    element into its parts (deterministic backstop for the 8B model's tendency to
+    under-count — see _split_compound_question), drops blanks/non-strings, and
     de-duplicates while preserving order. Never raises.
     """
     if not isinstance(raw, list):
@@ -878,8 +926,12 @@ def _normalize_questions(raw: Any) -> list[str]:
         if not isinstance(item, str):
             continue
         q = item.strip()
-        if q and q not in out:
-            out.append(q)
+        if not q:
+            continue
+        for part in _split_compound_question(q):
+            part = part.strip()
+            if part and part not in out:
+                out.append(part)
     return out
 
 
