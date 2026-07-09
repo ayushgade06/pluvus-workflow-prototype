@@ -25,12 +25,31 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB — plenty for a brief PDF.
 });
 
+// MED-S3: the real PDF header. A PDF file MUST begin with "%PDF-" (bytes 25 50
+// 44 46 2D) followed by a version. The extension + mimetype are attacker- or
+// browser-controlled and prove nothing about the CONTENT; without a content
+// check, an unvalidated file (an HTML page, a script, or garbage) named ".pdf"
+// could be stored and later EMAILED to creators as the brand's official brief.
+const PDF_MAGIC = Buffer.from("%PDF-", "latin1");
+
+/** True when the file's bytes actually begin with the %PDF- signature. */
+export function hasPdfMagicBytes(buffer: Buffer): boolean {
+  // Compare only the first 5 bytes; a valid PDF header is at offset 0 per spec.
+  return buffer.length >= PDF_MAGIC.length && buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC);
+}
+
 function isPdf(file: Express.Multer.File): boolean {
   const nameIsPdf = /\.pdf$/i.test(file.originalname);
   const mimeIsPdf = file.mimetype === "application/pdf";
   // Require the extension; accept the common PDF mimetype OR a generic
-  // octet-stream (some browsers/tools omit the precise type).
-  return nameIsPdf && (mimeIsPdf || file.mimetype === "application/octet-stream");
+  // octet-stream (some browsers/tools omit the precise type). AND require the
+  // actual %PDF- magic bytes (MED-S3) — extension/mime alone are not evidence of
+  // real PDF content, and this file is later emailed to creators as the brief.
+  return (
+    nameIsPdf &&
+    (mimeIsPdf || file.mimetype === "application/octet-stream") &&
+    hasPdfMagicBytes(file.buffer)
+  );
 }
 
 // POST /uploads — store one PDF and return its reference.
