@@ -74,6 +74,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
 def _parse_keep_alive(raw: str | None):
     """Normalize OLLAMA_KEEP_ALIVE for the Ollama API.
 
@@ -93,7 +100,7 @@ def _parse_keep_alive(raw: str | None):
         return s  # "30m", "1h", "90s" -> Go duration string
 
 
-def _make_ollama(temperature: float):
+def _make_ollama(temperature: float, num_predict_override: int | None = None):
     from langchain_ollama import ChatOllama  # type: ignore[import]
 
     # qwen3 is a HYBRID REASONING model — left to its defaults it emits a long
@@ -119,14 +126,29 @@ def _make_ollama(temperature: float):
     # integer means seconds (and -1 = forever). So pass a plain integer through as
     # an int, and only pass unit-bearing strings ("30m", "1h") as strings.
     keep_alive = _parse_keep_alive(os.getenv("OLLAMA_KEEP_ALIVE", "-1"))
-    # Hard cap on generated tokens. classify/negotiate/draft emit a small JSON
-    # object (an intent + one-sentence reason, or a short email) — without a cap
-    # the CPU-bound model (~4 tok/s here) can ramble for hundreds of tokens and
-    # run for minutes. 512 is ample for a draft email; classify/negotiate use far
-    # less. Override with OLLAMA_NUM_PREDICT. -1 = unbounded (not recommended here).
-    num_predict = _env_int("OLLAMA_NUM_PREDICT", 512)
+    # Hard cap on generated tokens. classify/negotiate/draft emit a JSON object
+    # (an intent + one-sentence reason, or a short email) — without a cap the
+    # CPU-bound model (~4 tok/s here) can ramble for hundreds of tokens and run
+    # for minutes. MED-L2: the default is raised from 512 to 768 because the
+    # llm-negotiate output (action + rate + a full ready-to-send email + reasoning
+    # + creatorQuestions + pushedFixedTerms) is the LONGEST structured JSON we ask
+    # for, and 512 could truncate it MID-STRING → invalid JSON → wasted retries or
+    # a needless fallback. A per-call override (num_predict_override, passed by the
+    # negotiate route) can raise it further for that path without inflating the
+    # cheap classify call. OLLAMA_NUM_PREDICT still sets the global default.
+    num_predict = num_predict_override or _env_int("OLLAMA_NUM_PREDICT", 768)
+    # MED-L3 (real determinism): pin a seed + top_p and force JSON mode so
+    # "identical inputs yield identical decisions" is actually TRUE, not just
+    # claimed. Without a seed the sampler varies run to run even at temperature 0
+    # on some backends; format="json" constrains the decode to valid JSON (fewer
+    # brace-scrape retries). All three are overridable via env for experiments.
+    seed = _env_int("OLLAMA_SEED", 42)
+    top_p = _env_float("OLLAMA_TOP_P", 1.0)
+    # format="json" is Ollama's structured-output constraint. Disable with
+    # OLLAMA_JSON_MODE=false if a prompt ever needs free-text (none do today).
+    json_mode = _env_flag("OLLAMA_JSON_MODE", default=True)
 
-    return ChatOllama(
+    kwargs = dict(
         model=_ollama_model_id(),
         base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         temperature=temperature,
@@ -134,10 +156,15 @@ def _make_ollama(temperature: float):
         num_ctx=num_ctx,
         num_predict=num_predict,
         keep_alive=keep_alive,
+        seed=seed,
+        top_p=top_p,
     )
+    if json_mode:
+        kwargs["format"] = "json"
+    return ChatOllama(**kwargs)
 
 
-def _make_openai(temperature: float):
+def _make_openai(temperature: float, num_predict_override: int | None = None):
     try:
         from langchain_openai import ChatOpenAI  # type: ignore[import]
     except ImportError as exc:  # pragma: no cover - depends on optional install
@@ -150,11 +177,29 @@ def _make_openai(temperature: float):
     if not api_key:
         raise RuntimeError("LLM_PROVIDER=openai but OPENAI_API_KEY is not set.")
 
-    return ChatOpenAI(
+    # MED-L3: pin a seed + top_p and request JSON object mode so identical inputs
+    # yield identical decisions (OpenAI's `seed` is best-effort but stabilizes
+    # sampling; response_format json_object constrains the decode to valid JSON,
+    # matching the prompts' "return ONLY JSON" contract). Overridable via env.
+    seed = _env_int("OPENAI_SEED", 42)
+    top_p = _env_float("OPENAI_TOP_P", 1.0)
+    json_mode = _env_flag("OPENAI_JSON_MODE", default=True)
+    # MED-L2: cap output tokens on the same rationale as Ollama's num_predict, so
+    # the verbose llm-negotiate JSON isn't truncated mid-string. The negotiate
+    # route passes a larger override for its path.
+    max_tokens = num_predict_override or _env_int("OPENAI_MAX_TOKENS", 768)
+
+    kwargs = dict(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         api_key=api_key,
         temperature=temperature,
+        seed=seed,
+        top_p=top_p,
+        max_tokens=max_tokens,
     )
+    if json_mode:
+        kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    return ChatOpenAI(**kwargs)
 
 
 _PROVIDERS = {
@@ -185,6 +230,14 @@ class FailoverChat:
     underlying model for a candidate is built lazily on first use and cached, so
     constructing the wrapper never fails just because a fallback SDK is absent —
     that only matters if the primary actually fails over to it.
+
+    MED-L2 — per-candidate timeout. Each candidate's ``.invoke`` runs under its
+    OWN wall-clock budget (LLM_INVOKE_TIMEOUT_SECONDS). Previously a single budget
+    in structured.py wrapped the whole failover chain, so a hung PRIMARY consumed
+    the entire budget and the fallback never got a chance to run. Bounding each
+    candidate independently means a stuck primary times out and the fallback then
+    runs with a fresh budget — the failover actually works under a hang, not just
+    under an immediate error.
     """
 
     def __init__(self, candidates: list[tuple[str, object]], temperature: float) -> None:
@@ -203,7 +256,11 @@ class FailoverChat:
         for idx, (label, factory) in enumerate(self._candidates):
             try:
                 model = self._model_for(label, factory)
-                result = model.invoke(prompt)
+                # Per-candidate wall-clock bound (imported here to avoid a circular
+                # import: structured.py imports get_llm indirectly via the routes).
+                from app.structured import invoke_model_bounded
+
+                result = invoke_model_bounded(model, prompt)
                 if idx > 0:
                     logger.warning("LLM failover: served by fallback %s", label)
                 return result
@@ -237,12 +294,17 @@ def _candidate_chain() -> list[str]:
     return chain
 
 
-def get_llm(temperature: float = 0.2):
+def get_llm(temperature: float = 0.2, num_predict: int | None = None):
     """Return a chat model for the configured provider chain.
 
     With no fallback configured this returns the primary model directly (zero
     overhead, identical behavior to before FIX-8). With LLM_FALLBACK_PROVIDER set
     it returns a FailoverChat that tries primary → fallback on each invoke.
+
+    ``num_predict`` (MED-L2) is an optional per-call cap on generated tokens
+    (Ollama ``num_predict`` / OpenAI ``max_tokens``). The negotiate route passes a
+    larger value than the default so the verbose llm-negotiate JSON isn't
+    truncated mid-string; classify/draft leave it None and use the global default.
 
     Raises a clear RuntimeError if a provider name is unknown. Prerequisite
     errors (missing SDK / API key) for the PRIMARY surface eagerly; for a
@@ -262,9 +324,20 @@ def get_llm(temperature: float = 0.2):
         logger.info("LLM chain (pinned): %s", labels)
         _pinning_logged = True
 
+    # Bind num_predict into each factory so both the direct and failover paths
+    # honor the per-call cap. When no override is requested (num_predict is None)
+    # the factory is called with temperature ONLY, so a single-arg factory (the
+    # real factories accept num_predict_override with a None default anyway) keeps
+    # working unchanged — the cap is threaded solely when a caller asked for one.
+    def _bind(provider: str):
+        factory = _PROVIDERS[provider]
+        if num_predict is None:
+            return lambda temperature: factory(temperature)
+        return lambda temperature: factory(temperature, num_predict)
+
     if len(chain) == 1:
         # No fallback — keep the direct model (no wrapper) for zero overhead.
-        return _PROVIDERS[chain[0]](temperature)
+        return _bind(chain[0])(temperature)
 
-    candidates = [(_provider_label(p), _PROVIDERS[p]) for p in chain]
+    candidates = [(_provider_label(p), _bind(p)) for p in chain]
     return FailoverChat(candidates, temperature)

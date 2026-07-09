@@ -58,9 +58,15 @@ def _req(reply="How about $480?", floor=100, ceiling=500, round_=1, max_rounds=5
 
 
 def _patch_llm(monkeypatch, outputs):
-    """Route both strategies through a fake model and force the LLM strategy."""
+    """Route both strategies through a fake model and force the LLM strategy.
+
+    The fake get_llm accepts num_predict (MED-L2 threads a per-call token cap into
+    the llm-negotiate call) so the real signature is matched.
+    """
     monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.3: FakeLLM(outputs))
+    monkeypatch.setattr(
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None: FakeLLM(outputs)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +282,7 @@ def test_llm_strategy_falls_back_to_rules_on_bad_llm_output(monkeypatch):
     monkeypatch.setattr(
         neg_mod,
         "get_llm",
-        lambda temperature=0.3: FakeLLM(
+        lambda temperature=0.3, num_predict=None: FakeLLM(
             ['{"intent": "RATE_PROPOSAL", "response": "Noted.", "creatorRateMentioned": 480}']
         ),
     )
@@ -296,7 +302,7 @@ def test_llm_is_the_default_strategy(monkeypatch):
     monkeypatch.setattr(
         neg_mod,
         "get_llm",
-        lambda temperature=0.3: FakeLLM(
+        lambda temperature=0.3, num_predict=None: FakeLLM(
             ['{"action": "COUNTER", "rate": 420, "response": "How about $420?", "reasoning": "mid"}']
         ),
     )

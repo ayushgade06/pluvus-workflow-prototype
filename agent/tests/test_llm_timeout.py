@@ -86,3 +86,38 @@ def test_invoke_structured_propagates_timeout_without_burning_retries(monkeypatc
     with pytest.raises(LLMTimeoutError):
         invoke_structured(llm, "p", _Schema, retries=2)
     assert llm.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# MED-L2 — the timeout is PER CANDIDATE inside FailoverChat, so a hung primary
+# times out and the fallback still runs with a fresh budget (previously one
+# budget spanned the whole chain, so a stuck primary starved the fallback).
+# ---------------------------------------------------------------------------
+
+
+def test_failover_per_candidate_timeout_runs_fallback_on_hung_primary(monkeypatch):
+    from app.llm import FailoverChat
+
+    monkeypatch.setenv("LLM_INVOKE_TIMEOUT_SECONDS", "0.2")
+    hung_primary = SlowLLM(2.0, content='{"intent": "PRIMARY"}')  # exceeds 0.2s
+    fast_fallback = SlowLLM(0.0, content='{"intent": "FALLBACK"}')
+    chat = FailoverChat(
+        [("primary", lambda _t: hung_primary), ("fallback", lambda _t: fast_fallback)], 0
+    )
+    # The primary times out (per-candidate budget), the fallback then answers.
+    out = chat.invoke("p")
+    assert out.content == '{"intent": "FALLBACK"}'
+    assert hung_primary.calls == 1
+    assert fast_fallback.calls == 1
+
+
+def test_invoke_with_timeout_does_not_double_wrap_failover(monkeypatch):
+    # A FailoverChat passed to _invoke_with_timeout must NOT be re-bounded (it
+    # bounds each candidate itself); we assert it delegates to .invoke and returns
+    # the content, with the per-candidate budget applied inside.
+    from app.llm import FailoverChat
+
+    monkeypatch.setenv("LLM_INVOKE_TIMEOUT_SECONDS", "5")
+    ok = SlowLLM(0.0, content='{"intent": "OK"}')
+    chat = FailoverChat([("only", lambda _t: ok)], 0)
+    assert _invoke_with_timeout(chat, "p") == '{"intent": "OK"}'

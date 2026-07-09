@@ -27,20 +27,40 @@ from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 
-# FIX-9: a single shared worker so a hung llm.invoke can be bounded by a
+# FIX-9 / MED-L2: a shared worker pool so a hung llm.invoke can be bounded by a
 # wall-clock timeout. The TS caller already aborts the HTTP request after
 # AGENT_TIMEOUT_MS, but without this the Python side keeps generating and holds
 # the FastAPI worker (audit Reliability Review: "a hung Ollama call holds the
 # Python worker"). With it, the awaited future times out and the request returns
 # promptly, freeing the worker. The orphaned generation cannot be force-killed
 # (Python threads aren't interruptible), but it no longer blocks the caller.
-_LLM_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-invoke")
+#
+# MED-L2 pool sizing: on a timeout the orphaned generation keeps running and
+# holds its pool thread until it finishes, so a fixed pool of 8 could be saturated
+# by 8 orphans — after which every new bounded call blocks waiting for a free
+# thread, defeating the timeout. The pool is now sized from LLM_INVOKE_POOL_SIZE
+# (default 16) and SHOULD be set to at least the FastAPI worker concurrency (each
+# in-flight request makes at most one bounded call at a time), so a timed-out
+# request always has a thread to run its next attempt / fallback on. It is NOT a
+# concurrency limiter — real backpressure belongs to the ASGI server + the TS
+# circuit breaker; this pool only exists to make .result(timeout) possible.
+def _pool_size() -> int:
+    try:
+        v = int(os.getenv("LLM_INVOKE_POOL_SIZE", "16"))
+    except ValueError:
+        v = 16
+    return max(1, v)
 
-# Per-call wall-clock budget for a single llm.invoke. Provider-agnostic (works
-# for Ollama and OpenAI alike since it wraps the call, not the SDK). 0/unset
-# disables the bound. Default 60s — comfortably under the TS 30s? No: this is a
-# backstop for the case where the SDK has no timeout of its own, so keep it a
-# little above the interactive budget; tune via env.
+
+_LLM_EXECUTOR = ThreadPoolExecutor(max_workers=_pool_size(), thread_name_prefix="llm-invoke")
+
+# Per-generation wall-clock budget for a SINGLE model's llm.invoke (MED-L2). This
+# now bounds ONE model call, not a whole primary→fallback chain: the FailoverChat
+# in app.llm applies this budget per candidate, so a hung primary times out and
+# the fallback still gets its own full budget (previously one budget spanned both,
+# and a stuck primary starved the fallback). Provider-agnostic (wraps the call,
+# not the SDK). 0/unset disables the bound. Default 60s — a backstop above the
+# interactive budget for SDKs with no timeout of their own; tune via env.
 def _invoke_timeout_seconds() -> float:
     raw = os.getenv("LLM_INVOKE_TIMEOUT_SECONDS", "60")
     try:
@@ -68,16 +88,20 @@ class LLMTimeoutError(StructuredOutputError):
     """
 
 
-def _invoke_with_timeout(llm, ask: str) -> str:
-    """Call ``llm.invoke(ask)`` with a wall-clock bound, returning ``.content``.
+def invoke_model_bounded(model, prompt):
+    """Call a SINGLE model's ``model.invoke(prompt)`` under a wall-clock bound,
+    returning the model's message object (with a ``.content`` attribute).
 
-    Raises LLMTimeoutError if the call does not finish within the budget. When
-    the budget is 0/disabled the call runs inline (no executor overhead).
+    MED-L2: this bounds ONE model call. app.llm.FailoverChat calls it PER
+    CANDIDATE, so each candidate gets its own independent budget (a hung primary
+    times out and the fallback runs with a fresh budget). Raises LLMTimeoutError
+    on budget exhaustion. When the budget is 0/disabled the call runs inline (no
+    executor overhead).
     """
     timeout = _invoke_timeout_seconds()
     if timeout <= 0:
-        return llm.invoke(ask).content
-    future = _LLM_EXECUTOR.submit(lambda: llm.invoke(ask).content)
+        return model.invoke(prompt)
+    future = _LLM_EXECUTOR.submit(lambda: model.invoke(prompt))
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError as exc:
@@ -86,6 +110,22 @@ def _invoke_with_timeout(llm, ask: str) -> str:
         raise LLMTimeoutError(
             f"llm.invoke exceeded {timeout:.0f}s budget", raw=None
         ) from exc
+
+
+def _invoke_with_timeout(llm, ask: str) -> str:
+    """Return the string content of ``llm.invoke(ask)`` with a wall-clock bound.
+
+    ``llm`` may be a direct chat model OR an app.llm.FailoverChat. The FailoverChat
+    ALREADY bounds each candidate per-call (MED-L2), so wrapping it again here
+    would (a) double-bound and (b) re-introduce the "one budget spans the whole
+    primary→fallback chain" bug this fix removes — so we detect it by duck-typing
+    (a ``_candidates`` attribute) and let it manage its own per-candidate budget.
+    A direct single model is bounded here via invoke_model_bounded.
+    """
+    if hasattr(llm, "_candidates"):
+        # FailoverChat — it bounds each candidate itself; don't re-wrap.
+        return llm.invoke(ask).content
+    return invoke_model_bounded(llm, ask).content
 
 
 def extract_json_object(raw: str) -> dict:

@@ -536,6 +536,20 @@ def _negotiation_strategy() -> str:
     return "rules" if os.getenv("NEGOTIATION_STRATEGY", "llm").strip().lower() == "rules" else "llm"
 
 
+def _negotiate_num_predict() -> int:
+    """Token cap for the llm-negotiate generation (MED-L2).
+
+    The llm-negotiate JSON is the longest structured output we request, so it
+    gets a larger cap than the global default to avoid mid-string truncation.
+    Overridable via LLM_NEGOTIATE_NUM_PREDICT; falls back to 1024 on a bad value.
+    """
+    try:
+        v = int(os.getenv("LLM_NEGOTIATE_NUM_PREDICT", "1024"))
+    except ValueError:
+        return 1024
+    return v if v > 0 else 1024
+
+
 # Actions that put a concrete number on the table and therefore require a
 # readable, in-band rate. REJECT/ESCALATE carry no rate.
 _RATE_BEARING_ACTIONS = {"ACCEPT", "COUNTER", "PRESENT_OFFER"}
@@ -899,7 +913,12 @@ def _llm_negotiate_decision(
     LLMTimeoutError on failure — the caller catches those and falls back to the
     deterministic `_decide_action` path.
     """
-    llm = get_llm(temperature=0.3)
+    # MED-L2: the llm-negotiate output is the longest structured JSON we ask for
+    # (action + rate + a full ready-to-send email + reasoning + creatorQuestions +
+    # pushedFixedTerms). Give it a larger token cap than the global default so it
+    # can't be truncated mid-string → invalid JSON → wasted retries / a needless
+    # fallback. Tunable via LLM_NEGOTIATE_NUM_PREDICT (default 1024).
+    llm = get_llm(temperature=0.3, num_predict=_negotiate_num_predict())
 
     sender = req.campaignConstraints.senderName or "Pluvus Partnerships"
     brand_description = req.campaignConstraints.brandDescription or "a brand partnership"
@@ -1259,10 +1278,12 @@ def _rules_negotiate(
     # FIX-10: the negotiation call only CLASSIFIES intent and EXTRACTS the
     # creator's rate — the accept/counter/escalate decision and the counter
     # amount are computed by the deterministic `_decide_action` below, never by
-    # the model. Run this extraction at temperature 0 so identical inputs yield
-    # identical decisions (a money decision must be reproducible and auditable).
-    # Email *copy* is generated separately by the /draft endpoint at higher
-    # temperature, so warmth of wording is unaffected by this change.
+    # the model. Run this extraction at temperature 0 AND with the pinned seed +
+    # top_p + JSON mode now set in app.llm (MED-L3), so identical inputs really do
+    # yield identical extraction (temp=0 alone is NOT reproducible on a GPU — the
+    # sampler still varies without a seed; that's the gap MED-L3 closes). A money
+    # decision must be reproducible and auditable. Email *copy* is generated
+    # separately by /draft at a higher temperature, so warmth is unaffected.
     llm = get_llm(temperature=0)
 
     sender = req.campaignConstraints.senderName or "Pluvus Partnerships"

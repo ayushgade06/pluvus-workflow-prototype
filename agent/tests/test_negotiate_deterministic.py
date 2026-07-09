@@ -21,6 +21,17 @@ pytest.importorskip("langgraph", reason="langgraph not installed (ai extra)")
 from app.routes import negotiate as neg_mod  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _force_rules_strategy(monkeypatch):
+    """This file tests the DETERMINISTIC rules engine (`_decide_action` + its band
+    math via `_langgraph_negotiate`). Since MED-L1 flipped the default strategy to
+    `llm`, force `rules` explicitly so these assertions exercise the path they are
+    about (rather than routing through the LLM path first). The fake LLMs below
+    return rules-shaped extraction output.
+    """
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "rules")
+
+
 REC = 300.0
 CEIL = 500.0
 

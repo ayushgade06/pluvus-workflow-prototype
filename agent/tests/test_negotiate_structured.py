@@ -43,7 +43,15 @@ def _req(reply="How about $480?", floor=100, ceiling=500):
 
 
 def _patch_llm(monkeypatch, outputs):
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.2: FakeLLM(outputs))
+    # This file tests the DETERMINISTIC rules path (structured extraction →
+    # _decide_action). MED-L1 flipped the default strategy to `llm`, so force
+    # `rules` explicitly to exercise the path these assertions are about (incl.
+    # the malformed-output-raises case). Accept num_predict so the fake matches
+    # the real get_llm signature (MED-L2) if the rules path ever threads it.
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "rules")
+    monkeypatch.setattr(
+        neg_mod, "get_llm", lambda temperature=0.2, num_predict=None: FakeLLM(outputs)
+    )
 
 
 def test_rate_proposal_counters_via_structured_path(monkeypatch):
