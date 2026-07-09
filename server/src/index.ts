@@ -1,119 +1,53 @@
 import "dotenv/config";
-import express from "express";
-import { prisma } from "./db/index.js";
-import queuesRouter from "./routes/queues.js";
-import webhooksRouter from "./routes/webhooks.js";
-import observabilityRouter from "./routes/observability.js";
-import campaignsRouter from "./routes/campaigns.js";
-import workflowsRouter from "./routes/workflows.js";
-import manualQueueRouter from "./routes/manualQueue.js";
-import creatorsRouter from "./routes/creators.js";
-import paymentRouter from "./routes/payment.js";
-import brandDecisionRouter from "./routes/brandDecision.js";
-import uploadsRouter from "./routes/uploads.js";
-import { startWorkers } from "./workers/index.js";
+import type { Server } from "node:http";
+import { createApp } from "./app.js";
+import { startWorkers, stopWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
+import { processRole, runsApi, runsWorkers, runsScheduler, type ProcessRole } from "./processRole.js";
 
-const app = express();
+// ---------------------------------------------------------------------------
+// Unified entrypoint (HARD-A1)
+// ---------------------------------------------------------------------------
+// Starts only the components selected by PROCESS_ROLE (api | worker | scheduler
+// | all). Default "all" keeps the original single-process behavior; a split
+// deploy runs `api`, `worker`, and a SINGLE `scheduler` as separate processes
+// (see docker-compose.yml + the `start:api|start:worker|start:scheduler` npm
+// scripts). This lets the worker fleet scale independently of the API and stops
+// every API replica from also running its own poller (the split-topology bug).
+
+const role: ProcessRole = processRole();
 const port = process.env["PORT"] ? Number(process.env["PORT"]) : 3001;
 
-// ---------------------------------------------------------------------------
-// Webhooks (Phase 6) — MUST be mounted before express.json().
-// ---------------------------------------------------------------------------
-// Nylas signs the RAW request body; signature verification needs the exact
-// bytes, so this route uses a raw body parser. express.json() would consume the
-// stream and re-parsing would not reproduce the original bytes. GET (challenge)
-// carries no body, so the raw parser is a harmless no-op there.
-app.use("/webhooks", express.raw({ type: "*/*", limit: "2mb" }), webhooksRouter);
+let httpServer: Server | null = null;
 
-app.use(express.json());
+if (runsApi(role)) {
+  const app = createApp();
+  httpServer = app.listen(port, () => {
+    console.log(`[server] (${role}) API listening on http://localhost:${port}`);
+  });
+}
 
-// ---------------------------------------------------------------------------
-// Health endpoints
-// ---------------------------------------------------------------------------
+if (runsWorkers(role)) {
+  startWorkers();
+  console.log(`[server] (${role}) workers started`);
+}
 
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "server", timestamp: new Date().toISOString() });
-});
+if (runsScheduler(role)) {
+  startScheduler();
+  console.log(`[server] (${role}) scheduler started (single leader)`);
+}
 
-/** DB health: verifies the Prisma client can reach PostgreSQL. */
-app.get("/health/db", async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: "ok", service: "database", timestamp: new Date().toISOString() });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(503).json({ status: "error", service: "database", message });
-  }
-});
+console.log(`[server] process role: ${role}`);
 
-// ---------------------------------------------------------------------------
-// Phase 4 — Queue routes + workers
-// ---------------------------------------------------------------------------
-
-app.use("/queues", queuesRouter);
-
-// ---------------------------------------------------------------------------
-// Phase 9 — Observability dashboard APIs (read-only)
-// ---------------------------------------------------------------------------
-
-app.use("/observability", observabilityRouter);
-
-// ---------------------------------------------------------------------------
-// Phase 10 — Workflow Builder APIs
-// ---------------------------------------------------------------------------
-
-app.use("/campaigns", campaignsRouter);
-app.use("/workflows", workflowsRouter);
-
-// ---------------------------------------------------------------------------
-// Phase 11 — Manual Queue (escalated creators + brand notifications)
-// ---------------------------------------------------------------------------
-
-app.use("/manual-queue", manualQueueRouter);
-
-// Creator roster + CSV import — used by the enrollment UI.
-app.use("/creators", creatorsRouter);
-
-// ---------------------------------------------------------------------------
-// Phase 15 — Payment Info: hosted payout-information page (server-rendered)
-// ---------------------------------------------------------------------------
-// GET/POST /payment/:token — the creator-facing payout form linked from the
-// Payment Info email. Self-contained HTML; no SPA/router dependency.
-
-app.use("/payment", paymentRouter);
-
-// ---------------------------------------------------------------------------
-// Manual Escalation Resolution — brand-decision one-click magic links
-// ---------------------------------------------------------------------------
-// GET /brand-decision/:token/{approve,reject,counter,handoff} — the brand-facing
-// one-click actions linked from the actionable escalation email. Resolves a
-// BrandDecision deterministically and auto-resumes the workflow. Self-contained
-// HTML; peer of the free-text email reply.
-
-app.use("/brand-decision", brandDecisionRouter);
-
-// ---------------------------------------------------------------------------
-// Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)
-// ---------------------------------------------------------------------------
-// POST /uploads — stores a brand-uploaded PDF via the local file-storage seam
-// and returns a reference the builder persists in the Content Brief node config.
-
-app.use("/uploads", uploadsRouter);
-
-startWorkers();
-startScheduler();
-
-const server = app.listen(port, () => {
-  console.log(`[server] listening on http://localhost:${port}`);
-});
-
-// Graceful shutdown — stop accepting requests, drain workers, then exit.
+// Graceful shutdown — stop only the components this process started, in the safe
+// order: stop accepting HTTP, then drain workers + the scheduler.
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[server] ${signal} received — shutting down`);
-  server.close();
-  const { stopWorkers } = await import("./workers/index.js");
-  await Promise.all([stopWorkers(), stopScheduler()]);
+  console.log(`[server] ${signal} received — shutting down (${role})`);
+  if (httpServer) httpServer.close();
+  const tasks: Promise<unknown>[] = [];
+  if (runsWorkers(role)) tasks.push(stopWorkers());
+  if (runsScheduler(role)) tasks.push(stopScheduler());
+  await Promise.all(tasks);
   console.log("[server] shutdown complete");
   process.exit(0);
 }

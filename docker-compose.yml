@@ -1,5 +1,14 @@
-# Optional — only needed from Phase 2 (Postgres) and Phase 4 (Redis) onward.
-# Run with: npm run infra:up
+# Infra (Postgres + Redis) plus the split app topology (HARD-A1).
+#
+# Infra only:      npm run infra:up   (docker compose up -d postgres redis)
+# Full split app:  docker compose --profile app up -d
+#
+# HARD-A1 split topology: ONE image (server/Dockerfile), three roles selected by
+# PROCESS_ROLE. `worker` scales horizontally (--scale worker=N); `scheduler` is a
+# SINGLE leader — do NOT scale it (N schedulers = N pollers hammering the same due
+# instances, the exact bug this split fixes). The `app` profile keeps these out of
+# the default `infra:up` so local dev (npm run dev, PROCESS_ROLE unset = "all")
+# is unchanged.
 services:
   postgres:
     image: postgres:16-alpine
@@ -26,6 +35,54 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # --- Split app topology (profile: app) ------------------------------------
+  # Shared build for all three roles; each overrides PROCESS_ROLE + the command.
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      PROCESS_ROLE: api
+      PORT: "3001"
+    env_file: [.env]
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    command: ["node", "dist/index.js"]
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      PROCESS_ROLE: worker
+    env_file: [.env]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # Scale horizontally: docker compose --profile app up -d --scale worker=3
+    command: ["node", "dist/index.js"]
+
+  scheduler:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      PROCESS_ROLE: scheduler
+    env_file: [.env]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # SINGLE leader — never scale this service.
+    deploy:
+      replicas: 1
+    command: ["node", "dist/index.js"]
 
 volumes:
   postgres_data:
