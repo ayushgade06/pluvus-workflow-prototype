@@ -122,7 +122,9 @@ consume a negotiation round**.
 Inputs:
 - `intent` — one of `RATE_DISCOVERY | RATE_PROPOSAL | NEGOTIATION | OBJECTION | ACCEPTANCE | REJECTION`
 - `creator_rate_raw` — the loosely‑typed rate the model extracted from the reply
-- `recommended_offer` — midpoint of the price band `floor + (ceiling − floor) × 0.5`
+- `recommended_offer` — `floor + (ceiling − floor) × recommendedOfferPosition`
+  (templates set position `0.5` → the band midpoint; code default `0.0` = floor
+  when the config omits it — see §8)
 - `ceiling_rate` — the hard cap (band ceiling)
 - `prior_offer` — the concrete rate **we** last put on the table (`None` if we
   never named one). This is both "the number they can say yes to" and the base
@@ -377,21 +379,28 @@ From `.env.example` (root) and where each is read:
 Set on the `NEGOTIATION` node from the template (`server/src/templates/index.ts`):
 `maxRounds`, `minBudget`/`maxBudget`, `commissionRate`, `approvalMode`.
 
-| Template | minBudget | maxBudget | maxRounds | commissionRate | approvalMode |
-|---|---|---|---|---|---|
-| affiliate | 0 | 500 | 3 | 15% | auto |
-| hybrid | 200 | 2000 | 4 | 10% | auto |
-| fixed_fee | 500 | 5000 | 3 | — | manual |
+| Template | minBudget | maxBudget | maxRounds | commissionRate | approvalMode | offerPosition |
+|---|---|---|---|---|---|---|
+| affiliate | 50 | 500 | 3 | 15% | auto | 0.5 |
+| hybrid | 200 | 2000 | 4 | 10% | auto | 0.5 |
+| fixed_fee | 500 | 5000 | 3 | — | manual | 0.5 |
 
-The recommended offer is the **midpoint** of `minBudget`/`maxBudget`. When a
-workflow is created from a template, `brandName`/`senderName`/`brandDescription`
-are stamped into every node's config.
+The recommended opening offer is `floor + (ceiling − floor) × recommendedOfferPosition`.
+The shipped templates set `recommendedOfferPosition: 0.5`, so the recommended
+offer is the **band midpoint** for template-built campaigns (HARD-N3). When a
+config OMITS the position, the agent's code default is `0.0` (open at the floor —
+a conservative anchor-low fallback, *not* the template default). A fee band must
+have a floor `> 0` when the ceiling is positive (HARD-N3 validation:
+`INVALID_ZERO_FLOOR`), so the recommended offer can never compute to `$0` (the
+old affiliate `minBudget: 0` bug). When a workflow is created from a template,
+`brandName`/`senderName`/`brandDescription` are stamped into every node's config.
 
 ---
 
 ## 9. Worked examples
 
-Assume band `[350, 500]` (recommended/midpoint = 425), `maxRounds = 4`.
+Assume band `[350, 500]` with `recommendedOfferPosition = 0.5` (recommended =
+midpoint = 425), `maxRounds = 4`.
 
 **A. Bare interest, no number yet**
 > Creator: *"Yes, I'd love to work with you!"*

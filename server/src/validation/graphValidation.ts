@@ -438,6 +438,17 @@ function validateNodeConfig(n: GNode): ValidationIssue | null {
         return err(n, "MISSING_BUDGET", "Negotiation needs a min and max budget.");
       if (max < min)
         return err(n, "INVALID_BUDGET_RANGE", "Negotiation max budget is below the min budget.");
+      // HARD-N3: a fee band with a positive ceiling must have a positive floor. A
+      // zero (or negative) min with a positive max opens the recommended offer at
+      // $0 (floor-anchored) and lets the agent send a $0 fee — the $0-offer bug.
+      // A truly commission-only campaign has no fee band at all (max 0), which is
+      // allowed; only min<=0 WITH max>0 is rejected.
+      if (max > 0 && min <= 0)
+        return err(
+          n,
+          "INVALID_ZERO_FLOOR",
+          "Negotiation min budget must be greater than 0 when a max budget is set (a $0 floor opens the offer at $0).",
+        );
       return null;
     }
     case "CONTENT_BRIEF":

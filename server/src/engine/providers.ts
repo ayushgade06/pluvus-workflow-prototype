@@ -275,8 +275,10 @@ export function buildNegotiationRequest(
     typeof config["rewardDescription"] === "string" && config["rewardDescription"].trim().length > 0
       ? config["rewardDescription"]
       : undefined;
-  // M1: optional band position for the recommended opening offer (0..1). Passed
-  // through only when a finite number; Python clamps + defaults to 0.5.
+  // M1/HARD-N3: optional band position for the recommended opening offer (0..1).
+  // Passed through only when a finite number; the agent clamps to [0,1] and falls
+  // back to 0.0 (open at floor) when omitted. The shipped templates set 0.5 (band
+  // midpoint) explicitly so a bare "I'm interested" opens mid-band, not at $0.
   const recommendedOfferPosition =
     typeof config["recommendedOfferPosition"] === "number" && Number.isFinite(config["recommendedOfferPosition"])
       ? config["recommendedOfferPosition"]

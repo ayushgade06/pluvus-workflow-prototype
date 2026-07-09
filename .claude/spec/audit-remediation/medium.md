@@ -170,15 +170,16 @@ Run `looks_like_injection` on `/negotiate` and `/draft` inputs; escape/strip `</
 
 ---
 
-## [MED-S3] Auth + validation on /uploads
+## [MED-S3] Content validation on /uploads
 
 **Where**
-- `server/src/routes/uploads.ts:37` — unauthenticated (also covered by CRITICAL-5's blanket auth).
-- `server/src/routes/uploads.ts:23-53` — extension+mime check only; content not validated.
+- `server/src/routes/uploads.ts:23-53` — extension+mime check only; file content is not validated.
 
 **Fix**
-Behind the CRITICAL-5 auth, add `%PDF-` magic-byte verification and a per-IP quota (disk-fill DoS; an
-unvalidated "PDF" is later emailed to creators as the brand's brief).
+Add `%PDF-` magic-byte verification so an unvalidated "PDF" can't be stored and later emailed to creators
+as the brand's brief. (Scope note 2026-07-09: endpoint *authentication* and per-IP/rate quotas are the
+**parent system's** perimeter responsibility — see the CRITICAL-5 removal — so they're out of scope here.
+This item is now content-validation only.)
 
 ---
 
@@ -194,14 +195,15 @@ prefetching the link can't silently auto-resolve the decision.
 
 ---
 
-## [MED-S5] Payment token expiry + rate limiting
+## [MED-S5] Payment token expiry
 
 **Where**
-- `prisma/schema.prisma:526-547` — `PaymentInfo` has no expiry.
-- No rate limiter anywhere on the Express app.
+- `prisma/schema.prisma:526-547` — `PaymentInfo` has no expiry; a leaked/forwarded link works forever.
 
 **Fix**
-Add `expiresAt` (e.g. 30 days) checked in the GET/POST payment routes; rate-limit the token endpoints.
+Add `expiresAt` (e.g. 30 days) checked in the GET/POST payment routes. This is the component's own token
+lifecycle. (Scope note 2026-07-09: **rate-limiting** the token endpoints is the parent system's perimeter
+responsibility — see the CRITICAL-5 removal — and is dropped from this item.)
 
 ---
 

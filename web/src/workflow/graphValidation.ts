@@ -422,6 +422,15 @@ function validateNodeConfig(n: GraphNode): ValidationIssue | null {
         return cfgErr(n, "MISSING_BUDGET", "Negotiation needs a min and max budget.");
       if (max < min)
         return cfgErr(n, "INVALID_BUDGET_RANGE", "Negotiation max budget is below the min budget.");
+      // HARD-N3: a fee band with a positive ceiling must have a positive floor. A
+      // $0 floor with a positive max opens the recommended offer at $0 (the
+      // $0-offer bug). Commission-only campaigns (max 0) are unaffected.
+      if (max > 0 && min <= 0)
+        return cfgErr(
+          n,
+          "INVALID_ZERO_FLOOR",
+          "Negotiation min budget must be greater than 0 when a max budget is set (a $0 floor opens the offer at $0).",
+        );
       return null;
     }
     case "CONTENT_BRIEF": {

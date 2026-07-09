@@ -136,32 +136,21 @@ its current semantics are the bug).
 
 ---
 
-## [CRITICAL-5] Entire Express API has no authentication
+## [CRITICAL-5] ~~Entire Express API has no authentication~~ — REMOVED (out of scope)
 
-**Where**
-- `server/src/index.ts:54-102` — all routes mounted with zero auth: `/campaigns`, `/workflows`, `/creators`,
-  `/manual-queue`, `/queues`, `/observability`, `/uploads`.
-- `server/src/observability/repository.ts:210-231,344-355,407-419` — `/observability` returns creator
-  name/email/handle, full inbound+outbound email bodies, negotiation rates, and guard-leak payloads
-  (floor/ceiling values).
-- `agent/app/security.py:81-91` — the AI service's `AGENT_API_KEY` auth is off by default with only a log warning.
+**Removed 2026-07-09.** This outreach/negotiation system is a **component inside a larger parent system**.
+Perimeter security — API authentication, session/gateway, and rate limiting — is the **parent system's
+responsibility**, not this component's. The original CRITICAL-5 (add auth middleware to the Express API,
+`AGENT_API_KEY` startup gate) is therefore out of scope and has been dropped.
 
-**Problem**
-Anyone who can reach the server reads all creator PII, every email body, and the internal band values
-(via leak payloads). Anyone can mutate campaigns/workflows or burn LLM compute.
+Still in scope and NOT affected by this removal:
+- **CRITICAL-1** — sender-identity verification on brand decisions is *negotiation correctness* (a creator
+  must not resolve their own escalation), not perimeter auth. Keep.
+- Observability leak-value masking moves to **EASY-S2** (defense-in-depth for DB/log access), independent
+  of any API auth.
 
-**Fix**
-1. Add auth middleware (shared secret header or session) in front of everything **except** `/webhooks`
-   (HMAC-verified), `/payment/:token`, `/brand-decision/:token`, and `/health`.
-2. Make the AI service fail startup when `AGENT_API_KEY` is unset outside dev (`security.py:81-91`).
-3. Mask leak values in observability event payloads (see EASY for the redaction detail).
-
-**Verify**
-- Unauthenticated GET `/observability` → 401. Authenticated → 200. `/webhooks` and token pages still work
-  without the app auth header.
-
-**Blast radius**
-Every route registration, the web frontend (must send the auth header/session), AI service startup.
+(Numbering note: the original CRITICAL-6 below is now the fifth Critical; its old `[CRITICAL-6]` tag is
+retained for stable cross-references, but there are 5 active Criticals, not 6.)
 
 ---
 

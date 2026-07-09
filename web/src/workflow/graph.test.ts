@@ -27,7 +27,10 @@ function test(name: string, fn: () => void): void {
 const legacyDraft: DraftNode[] = [
   { id: "a", type: "INITIAL_OUTREACH", order: 0, config: { subjectTemplate: "Hi", bodyTemplate: "B" } },
   { id: "b", type: "FOLLOW_UP", order: 1, config: { bodyTemplate: "F", intervals: [3] } },
-  { id: "c", type: "NEGOTIATION", order: 2, config: { minBudget: 0, maxBudget: 500 } },
+  // HARD-N3: a positive floor — a $0 floor with a positive ceiling is now an
+  // INVALID_ZERO_FLOOR config error (these tests exercise graph structure, not
+  // the zero-floor edge case).
+  { id: "c", type: "NEGOTIATION", order: 2, config: { minBudget: 50, maxBudget: 500 } },
   { id: "d", type: "REWARD_SETUP", order: 3, config: {} },
 ];
 

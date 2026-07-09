@@ -39,7 +39,7 @@ five are true deploy-blockers (visible wrong outcomes to real brands/creators).
 | Observability | 2 | **No** — needs metrics/tracing/alert stack (HARD-O*) |
 | LLM Integration | 5 | Mostly (MED-L*) |
 | Knowledge Handling | 3 | Yes (HARD-K*) |
-| Security | 3 | Yes (CRITICAL-S*, MED) |
+| Security | 3 | Component-scope only (CRITICAL-1 sender identity, MED-S*, EASY-S*); perimeter auth is the parent system's job — see CRITICAL-5 removal |
 | Testing | 4 | **No** — needs real ≥500-case dataset + CI (HARD-T*) |
 
 Three areas (Scalability, Observability, Testing) cannot reach 8 with a code diff alone; the
@@ -48,7 +48,8 @@ specs cover the code scaffolding, but the score only moves once the surrounding 
 ## Tier files
 
 - [`PRINCIPLES.md`](./PRINCIPLES.md) — **read first.** LLM-negotiates / code-guards design principle (Project Deal alignment).
-- [`critical.md`](./critical.md) — deploy blockers: wrong outcomes to real parties, no auth, lost data.
+- [`RUN_PLAN.md`](./RUN_PLAN.md) — **implementation order.** 50 fixes in 5 dependency-ordered batches of 10, with parallel lanes and single-file-owner rules.
+- [`critical.md`](./critical.md) — deploy blockers: wrong outcomes to real parties, lost data, sender-identity gap (5 active; CRITICAL-5 API-auth removed as parent-system scope).
 - [`hard.md`](./hard.md) — structural redesigns: decision seam, prompt rearchitecture, infra splits, eval/observability scaffolding.
 - [`medium.md`](./medium.md) — correctness + safety hardening that isn't a redesign.
 - [`easy.md`](./easy.md) — localized fixes, small diffs, low risk.
@@ -67,4 +68,7 @@ specs cover the code scaffolding, but the score only moves once the surrounding 
   deterministic `_decide_action` (line 337) makes the money call; `llm` (`NEGOTIATION_STRATEGY=llm`) = model picks
   action+rate, `_apply_decision_guards` (line 559) clamps.
 - **Money safety is the strength** — floor/ceiling clamps, round caps, escalate-on-uncertainty are code-enforced.
-  **Identity + perimeter are the weakness** — no sender verification, no API auth.
+  **Sender identity is the weakness in scope** — no sender verification (CRITICAL-1). **Perimeter security
+  (API auth, session, rate limiting) is OUT OF SCOPE** — this is a component inside a larger parent system
+  that owns the perimeter (see the CRITICAL-5 removal note). Only the component's own correctness/data
+  lifecycle stays: sender identity, token expiry, content validation, leak-value masking.

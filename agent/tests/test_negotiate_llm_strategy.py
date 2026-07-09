@@ -77,13 +77,14 @@ FLOOR = 100.0
 CEILING = 500.0
 
 
-def guard(action, rate, is_final_round=False):
+def guard(action, rate, is_final_round=False, creator_ask=None):
     return neg_mod._apply_decision_guards(
         action,
         rate,
         floor_rate=FLOOR,
         ceiling_rate=CEILING,
         is_final_round=is_final_round,
+        creator_ask=creator_ask,
     )
 
 
@@ -147,13 +148,33 @@ def test_unrecognized_action_escalates():
 
 def test_final_round_counter_closes_at_offer():
     # On the last round we cannot counter again — close at the (clamped) number.
+    # The creator's ask (460) is within the ceiling, so closing is genuine.
+    d = guard("COUNTER", 460, is_final_round=True, creator_ask=460)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 460.0
+
+
+def test_final_round_counter_closes_when_ask_unknown():
+    # No creator_ask read → retain the prior in-band close behavior (fail-safe:
+    # a miss on the ask extractor must not suppress a legitimate final close).
     d = guard("COUNTER", 460, is_final_round=True)
     assert d.action == "ACCEPT"
     assert d.proposed_rate == 460.0
 
 
-def test_final_round_counter_above_ceiling_closes_at_ceiling():
-    d = guard("COUNTER", 700, is_final_round=True)
+def test_final_round_over_ceiling_ask_escalates_not_false_accept():
+    # CRITICAL-4 / Case-19: creator firmly asks ABOVE the ceiling on the final
+    # round. Coercing the model's COUNTER to ACCEPT at the clamped-down ceiling
+    # would invent an agreement the creator explicitly rejected. We ESCALATE.
+    d = guard("COUNTER", 700, is_final_round=True, creator_ask=650)
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
+
+
+def test_final_round_in_ceiling_ask_still_closes():
+    # Creator's ask is within ceiling on the final round → genuine close (the
+    # model countered high at 700, but the creator only asked 480 ≤ ceiling 500).
+    d = guard("COUNTER", 700, is_final_round=True, creator_ask=480)
     assert d.action == "ACCEPT"
     assert d.proposed_rate == CEILING
 
@@ -260,7 +281,8 @@ def test_llm_strategy_clamps_below_floor_counter(monkeypatch):
 
 
 def test_llm_strategy_final_round_closes(monkeypatch):
-    # round 4 of 5 → next counter would hit the cap → final round → close.
+    # round 4 of 5 → next counter would hit the cap → final round → close. The
+    # default reply asks $480 (≤ ceiling 500), so the close is genuine.
     _patch_llm(
         monkeypatch,
         ['{"action": "COUNTER", "rate": 450, "response": "One more push?", "reasoning": "close"}'],
@@ -268,6 +290,24 @@ def test_llm_strategy_final_round_closes(monkeypatch):
     resp = neg_mod._langgraph_negotiate(_req(round_=4, max_rounds=5))
     assert resp.action == "ACCEPT"
     assert resp.proposedTerms == {"rate": 450.0}
+
+
+def test_llm_strategy_case19_final_round_over_ceiling_escalates(monkeypatch):
+    # CRITICAL-4 / Case-19 end to end: on the FINAL round the creator firmly asks
+    # $650 (above ceiling 500) and won't budge. The model tries to COUNTER; the
+    # guard reads the creator's over-ceiling ask and ESCALATES instead of coercing
+    # a false ACCEPT at the clamped $500. The pre-guard "deal" draft is dropped so
+    # no "congrats on our agreed rate" email can ship (HARD-N1 §4).
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 500, "response": "Can we meet at $500?", "reasoning": "cap"}'],
+    )
+    resp = neg_mod._langgraph_negotiate(
+        _req(reply="My absolute floor is $650, and I won't budge.", round_=4, max_rounds=5),
+    )
+    assert resp.action == "ESCALATE"
+    assert resp.proposedTerms is None
+    assert resp.responseDraft is None
 
 
 def test_llm_strategy_falls_back_to_rules_on_bad_llm_output(monkeypatch):

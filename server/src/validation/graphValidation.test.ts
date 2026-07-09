@@ -31,7 +31,10 @@ function lnode(id: string, type: string, order: number, config: Record<string, u
 
 const OUTREACH_CFG = { subjectTemplate: "Hi", bodyTemplate: "Body" };
 const FOLLOWUP_CFG = { bodyTemplate: "Nudge", intervals: [3] };
-const NEG_CFG = { minBudget: 0, maxBudget: 500 };
+// HARD-N3: a positive floor (a $0 floor with a positive max is now rejected as
+// INVALID_ZERO_FLOOR — see the dedicated test below). These structural tests want
+// a config-VALID negotiation node so they exercise graph structure, not budget.
+const NEG_CFG = { minBudget: 50, maxBudget: 500 };
 const BRIEF_CFG = { briefFileRef: "ref-123" };
 
 function codes(res: { errors: { code: string }[] }): string[] {
@@ -194,6 +197,28 @@ test("negotiation max below min is rejected", () => {
   const res = validateWorkflowGraph(nodes);
   assert.equal(res.valid, false);
   assert.ok(codes(res).includes("INVALID_BUDGET_RANGE"));
+});
+
+test("HARD-N3: zero floor with a positive ceiling is rejected", () => {
+  // A fee band [$0, $500] opens the recommended offer at $0 — the $0-offer bug.
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { minBudget: 0, maxBudget: 500 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_ZERO_FLOOR"));
+});
+
+test("HARD-N3: a positive floor is accepted", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { minBudget: 50, maxBudget: 500 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.ok(!codes(res).includes("INVALID_ZERO_FLOOR"));
 });
 
 test("empty graph is rejected", () => {

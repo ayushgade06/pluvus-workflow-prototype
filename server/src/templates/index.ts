@@ -66,11 +66,20 @@ const affiliateNodes: NodeSnapshot[] = [
     type: "NEGOTIATION",
     order: 3,
     config: {
-      minBudget: 0,
+      // HARD-N3: this is a fee band with a POSITIVE ceiling, so the floor must be
+      // > 0 too. Previously minBudget was 0, which — combined with the old
+      // open-at-floor default (position 0.0) — computed a recommended opening
+      // offer of $0 for a bare "I'm interested" (the $0-offer bug). A small
+      // positive floor + an explicit midpoint position (below) fixes it.
+      minBudget: 50,
       maxBudget: 500,
       maxRounds: 3,
       approvalMode: "auto",
       commissionRate: 15,
+      // HARD-N3: open at the BAND MIDPOINT rather than the floor. Threaded through
+      // buildNegotiationRequest → CampaignConstraints.recommendedOfferPosition and
+      // clamped to [0,1] in the agent; 0.5 = floor + (ceiling-floor)*0.5.
+      recommendedOfferPosition: 0.5,
     },
   },
   {
@@ -140,6 +149,8 @@ const hybridNodes: NodeSnapshot[] = [
       maxRounds: 4,
       approvalMode: "auto",
       commissionRate: 10,
+      // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
+      recommendedOfferPosition: 0.5,
     },
   },
   {
@@ -208,6 +219,8 @@ const fixedFeeNodes: NodeSnapshot[] = [
       maxBudget: 5000,
       maxRounds: 3,
       approvalMode: "manual",
+      // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
+      recommendedOfferPosition: 0.5,
     },
   },
   {

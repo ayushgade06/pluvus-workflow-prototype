@@ -104,6 +104,16 @@ def test_scrub_preserves_legitimate_bracket_content():
         assert keep in out, f"scrub wrongly removed {keep!r}: {out!r}"
 
 
+def test_scrub_preserves_lowercase_instruction_copy():
+    # EASY-P6: legit lowercase bracketed COPY (an instruction/CTA phrase, no
+    # placeholder keyword) must survive — it is not a name/label to fill.
+    for keep in ["[link to media kit]", "[click here]", "[insert here]", "[see below]"]:
+        body = f"Grab the details {keep} and reply — Barclays"
+        out = _scrub_brand(body, "Barclays")
+        assert keep in out, f"scrub wrongly rewrote copy {keep!r}: {out!r}"
+        assert "Barclays" in out
+
+
 def test_scrub_multiple_placeholders_in_one_body():
     body = "Hi [Name], <Signature> here at [Company]. Best,\n[Your Name]"
     out = _scrub_brand(body, "Barclays")

@@ -67,18 +67,37 @@ def test_rate_proposal_counters_via_structured_path(monkeypatch):
     assert resp.proposedTerms == {"rate": 290.0}
 
 
-def test_empty_response_field_triggers_retry_then_succeeds(monkeypatch):
-    # First output has an empty `response` (schema-invalid) → retry → valid.
+def test_extraction_drives_decision_and_placeholder_draft(monkeypatch):
+    # HARD-P1: the rules prompt is now PURE EXTRACTION — it emits no `response`
+    # copy. A bare {intent, creatorRateMentioned} is valid (nothing required to be
+    # non-empty), the extracted rate drives the deterministic decision, and
+    # responseDraft is a neutral, decision-derived placeholder (never model copy),
+    # because /draft renders the real email from the guarded decision.
     _patch_llm(
         monkeypatch,
-        [
-            '{"intent": "ACCEPTANCE", "response": "", "creatorRateMentioned": null}',
-            '{"intent": "ACCEPTANCE", "response": "Welcome aboard!", "creatorRateMentioned": 250}',
-        ],
+        ['{"intent": "ACCEPTANCE", "creatorRateMentioned": 250}'],
     )
     resp = neg_mod._langgraph_negotiate(_req(reply="Sounds good, $250 works"))
     assert resp.action == "ACCEPT"
-    assert resp.responseDraft == "Welcome aboard!"
+    assert resp.proposedTerms == {"rate": 250.0}
+    # Placeholder is an internal marker, not a ready-to-send email.
+    assert resp.responseDraft is not None
+    assert "internal" in resp.responseDraft.lower()
+
+
+def test_extracted_rate_not_in_reply_is_dropped(monkeypatch):
+    # HARD-P1 substring backstop: the model claims the creator asked $999, but the
+    # creator's message contains no such number (they only said "I'm interested").
+    # The hallucinated rate must be dropped → no number on the table → a bare
+    # "interested" PRESENTS the recommended offer rather than accepting a fabricated
+    # figure. (floor 100, ceiling 500, position 0.0 → recommended 100.)
+    _patch_llm(
+        monkeypatch,
+        ['{"intent": "ACCEPTANCE", "creatorRateMentioned": 999}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req(reply="Yes, I'm interested!"))
+    assert resp.action == "PRESENT_OFFER"
+    assert resp.proposedTerms == {"rate": 100.0}
 
 
 def test_persistently_malformed_raises_not_silent_decision(monkeypatch):

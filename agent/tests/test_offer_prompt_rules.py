@@ -91,7 +91,7 @@ def test_commission_percentage_not_repeated_as_content():
     assert "Commission —" not in p and "Commission -" not in p
     # The commission bullet exists and is explicitly single-shot.
     assert "10% commission" in p
-    assert "state this only once" in p
+    assert "state the percentage here and only here" in p
     # The deal-structure point must NOT carry the percentage (it's the duplicate
     # source): the "10%" must not sit on the "Deal structure" line.
     deal_line = next(ln for ln in p.splitlines() if "Deal structure" in ln)
@@ -155,7 +155,7 @@ def test_offer_prompt_pins_commission_and_forbids_creator_echo():
     and (b) explicitly forbid repeating/adopting any other percentage the creator
     names."""
     p = _prompt()  # ctx commissionRate = 10
-    assert "set by the brand and is EXACTLY 10%" in p
+    assert "it is EXACTLY 10%" in p
     # The anti-echo instruction: ignore any other percentage the creator wrote.
     collapsed = " ".join(p.split())
     assert "IGNORE their number" in collapsed

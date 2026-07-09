@@ -108,8 +108,10 @@ Truncate/redact `raw` in the repair suffix and remove it from HTTPException deta
   written to event payloads and served raw.
 
 **Fix**
-Store/serve a masked marker (e.g. `leaks: ["ceiling:<redacted>"]`) instead of the actual band value. (The
-endpoint itself is locked down by CRITICAL-5; this is defense-in-depth for anyone with DB/log access.)
+Store/serve a masked marker (e.g. `leaks: ["ceiling:<redacted>"]`) instead of the actual band value.
+Defense-in-depth so the internal band value never sits raw in event payloads for anyone with DB/log
+access. (Endpoint-level auth is the parent system's job — see the CRITICAL-5 removal — so this masking is
+the component's own contribution to not leaking band values.)
 
 ---
 

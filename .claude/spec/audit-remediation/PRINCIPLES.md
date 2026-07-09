@@ -89,8 +89,11 @@ above ARE clamped, because they protect the brand from a bad/hostile decision, n
 ## How to read each spec against this doc
 
 - **Security, workflow-integrity, reliability, knowledge, observability, testing** issues are **orthogonal**
-  to who-negotiates — they stand regardless of the LLM-vs-rules question (a lost reply, an unauthenticated
-  API, or a wrong-fee email is a bug under any philosophy). Implement as written.
+  to who-negotiates — they stand regardless of the LLM-vs-rules question (a lost reply, a creator approving
+  their own escalation, or a wrong-fee email is a bug under any philosophy). Implement as written.
+  **Scope note:** perimeter security (API auth, session, rate limiting) is the **parent system's**
+  responsibility — this outreach system is a component inside a larger system. See the CRITICAL-5 removal.
+  Only the component's own correctness stays: sender identity, token expiry, content validation, masking.
 - **Negotiation / prompt / decision-seam** issues must follow the two roles above:
   - Anything that makes code *decide* → migrate to the LLM.
   - Anything that makes code *bound* hard money/safety limits → keep, and ensure a crossed bound forces a
