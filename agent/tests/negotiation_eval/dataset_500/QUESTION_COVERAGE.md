@@ -62,12 +62,18 @@ tightens it where the live model reveals a gap:
 
 ## CHANGE LOG
 
-_Code changes made in response to a found gap. Each entry: what failed, the fix,
-and the file:line._
+_Changes made in response to a found issue. Each entry: what failed, the fix,
+and where. Two classes: **CODE** (system couldn't answer) vs **ASSERT** (the
+model answered correctly but the dataset's `answer_pattern` was too strict — a
+false negative in the check, fixed in the dataset)._
 
-- _(none yet — offline fact audit found 0 gaps; live audit in progress. Fixes
-  land here as live failures surface a genuinely unanswerable / mis-answered
-  question type.)_
+- **[ASSERT] C-02 category-exclusivity** — model answered correctly
+  ("signing this will **not lock you out** of working with **other footwear or
+  athletic brands**") but `answer_pattern` required the literal phrase
+  `other brands`, which "other footwear or athletic brands" doesn't contain.
+  Broadened the pattern to `exclusiv|no category|not required|lock you out|other
+  (footwear|athletic|brands)`. No code change — the system answered properly.
+  (`bank_c_answerable.json`)
 
 ---
 
