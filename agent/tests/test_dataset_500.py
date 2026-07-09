@@ -75,3 +75,13 @@ def test_conversations_well_formed(loader):
         assert len(c["turns"]) >= 2
         assert all(t.strip() for t in c["turns"])
         assert c["maxRounds"] >= 2
+
+
+def test_offline_fact_coverage_has_no_gaps():
+    """Every answerable/multi-question/fixed-term question topic must be backed by
+    a fact that actually appears in the assembled /draft prompt — otherwise the
+    model cannot answer it no matter how good it is. Model-independent (assembles
+    the prompt via the real helpers, no network). Guards against a future edit
+    dropping a knowledge field out of the prompt."""
+    import audit_coverage  # noqa: PLC0415
+    assert audit_coverage.audit() == 0, "a question topic has no backing fact in the draft prompt"
