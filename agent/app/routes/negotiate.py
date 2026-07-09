@@ -1265,15 +1265,24 @@ answers it precisely:
   "deliverables", "timeline". Include a value if the creator tried to change that
   term in ANY direction — increase, decrease, add, remove, swap, or reschedule.
   Map their ask to a term:
-    * a different commission % (higher OR lower) → "commission"
-    * extra, fewer, or different product/samples/perks → "perk"
+    * ANY change to the commission — a different % (higher/lower), OR its
+      STRUCTURE/DURATION/GUARANTEE: dropping it, keeping it "after the campaign" /
+      "evergreen" / "in perpetuity" / "forever" / "monthly", a guaranteed/minimum
+      payout, or an up-front ADVANCE against future commission → "commission"
+      (e.g. "keep the 10% after the campaign ends", "guarantee a $500 minimum
+      commission", "advance me $300 of commission up front", "drop the commission")
+    * extra, fewer, different, or ADDITIONAL product/samples/perks — including a
+      signing bonus, extra pairs, or giveaway product "on top of" the perk →
+      "perk" (e.g. "send a signing-bonus pair up front", "send five extra pairs
+      for a giveaway")
     * changing the deliverables — MORE, FEWER, dropping/skipping/removing any
       (e.g. "just 1 Reel and skip the Stories", "can I do fewer posts?", "swap
       the Reel for a post"), or a different platform → "deliverables"
     * a different go-live date or schedule (sooner, later, or extend) → "timeline"
-  "Skip", "drop", "remove", "cut", and "fewer" ALL count as trying to change that
-  term. Include a value only if they actually pushed on it; if they pushed none,
-  return [].
+  "Skip", "drop", "remove", "cut", "fewer", "extra", "more", "on top of",
+  "up front", "advance", "guarantee", "after the campaign", "evergreen", and
+  "in perpetuity" ALL count as trying to change that term. Include a value only if
+  they actually pushed on it; if they pushed none, return [].
 
 Return ONLY valid JSON with no explanation:
 {{"action": "ACCEPT|COUNTER|PRESENT_OFFER|REJECT|ESCALATE",
@@ -2046,11 +2055,11 @@ The email MUST:
   * the deliverables and content timeline (see the scope details below if
     provided; otherwise say they'll be finalized together — do NOT invent them)
   * how and when payment will be processed once deliverables are met
-{scope_block}- Invite them to reply with any questions
+{scope_block}{fixed_terms_block}- Invite them to reply with any questions
 - Keep it warm, professional, organized, and under 180 words
 
 Rules (strictly enforced):
-{rate_rule}
+{rate_rule}{fixed_terms_rule}
 - The ONLY company/brand named in this email is "{sender}". NEVER mention any
   other company, platform, or brand name (do not write "Pluvus" or any name
   other than "{sender}").
@@ -2210,6 +2219,15 @@ def _build_onboarding_prompt(
     # what was negotiated (e.g. references the agreed number the same way).
     history = _render_draft_history(req.history)
     history_block = ("\n" + history + "\n") if history else ""
+    # Bank-H fix: when the creator PUSHED a fixed term (commission/perk/
+    # deliverables/timeline) and we accepted the FEE, the onboarding email must
+    # still HOLD that term — otherwise accepting the fee reads as granting the
+    # push (e.g. H-09 "drop commission for a higher fee" → the welcome email must
+    # confirm the commission stays; H-14 evergreen commission must NOT be
+    # conceded). The offer prompt already does this via pushed_terms_guard; the
+    # onboarding prompt previously ignored pushedFixedTerms entirely.
+    ctx = req.campaignContext or {}
+    fixed_terms_block, fixed_terms_rule = _onboarding_fixed_terms_hold(req, ctx)
     return _ONBOARDING_PROMPT.format(
         name=req.creatorName,
         platform=req.creatorPlatform or "social media",
@@ -2220,7 +2238,56 @@ def _build_onboarding_prompt(
         rate_rule=rate_rule,
         scope_block=scope_block,
         history_block=history_block,
+        fixed_terms_block=fixed_terms_block,
+        fixed_terms_rule=fixed_terms_rule,
     )
+
+
+def _onboarding_fixed_terms_hold(req: DraftRequest, ctx: dict[str, Any]) -> tuple[str, str]:
+    """(block, rule) telling the onboarding email to HOLD any fixed term the
+    creator pushed on (commission/perk/deliverables/timeline). Both "" when they
+    pushed none. States the commission % / perk value where known so the email
+    confirms the standard term rather than silently omitting it."""
+    pushed = _normalize_pushed_terms(req.pushedFixedTerms)
+    if not pushed:
+        return "", ""
+    commission = _commission_rate(ctx)
+    reward = (req.rewardDescription or ctx.get("rewardDescription") or "").strip()
+    phrase = {
+        "commission": (
+            f"the {commission}% commission is a standard, fixed part of this "
+            f"campaign — it stays as-is (same rate, same duration, not advanced, "
+            f"minimum-guaranteed, or extended)"
+            if commission is not None
+            else "the commission structure is standard and fixed and cannot be changed"
+        ),
+        "perk": (
+            f"the product perk is fixed as {reward} — no extra or up-front product "
+            f"beyond that"
+            if reward
+            else "the product perk is a standard, fixed part of this campaign"
+        ),
+        "deliverables": "the deliverables are set by the brand and stay as agreed",
+        "timeline": "the go-live timeline is set by the brand and stays as agreed",
+    }
+    bits = "; ".join(phrase[t] for t in pushed)
+    block = (
+        f"- The creator asked to change a FIXED term. Confirm warmly but clearly "
+        f"that it stays standard: {bits}. Do NOT agree to the change or leave it "
+        f"ambiguous.\n"
+    )
+    named = ", ".join({
+        "commission": "the commission",
+        "perk": "the product perk",
+        "deliverables": "the deliverables",
+        "timeline": "the timeline",
+    }[t] for t in pushed)
+    rule = (
+        f"- The creator pushed to change {named}. The email MUST restate it as a "
+        f"standard, FIXED part of the campaign that is not changing — NEVER confirm "
+        f"or imply the requested change was granted.\n"
+    )
+    return block, rule
 
 
 def _commission_rate(ctx: dict[str, Any]) -> int | float | None:
