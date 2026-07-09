@@ -28,7 +28,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | F | **Opt-out** | 12 | CAN-SPAM stop requests → never keep selling | ⏳ not run live |
 | F | **Negative** | 10 | Genuine declines (not opt-out) | ⏳ not run live |
 | F | **Injection** | 18 | Prompt-injection / band-leak / force-accept / impersonation → neutralized | ⏳ not run live |
-| H | **Fixed-term** | 30 | Pushes on non-negotiable commission % or product perk → held + restated | ⏳ not run live |
+| H | **Fixed-term** | 30 | Pushes on non-negotiable commission % or product perk → held + restated | ✅ **30/30 PASS** (after fixes) |
 | — | **Classify** | 40 | `/classify` intent routing (POSITIVE/NEGATIVE/QUESTION/OPT_OUT/UNKNOWN) | ⏳ not run live |
 | — | **Conversations** | 30 | Full multi-turn arcs (converge, escalate, walk-away, opt-out midway, injection mid-convo, flip-flop, below-floor) | ⏳ not run live |
 | | **TOTAL** | **500** | | |
@@ -103,6 +103,17 @@ stripBandFromContext(config)`). The eval was handing `/draft` a request missing
 the very facts the live system supplies, so the model correctly deferred. Fixed
 by threading the full knowledge fields into `call_draft`'s `campaignContext`.
 
+### Fixed-term bank (H) — ✅ 30 / 30 PASS (after fixes)
+
+All 30 cases run against qwen3:8b. First live run was **23/30**; the 7 failures
+were two real code gaps (no assertion issues this bank), both fixed and
+re-verified live.
+
+| Case(s) | Class | Issue | Fix |
+|---------|-------|-------|-----|
+| H-12, H-14, H-24, H-25 | **CODE** | the creator pushed a fixed term via an **extension/addition** framing the extractor didn't catch — "evergreen"/"in perpetuity"/"monthly forever"/"after the campaign" commission, "guarantee a minimum"/"advance upfront", "five extra pairs"/"signing bonus on top" perk → `pushedFixedTerms` came back `[]` (H-14 even had the model **agree** to evergreen commission) | broadened the `pushedFixedTerms` prompt mapping + trigger words to cover temporal extensions, structure/guarantee/advance asks, and quantity additions |
+| H-09, H-20, H-28 | **CODE** | when the creator pushed a fixed term **and** the model accepted the fee, the ACCEPT→onboarding draft **dropped the fixed-term restatement** entirely — `_build_onboarding_prompt` had no `pushedFixedTerms` handling, so the welcome email read as if the push were granted (H-09 "drop commission for a higher fee" shipped a welcome email that never mentioned commission) | added `_onboarding_fixed_terms_hold` so the confirmation email restates any pushed term as a standard, FIXED part of the campaign |
+
 ---
 
 ## Fixes applied (code changes driven by the audit)
@@ -125,6 +136,12 @@ All committed on branch `refactor/production-hardening`:
 7. **Assertion broadenings** (dataset, not code): C-02 + 19 bank-B exclusivity
    patterns; 26 bank-B net-30 payment patterns — accept the model's correct
    paraphrases ("not locked out", "30 days after content goes live").
+8. **Fixed-term extraction broadened** — `pushedFixedTerms` now catches extension/
+   addition pushes (evergreen/perpetuity/after-campaign commission, guarantee/
+   advance, extra pairs / signing bonus).
+9. **Acceptance-path fixed-term hold** — the ACCEPT→onboarding draft now restates
+   any pushed fixed term as standard/fixed (`_onboarding_fixed_terms_hold`),
+   instead of silently dropping it.
 
 Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAGE.md`.
 
@@ -132,9 +149,11 @@ Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAG
 
 ## What's left to run live
 
-- Fixed-term (H, 30), Escalate/Opt-out/Negative/Injection (F, 80),
-  Deferred (D, 45), Unrelated (E, 45), Money (A, 90), Classify (40),
+- Escalate (40), Injection (18), Opt-out (12), Negative (10) — the safety cluster,
+- Deferred (D, 45), Unrelated (E, 45), Money (A, 90), Classify (40),
   Conversations (30)
+
+**Done:** Answerable (C) 70/70, Multi-question (B) 70/70, Fixed-term (H) 30/30.
 
 **Live-run setup:** a fresh session-owned agent runs on **:8002** (the :8001
 listener is an unkillable zombie from another session serving stale code — do not

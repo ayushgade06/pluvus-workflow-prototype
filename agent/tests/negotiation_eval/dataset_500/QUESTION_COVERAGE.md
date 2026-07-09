@@ -150,6 +150,34 @@ false negative in the check, fixed in the dataset)._
   **ALL RE-VERIFIED LIVE on :8002** — B-11/30/34/53/61 PASS clean after the fixes;
   the full bank is effectively 70/70.
 
+### Fixed-term bank (H) — live run 23/30 → 30/30 after fixes
+
+Both failures were real code gaps (no assertion issues this bank).
+
+- **[CODE] H-12/14/24/25 pushedFixedTerms extraction miss** — the extractor
+  recognized direct changes ("different %", "extra perk") but not extension/
+  addition framings: temporal commission ("evergreen", "in perpetuity", "monthly
+  forever", "after the campaign"), structure/guarantee/advance ("guarantee a $500
+  minimum", "advance me $300 up front"), and quantity additions ("five extra
+  pairs", "signing-bonus pair on top"). Returned `[]` — and H-14 had the model
+  **agree** to evergreen commission. **Fix:** broadened the `pushedFixedTerms`
+  prompt mapping + trigger-word list to cover these.
+
+- **[CODE] H-09/20/28 acceptance-path drops the fixed-term restatement** — when the
+  creator pushed a fixed term AND the model accepted the fee, the draft purpose is
+  `onboarding` (accept-with-rate), and `_build_onboarding_prompt` had NO
+  `pushedFixedTerms` handling (only `_build_offer_prompt` did). So the welcome
+  email confirmed the fee and never restated the pushed term — reading as if the
+  push were granted (H-09 "drop commission for a higher fee" → a welcome email
+  that never mentioned commission). **Fix:** `_onboarding_fixed_terms_hold` +
+  a `{fixed_terms_block}`/`{fixed_terms_rule}` in `_ONBOARDING_PROMPT` so the
+  confirmation email restates any pushed term as standard/fixed. Both the harness
+  (`call_draft`) and production (executor acceptance branch) already thread
+  `pushedFixedTerms` into the onboarding draft.
+
+  **ALL RE-VERIFIED LIVE on :8002** — H-09/12/14/20/24/25/28 PASS clean; bank H
+  effectively 30/30.
+
 ---
 
 ## How to reproduce
