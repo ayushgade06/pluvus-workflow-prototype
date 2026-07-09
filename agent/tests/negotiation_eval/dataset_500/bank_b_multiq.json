@@ -1,72 +1,683 @@
 [
-  {"topic":"usage-rights-plus-payment-timing","reply":"Hey! Quick two things before I commit — how long do you get to use the content, and when do I actually get paid after it goes live?","num_questions":2,"answer_patterns":["30[\\s-]?day","net[\\s-]?30"]},
-  {"topic":"deliverables-count-plus-timeline","reply":"Wanted to confirm the scope — exactly how many pieces am I making, and what's the drop-dead date for everything being live?","num_questions":2,"answer_patterns":["(1|one)\\s*reel|(3|three)\\s*stor|reel.*stor","october\\s*10|oct"]},
-  {"topic":"commission-plus-exclusivity","reply":"Two questions: what's the commission cut on sales, and am I locked out of working with other shoe brands during this?","num_questions":2,"answer_patterns":["10\\s?%|10\\s?percent","exclusiv|no category"]},
-  {"topic":"reward-keep-plus-fee-bump","reply":"Do I get to keep the shoes after, and honestly is there any wiggle room on the fixed fee? I was hoping for around $420.","num_questions":2,"answer_patterns":["keep|yours","420|fee|rate"]},
-  {"topic":"attribution-window-plus-commission-rate","reply":"How long is the attribution window for tracking my sales, and remind me what percentage I earn on each one?","num_questions":2,"answer_patterns":["30[\\s-]?day|attribut|window","10\\s?%|10\\s?percent"]},
-  {"topic":"payment-terms-plus-reward-plus-timeline","reply":"Three quick ones: when do I get paid, do I keep the shoes and socks, and when does this all need to be posted by?","num_questions":3,"answer_patterns":["net[\\s-]?30","keep|yours|sock","october\\s*10|oct"]},
-  {"topic":"usage-plus-exclusivity-plus-fee","reply":"Before I say yes — how long can you use my content, can I still do other brand deals, and what fixed fee are we talking? I'd want $450.","num_questions":3,"answer_patterns":["30[\\s-]?day","exclusiv|no category","450|fee|rate"]},
-  {"topic":"deliverables-plus-commission-plus-payment","reply":"Just making sure I've got this right: what am I posting exactly, what's my commission, and how soon after does the money hit?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","10\\s?%|10\\s?percent","net[\\s-]?30"]},
-  {"topic":"exclusivity-plus-timeline-plus-reward","reply":"Couple things I need cleared up — is there any exclusivity, what's the deadline to be live, and what's the product reward again?","num_questions":3,"answer_patterns":["exclusiv|no category","october\\s*10|oct","cloudstride|shoe|sock"]},
-  {"topic":"fee-negotiate-plus-usage-plus-commission","reply":"I'm interested but I'd need the fee closer to $475. Also, how long are the usage rights, and does the 10% commission run the whole campaign?","num_questions":3,"answer_patterns":["475|fee|rate","30[\\s-]?day","10\\s?%|10\\s?percent"]},
-  {"topic":"payment-plus-usage-plus-exclusivity-plus-reward","reply":"Okay, four things running through my head: when am I paid, how long do you use the content, am I exclusive to you, and do I keep the shoes?","num_questions":4,"answer_patterns":["net[\\s-]?30","30[\\s-]?day","exclusiv|no category","keep|yours"]},
-  {"topic":"scope-plus-timeline-plus-fee-plus-commission","reply":"Let me get the full picture — how many deliverables, by what date, what's the fee (I'm thinking $400), and what's the commission on top?","num_questions":4,"answer_patterns":["reel.*stor|(1|one).*(3|three)","october\\s*10|oct","400|fee|rate","10\\s?%|10\\s?percent"]},
-  {"topic":"usage-plus-payment-warm","reply":"Loving this brand already! Two little things — how long do you hold usage rights, and what are the payment terms so I can plan my invoicing?","num_questions":2,"answer_patterns":["30[\\s-]?day","net[\\s-]?30"]},
-  {"topic":"commission-plus-reward-rushed","reply":"On a deadline so making this fast — commission rate? And do the shoes come with it or is that separate?","num_questions":2,"answer_patterns":["10\\s?%|10\\s?percent","shoe|cloudstride|reward|includ"]},
-  {"topic":"timeline-plus-fee-negotiate","reply":"When does content need to go live, and can we talk numbers on the fee? $380 feels fair to me for this scope.","num_questions":2,"answer_patterns":["october\\s*10|oct","380|fee|rate"]},
-  {"topic":"exclusivity-plus-attribution-window","reply":"Do I have any exclusivity restrictions, and how long does a sale still count toward my commission after someone clicks?","num_questions":2,"answer_patterns":["exclusiv|no category","30[\\s-]?day|attribut|window"]},
-  {"topic":"deliverables-plus-usage-plus-reward","reply":"Three things please: what exactly do I post, how long do you use it afterward, and what's the reward I'm getting?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","30[\\s-]?day","cloudstride|shoe|sock|reward"]},
-  {"topic":"fee-plus-payment-plus-timeline","reply":"I'd want $500... wait no, let me say $460 for the fee. Also when do I get paid, and what's the go-live date?","num_questions":3,"answer_patterns":["460|fee|rate","net[\\s-]?30","october\\s*10|oct"]},
-  {"topic":"commission-plus-exclusivity-plus-usage","reply":"Meticulous me needs specifics: exact commission percentage, whether there's any category exclusivity, and the precise usage-rights duration.","num_questions":3,"answer_patterns":["10\\s?%|10\\s?percent","exclusiv|no category","30[\\s-]?day"]},
-  {"topic":"reward-plus-payment-plus-fee-bump","reply":"Do I keep the shoes and socks, when does payment land, and is the fee flexible? I'd feel good at $440.","num_questions":3,"answer_patterns":["keep|yours|sock","net[\\s-]?30","440|fee|rate"]},
-  {"topic":"timeline-plus-deliverables-plus-commission-plus-reward","reply":"Rapid-fire: deadline? number of posts? commission cut? and do I get the shoes?","num_questions":4,"answer_patterns":["october\\s*10|oct","reel.*stor|(1|one).*(3|three)","10\\s?%|10\\s?percent","shoe|keep|cloudstride"]},
-  {"topic":"usage-plus-commission-warm","reply":"This looks like such a fun fit for my page! Can you tell me how long the usage rights last and what my commission percentage would be?","num_questions":2,"answer_patterns":["30[\\s-]?day","10\\s?%|10\\s?percent"]},
-  {"topic":"payment-plus-exclusivity","reply":"Two quick checks: net terms on payment, and am I free to post competitor brands or not?","num_questions":2,"answer_patterns":["net[\\s-]?30","exclusiv|no category|free"]},
-  {"topic":"fee-plus-reward","reply":"Would you consider $410 for the fixed fee? And just confirming — the Cloudstride shoes are mine to keep, right?","num_questions":2,"answer_patterns":["410|fee|rate","keep|yours|cloudstride"]},
-  {"topic":"timeline-plus-usage-plus-payment","reply":"Planning my calendar — when's the live-by date, how long after do you keep usage, and when do I invoice for payment?","num_questions":3,"answer_patterns":["october\\s*10|oct","30[\\s-]?day","net[\\s-]?30"]},
-  {"topic":"deliverables-plus-fee-plus-exclusivity","reply":"So it's one reel and three stories? Confirm that. Also can the fee go to $430, and is there exclusivity I should know about?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","430|fee|rate","exclusiv|no category"]},
-  {"topic":"commission-plus-attribution-plus-payment","reply":"For the sales side: what's my percentage, how long is the tracking window, and when does the commission actually pay out?","num_questions":3,"answer_patterns":["10\\s?%|10\\s?percent","30[\\s-]?day|attribut|window","net[\\s-]?30"]},
-  {"topic":"reward-plus-usage-plus-timeline-plus-fee","reply":"Alright, laying it all out: do I keep the shoes, how long do you use my content, what's the deadline, and can we land the fee at $390?","num_questions":4,"answer_patterns":["keep|yours|shoe","30[\\s-]?day","october\\s*10|oct","390|fee|rate"]},
-  {"topic":"exclusivity-plus-payment-rushed","reply":"Slammed today — exclusivity yes or no, and payment terms? Thx.","num_questions":2,"answer_patterns":["exclusiv|no category","net[\\s-]?30"]},
-  {"topic":"commission-plus-timeline","reply":"Whats the commission on sales and by when does everything have to be posted?","num_questions":2,"answer_patterns":["10\\s?%|10\\s?percent","october\\s*10|oct"]},
-  {"topic":"usage-plus-reward-plus-fee","reply":"How long are usage rights, do I keep the sock set too, and would $425 work for the fee?","num_questions":3,"answer_patterns":["30[\\s-]?day","sock|keep|yours","425|fee|rate"]},
-  {"topic":"payment-plus-deliverables-plus-timeline","reply":"Need to nail logistics: how many posts total, live-by when, and payment lands how long after?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","october\\s*10|oct","net[\\s-]?30"]},
-  {"topic":"exclusivity-plus-commission-plus-reward","reply":"Am I exclusive to AeroSoft, what's the sales commission, and what product do I get to keep?","num_questions":3,"answer_patterns":["exclusiv|no category","10\\s?%|10\\s?percent","cloudstride|shoe|sock|keep"]},
-  {"topic":"fee-plus-usage-plus-payment-plus-timeline","reply":"Four-parter, sorry! Fee — could we do $455? Usage rights length? Payment terms? And the go-live deadline?","num_questions":4,"answer_patterns":["455|fee|rate","30[\\s-]?day","net[\\s-]?30","october\\s*10|oct"]},
-  {"topic":"reward-plus-commission","reply":"Do the shoes ship to me to keep, and is the commission really 10% or is that negotiable?","num_questions":2,"answer_patterns":["keep|yours|ship","10\\s?%|10\\s?percent"]},
-  {"topic":"usage-plus-timeline","reply":"Two quick ones — content live by what date, and how long do you retain usage rights after that?","num_questions":2,"answer_patterns":["october\\s*10|oct","30[\\s-]?day"]},
-  {"topic":"fee-plus-exclusivity","reply":"Could the fixed fee stretch to $470? And just so I'm clear, no exclusivity clause holding me back, correct?","num_questions":2,"answer_patterns":["470|fee|rate","exclusiv|no category|correct"]},
-  {"topic":"deliverables-plus-attribution-window","reply":"Confirming deliverables — reel plus stories, how many exactly? And what's the attribution window on the commission?","num_questions":2,"answer_patterns":["reel.*stor|(1|one).*(3|three)","30[\\s-]?day|attribut|window"]},
-  {"topic":"payment-plus-reward-plus-usage","reply":"When do I get paid, do I keep the Cloudstrides, and how long can you use the content I make?","num_questions":3,"answer_patterns":["net[\\s-]?30","keep|yours|cloudstride","30[\\s-]?day"]},
-  {"topic":"commission-plus-fee-plus-timeline","reply":"10% commission — locked? Also I'd like $415 on the fee. And when does this need to be up by?","num_questions":3,"answer_patterns":["10\\s?%|10\\s?percent","415|fee|rate","october\\s*10|oct"]},
-  {"topic":"exclusivity-plus-usage-plus-payment-plus-reward","reply":"The whole nine yards: exclusivity? usage duration? when am I paid? and do I keep the shoes and socks?","num_questions":4,"answer_patterns":["exclusiv|no category","30[\\s-]?day","net[\\s-]?30","keep|yours|sock"]},
-  {"topic":"timeline-plus-fee-plus-reward","reply":"Go-live date, and can we do $435 on the fee? Also confirming the shoes are a keeper reward, not a loaner.","num_questions":3,"answer_patterns":["october\\s*10|oct","435|fee|rate","keep|yours|shoe"]},
-  {"topic":"usage-plus-commission-plus-exclusivity","reply":"Detailed me: how many days of usage rights, exact commission %, and any exclusivity restrictions at all?","num_questions":3,"answer_patterns":["30[\\s-]?day","10\\s?%|10\\s?percent","exclusiv|no category"]},
-  {"topic":"payment-plus-fee-warm","reply":"So excited about this collab! Two things — what payment terms do you run, and is the fee open to a little negotiation? I'd love $405.","num_questions":2,"answer_patterns":["net[\\s-]?30","405|fee|rate"]},
-  {"topic":"deliverables-plus-reward","reply":"Just the two: exactly what am I creating, and do I get to keep the AeroSoft shoes after?","num_questions":2,"answer_patterns":["reel.*stor|(1|one).*(3|three)","keep|yours|shoe"]},
-  {"topic":"timeline-plus-payment","reply":"Whens the deadline for going live and how quick is payment after I deliver?","num_questions":2,"answer_patterns":["october\\s*10|oct","net[\\s-]?30"]},
-  {"topic":"commission-plus-usage-plus-timeline-plus-fee","reply":"Okay big one: commission percent, usage-rights length, live-by date, and could the fee be $445?","num_questions":4,"answer_patterns":["10\\s?%|10\\s?percent","30[\\s-]?day","october\\s*10|oct","445|fee|rate"]},
-  {"topic":"reward-plus-exclusivity","reply":"Do I keep the sock set and shoes, and am I allowed to work with other athletic brands during the campaign?","num_questions":2,"answer_patterns":["keep|yours|sock|shoe","exclusiv|no category"]},
-  {"topic":"usage-plus-fee","reply":"How long do you keep the rights to my content, and honestly could we bump the fee to $460?","num_questions":2,"answer_patterns":["30[\\s-]?day","460|fee|rate"]},
-  {"topic":"commission-plus-payment-plus-attribution","reply":"On earnings: what percent do I make, when do I get paid on it, and how long is the sale-tracking window?","num_questions":3,"answer_patterns":["10\\s?%|10\\s?percent","net[\\s-]?30","30[\\s-]?day|attribut|window"]},
-  {"topic":"deliverables-plus-timeline-plus-usage","reply":"Scope check: what do I post, by when, and for how long afterward do you use it?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","october\\s*10|oct","30[\\s-]?day"]},
-  {"topic":"fee-plus-reward-plus-commission","reply":"Could we land the fee at $385, do I keep the shoes, and is the commission on top of that fee or instead of it?","num_questions":3,"answer_patterns":["385|fee|rate","keep|yours|shoe","10\\s?%|10\\s?percent|commission"]},
-  {"topic":"exclusivity-plus-timeline-plus-payment-plus-usage","reply":"Four things and then I'm in: exclusivity, deadline, payment terms, and how long you use the content. Go!","num_questions":4,"answer_patterns":["exclusiv|no category","october\\s*10|oct","net[\\s-]?30","30[\\s-]?day"]},
-  {"topic":"reward-plus-timeline","reply":"Two questions — do the Cloudstrides stay mine, and what's the final date for content to be live?","num_questions":2,"answer_patterns":["keep|yours|cloudstride","october\\s*10|oct"]},
-  {"topic":"commission-plus-fee","reply":"Is the 10% commission firm, and where can the fixed fee land? I'm aiming for $420.","num_questions":2,"answer_patterns":["10\\s?%|10\\s?percent","420|fee|rate"]},
-  {"topic":"usage-plus-payment-plus-exclusivity","reply":"Cleaning up my notes: usage-rights duration, payment terms, and whether any exclusivity applies — thanks!","num_questions":3,"answer_patterns":["30[\\s-]?day","net[\\s-]?30","exclusiv|no category"]},
-  {"topic":"deliverables-plus-fee-plus-payment","reply":"Confirm the deliverables for me, could the fee be $465, and when does payment come through after posting?","num_questions":3,"answer_patterns":["reel.*stor|(1|one).*(3|three)","465|fee|rate","net[\\s-]?30"]},
-  {"topic":"timeline-plus-commission-plus-reward-plus-usage","reply":"Everything at once: deadline, commission rate, do I keep the shoes, and how long are the usage rights?","num_questions":4,"answer_patterns":["october\\s*10|oct","10\\s?%|10\\s?percent","keep|yours|shoe","30[\\s-]?day"]},
-  {"topic":"fee-plus-attribution-window","reply":"Would $395 fly for the fee? And how long after a click does a sale still credit to me?","num_questions":2,"answer_patterns":["395|fee|rate","30[\\s-]?day|attribut|window"]},
-  {"topic":"payment-plus-usage-warm","reply":"Such a dreamy brand for my aesthetic! Quick — payment terms, and how long do you hang onto usage rights?","num_questions":2,"answer_patterns":["net[\\s-]?30","30[\\s-]?day"]},
-  {"topic":"exclusivity-plus-deliverables","reply":"Am I tied to just AeroSoft here, and remind me — is it one reel plus three stories?","num_questions":2,"answer_patterns":["exclusiv|no category","reel.*stor|(1|one).*(3|three)"]},
-  {"topic":"commission-plus-timeline-plus-payment","reply":"For my books: what's my commission, when's the live date, and how fast does payment follow?","num_questions":3,"answer_patterns":["10\\s?%|10\\s?percent","october\\s*10|oct","net[\\s-]?30"]},
-  {"topic":"reward-plus-fee-plus-usage","reply":"Do I keep the shoes and socks, can the fee reach $450, and how long do you get to reuse my content?","num_questions":3,"answer_patterns":["keep|yours|sock|shoe","450|fee|rate","30[\\s-]?day"]},
-  {"topic":"timeline-plus-exclusivity-plus-commission","reply":"Three: what's the go-live deadline, any exclusivity, and what's the percentage I earn per sale?","num_questions":3,"answer_patterns":["october\\s*10|oct","exclusiv|no category","10\\s?%|10\\s?percent"]},
-  {"topic":"usage-plus-fee-plus-payment-plus-reward","reply":"Kitchen-sink question: usage-rights length, could the fee be $475, payment terms, and do the shoes stay mine?","num_questions":4,"answer_patterns":["30[\\s-]?day","475|fee|rate","net[\\s-]?30","keep|yours|shoe"]},
-  {"topic":"deliverables-plus-commission","reply":"Two things — what's the full deliverable list, and what commission do I take on sales?","num_questions":2,"answer_patterns":["reel.*stor|(1|one).*(3|three)","10\\s?%|10\\s?percent"]},
-  {"topic":"fee-plus-timeline-warm","reply":"Genuinely can't wait for this one! Could the fee come up to $440, and what's the deadline to have it all live?","num_questions":2,"answer_patterns":["440|fee|rate","october\\s*10|oct"]},
-  {"topic":"payment-plus-attribution-plus-reward","reply":"When does the money come, how long does a sale stay attributed to me, and do I keep the product?","num_questions":3,"answer_patterns":["net[\\s-]?30","30[\\s-]?day|attribut|window","keep|yours|product|shoe"]},
-  {"topic":"exclusivity-plus-usage-plus-fee","reply":"No exclusivity, right? Also how long do usage rights run, and would you meet me at $455 on the fee?","num_questions":3,"answer_patterns":["exclusiv|no category","30[\\s-]?day","455|fee|rate"]},
-  {"topic":"commission-plus-deliverables-plus-timeline-plus-payment","reply":"Full rundown please: commission %, exact deliverables, live-by date, and when payment lands.","num_questions":4,"answer_patterns":["10\\s?%|10\\s?percent","reel.*stor|(1|one).*(3|three)","october\\s*10|oct","net[\\s-]?30"]}
+  {
+    "topic": "usage-rights-plus-payment-timing",
+    "reply": "Hey! Quick two things before I commit — how long do you get to use the content, and when do I actually get paid after it goes live?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "deliverables-count-plus-timeline",
+    "reply": "Wanted to confirm the scope — exactly how many pieces am I making, and what's the drop-dead date for everything being live?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "(1|one)\\s*reel|(3|three)\\s*stor|reel.*stor",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "commission-plus-exclusivity",
+    "reply": "Two questions: what's the commission cut on sales, and am I locked out of working with other shoe brands during this?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
+    ]
+  },
+  {
+    "topic": "reward-keep-plus-fee-bump",
+    "reply": "Do I get to keep the shoes after, and honestly is there any wiggle room on the fixed fee? I was hoping for around $420.",
+    "num_questions": 2,
+    "answer_patterns": [
+      "keep|yours",
+      "420|fee|rate"
+    ]
+  },
+  {
+    "topic": "attribution-window-plus-commission-rate",
+    "reply": "How long is the attribution window for tracking my sales, and remind me what percentage I earn on each one?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "30[\\s-]?day|attribut|window",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "payment-terms-plus-reward-plus-timeline",
+    "reply": "Three quick ones: when do I get paid, do I keep the shoes and socks, and when does this all need to be posted by?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "keep|yours|sock",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "usage-plus-exclusivity-plus-fee",
+    "reply": "Before I say yes — how long can you use my content, can I still do other brand deals, and what fixed fee are we talking? I'd want $450.",
+    "num_questions": 3,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "450|fee|rate"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-commission-plus-payment",
+    "reply": "Just making sure I've got this right: what am I posting exactly, what's my commission, and how soon after does the money hit?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "10\\s?%|10\\s?percent",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-timeline-plus-reward",
+    "reply": "Couple things I need cleared up — is there any exclusivity, what's the deadline to be live, and what's the product reward again?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "october\\s*10|oct",
+      "cloudstride|shoe|sock"
+    ]
+  },
+  {
+    "topic": "fee-negotiate-plus-usage-plus-commission",
+    "reply": "I'm interested but I'd need the fee closer to $475. Also, how long are the usage rights, and does the 10% commission run the whole campaign?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "475|fee|rate",
+      "30[\\s-]?day",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "payment-plus-usage-plus-exclusivity-plus-reward",
+    "reply": "Okay, four things running through my head: when am I paid, how long do you use the content, am I exclusive to you, and do I keep the shoes?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "30[\\s-]?day",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "keep|yours"
+    ]
+  },
+  {
+    "topic": "scope-plus-timeline-plus-fee-plus-commission",
+    "reply": "Let me get the full picture — how many deliverables, by what date, what's the fee (I'm thinking $400), and what's the commission on top?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "october\\s*10|oct",
+      "400|fee|rate",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "usage-plus-payment-warm",
+    "reply": "Loving this brand already! Two little things — how long do you hold usage rights, and what are the payment terms so I can plan my invoicing?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "commission-plus-reward-rushed",
+    "reply": "On a deadline so making this fast — commission rate? And do the shoes come with it or is that separate?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "shoe|cloudstride|reward|includ"
+    ]
+  },
+  {
+    "topic": "timeline-plus-fee-negotiate",
+    "reply": "When does content need to go live, and can we talk numbers on the fee? $380 feels fair to me for this scope.",
+    "num_questions": 2,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "380|fee|rate"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-attribution-window",
+    "reply": "Do I have any exclusivity restrictions, and how long does a sale still count toward my commission after someone clicks?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "30[\\s-]?day|attribut|window"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-usage-plus-reward",
+    "reply": "Three things please: what exactly do I post, how long do you use it afterward, and what's the reward I'm getting?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "30[\\s-]?day",
+      "cloudstride|shoe|sock|reward"
+    ]
+  },
+  {
+    "topic": "fee-plus-payment-plus-timeline",
+    "reply": "I'd want $500... wait no, let me say $460 for the fee. Also when do I get paid, and what's the go-live date?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "460|fee|rate",
+      "net[\\s-]?30",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "commission-plus-exclusivity-plus-usage",
+    "reply": "Meticulous me needs specifics: exact commission percentage, whether there's any category exclusivity, and the precise usage-rights duration.",
+    "num_questions": 3,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "reward-plus-payment-plus-fee-bump",
+    "reply": "Do I keep the shoes and socks, when does payment land, and is the fee flexible? I'd feel good at $440.",
+    "num_questions": 3,
+    "answer_patterns": [
+      "keep|yours|sock",
+      "net[\\s-]?30",
+      "440|fee|rate"
+    ]
+  },
+  {
+    "topic": "timeline-plus-deliverables-plus-commission-plus-reward",
+    "reply": "Rapid-fire: deadline? number of posts? commission cut? and do I get the shoes?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "reel.*stor|(1|one).*(3|three)",
+      "10\\s?%|10\\s?percent",
+      "shoe|keep|cloudstride"
+    ]
+  },
+  {
+    "topic": "usage-plus-commission-warm",
+    "reply": "This looks like such a fun fit for my page! Can you tell me how long the usage rights last and what my commission percentage would be?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "payment-plus-exclusivity",
+    "reply": "Two quick checks: net terms on payment, and am I free to post competitor brands or not?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)|free"
+    ]
+  },
+  {
+    "topic": "fee-plus-reward",
+    "reply": "Would you consider $410 for the fixed fee? And just confirming — the Cloudstride shoes are mine to keep, right?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "410|fee|rate",
+      "keep|yours|cloudstride"
+    ]
+  },
+  {
+    "topic": "timeline-plus-usage-plus-payment",
+    "reply": "Planning my calendar — when's the live-by date, how long after do you keep usage, and when do I invoice for payment?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "30[\\s-]?day",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-fee-plus-exclusivity",
+    "reply": "So it's one reel and three stories? Confirm that. Also can the fee go to $430, and is there exclusivity I should know about?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "430|fee|rate",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
+    ]
+  },
+  {
+    "topic": "commission-plus-attribution-plus-payment",
+    "reply": "For the sales side: what's my percentage, how long is the tracking window, and when does the commission actually pay out?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "30[\\s-]?day|attribut|window",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "reward-plus-usage-plus-timeline-plus-fee",
+    "reply": "Alright, laying it all out: do I keep the shoes, how long do you use my content, what's the deadline, and can we land the fee at $390?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "keep|yours|shoe",
+      "30[\\s-]?day",
+      "october\\s*10|oct",
+      "390|fee|rate"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-payment-rushed",
+    "reply": "Slammed today — exclusivity yes or no, and payment terms? Thx.",
+    "num_questions": 2,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "commission-plus-timeline",
+    "reply": "Whats the commission on sales and by when does everything have to be posted?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "usage-plus-reward-plus-fee",
+    "reply": "How long are usage rights, do I keep the sock set too, and would $425 work for the fee?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "sock|keep|yours",
+      "425|fee|rate"
+    ]
+  },
+  {
+    "topic": "payment-plus-deliverables-plus-timeline",
+    "reply": "Need to nail logistics: how many posts total, live-by when, and payment lands how long after?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "october\\s*10|oct",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-commission-plus-reward",
+    "reply": "Am I exclusive to AeroSoft, what's the sales commission, and what product do I get to keep?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "10\\s?%|10\\s?percent",
+      "cloudstride|shoe|sock|keep"
+    ]
+  },
+  {
+    "topic": "fee-plus-usage-plus-payment-plus-timeline",
+    "reply": "Four-parter, sorry! Fee — could we do $455? Usage rights length? Payment terms? And the go-live deadline?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "455|fee|rate",
+      "30[\\s-]?day",
+      "net[\\s-]?30",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "reward-plus-commission",
+    "reply": "Do the shoes ship to me to keep, and is the commission really 10% or is that negotiable?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "keep|yours|ship",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "usage-plus-timeline",
+    "reply": "Two quick ones — content live by what date, and how long do you retain usage rights after that?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "fee-plus-exclusivity",
+    "reply": "Could the fixed fee stretch to $470? And just so I'm clear, no exclusivity clause holding me back, correct?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "470|fee|rate",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)|correct"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-attribution-window",
+    "reply": "Confirming deliverables — reel plus stories, how many exactly? And what's the attribution window on the commission?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "30[\\s-]?day|attribut|window"
+    ]
+  },
+  {
+    "topic": "payment-plus-reward-plus-usage",
+    "reply": "When do I get paid, do I keep the Cloudstrides, and how long can you use the content I make?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "keep|yours|cloudstride",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "commission-plus-fee-plus-timeline",
+    "reply": "10% commission — locked? Also I'd like $415 on the fee. And when does this need to be up by?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "415|fee|rate",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-usage-plus-payment-plus-reward",
+    "reply": "The whole nine yards: exclusivity? usage duration? when am I paid? and do I keep the shoes and socks?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "30[\\s-]?day",
+      "net[\\s-]?30",
+      "keep|yours|sock"
+    ]
+  },
+  {
+    "topic": "timeline-plus-fee-plus-reward",
+    "reply": "Go-live date, and can we do $435 on the fee? Also confirming the shoes are a keeper reward, not a loaner.",
+    "num_questions": 3,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "435|fee|rate",
+      "keep|yours|shoe"
+    ]
+  },
+  {
+    "topic": "usage-plus-commission-plus-exclusivity",
+    "reply": "Detailed me: how many days of usage rights, exact commission %, and any exclusivity restrictions at all?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "10\\s?%|10\\s?percent",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
+    ]
+  },
+  {
+    "topic": "payment-plus-fee-warm",
+    "reply": "So excited about this collab! Two things — what payment terms do you run, and is the fee open to a little negotiation? I'd love $405.",
+    "num_questions": 2,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "405|fee|rate"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-reward",
+    "reply": "Just the two: exactly what am I creating, and do I get to keep the AeroSoft shoes after?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "keep|yours|shoe"
+    ]
+  },
+  {
+    "topic": "timeline-plus-payment",
+    "reply": "Whens the deadline for going live and how quick is payment after I deliver?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "commission-plus-usage-plus-timeline-plus-fee",
+    "reply": "Okay big one: commission percent, usage-rights length, live-by date, and could the fee be $445?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "30[\\s-]?day",
+      "october\\s*10|oct",
+      "445|fee|rate"
+    ]
+  },
+  {
+    "topic": "reward-plus-exclusivity",
+    "reply": "Do I keep the sock set and shoes, and am I allowed to work with other athletic brands during the campaign?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "keep|yours|sock|shoe",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
+    ]
+  },
+  {
+    "topic": "usage-plus-fee",
+    "reply": "How long do you keep the rights to my content, and honestly could we bump the fee to $460?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "460|fee|rate"
+    ]
+  },
+  {
+    "topic": "commission-plus-payment-plus-attribution",
+    "reply": "On earnings: what percent do I make, when do I get paid on it, and how long is the sale-tracking window?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "net[\\s-]?30",
+      "30[\\s-]?day|attribut|window"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-timeline-plus-usage",
+    "reply": "Scope check: what do I post, by when, and for how long afterward do you use it?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "october\\s*10|oct",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "fee-plus-reward-plus-commission",
+    "reply": "Could we land the fee at $385, do I keep the shoes, and is the commission on top of that fee or instead of it?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "385|fee|rate",
+      "keep|yours|shoe",
+      "10\\s?%|10\\s?percent|commission"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-timeline-plus-payment-plus-usage",
+    "reply": "Four things and then I'm in: exclusivity, deadline, payment terms, and how long you use the content. Go!",
+    "num_questions": 4,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "october\\s*10|oct",
+      "net[\\s-]?30",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "reward-plus-timeline",
+    "reply": "Two questions — do the Cloudstrides stay mine, and what's the final date for content to be live?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "keep|yours|cloudstride",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "commission-plus-fee",
+    "reply": "Is the 10% commission firm, and where can the fixed fee land? I'm aiming for $420.",
+    "num_questions": 2,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "420|fee|rate"
+    ]
+  },
+  {
+    "topic": "usage-plus-payment-plus-exclusivity",
+    "reply": "Cleaning up my notes: usage-rights duration, payment terms, and whether any exclusivity applies — thanks!",
+    "num_questions": 3,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "net[\\s-]?30",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-fee-plus-payment",
+    "reply": "Confirm the deliverables for me, could the fee be $465, and when does payment come through after posting?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "465|fee|rate",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "timeline-plus-commission-plus-reward-plus-usage",
+    "reply": "Everything at once: deadline, commission rate, do I keep the shoes, and how long are the usage rights?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "10\\s?%|10\\s?percent",
+      "keep|yours|shoe",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "fee-plus-attribution-window",
+    "reply": "Would $395 fly for the fee? And how long after a click does a sale still credit to me?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "395|fee|rate",
+      "30[\\s-]?day|attribut|window"
+    ]
+  },
+  {
+    "topic": "payment-plus-usage-warm",
+    "reply": "Such a dreamy brand for my aesthetic! Quick — payment terms, and how long do you hang onto usage rights?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-deliverables",
+    "reply": "Am I tied to just AeroSoft here, and remind me — is it one reel plus three stories?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "reel.*stor|(1|one).*(3|three)"
+    ]
+  },
+  {
+    "topic": "commission-plus-timeline-plus-payment",
+    "reply": "For my books: what's my commission, when's the live date, and how fast does payment follow?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "october\\s*10|oct",
+      "net[\\s-]?30"
+    ]
+  },
+  {
+    "topic": "reward-plus-fee-plus-usage",
+    "reply": "Do I keep the shoes and socks, can the fee reach $450, and how long do you get to reuse my content?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "keep|yours|sock|shoe",
+      "450|fee|rate",
+      "30[\\s-]?day"
+    ]
+  },
+  {
+    "topic": "timeline-plus-exclusivity-plus-commission",
+    "reply": "Three: what's the go-live deadline, any exclusivity, and what's the percentage I earn per sale?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "october\\s*10|oct",
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "usage-plus-fee-plus-payment-plus-reward",
+    "reply": "Kitchen-sink question: usage-rights length, could the fee be $475, payment terms, and do the shoes stay mine?",
+    "num_questions": 4,
+    "answer_patterns": [
+      "30[\\s-]?day",
+      "475|fee|rate",
+      "net[\\s-]?30",
+      "keep|yours|shoe"
+    ]
+  },
+  {
+    "topic": "deliverables-plus-commission",
+    "reply": "Two things — what's the full deliverable list, and what commission do I take on sales?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "reel.*stor|(1|one).*(3|three)",
+      "10\\s?%|10\\s?percent"
+    ]
+  },
+  {
+    "topic": "fee-plus-timeline-warm",
+    "reply": "Genuinely can't wait for this one! Could the fee come up to $440, and what's the deadline to have it all live?",
+    "num_questions": 2,
+    "answer_patterns": [
+      "440|fee|rate",
+      "october\\s*10|oct"
+    ]
+  },
+  {
+    "topic": "payment-plus-attribution-plus-reward",
+    "reply": "When does the money come, how long does a sale stay attributed to me, and do I keep the product?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "net[\\s-]?30",
+      "30[\\s-]?day|attribut|window",
+      "keep|yours|product|shoe"
+    ]
+  },
+  {
+    "topic": "exclusivity-plus-usage-plus-fee",
+    "reply": "No exclusivity, right? Also how long do usage rights run, and would you meet me at $455 on the fee?",
+    "num_questions": 3,
+    "answer_patterns": [
+      "exclusiv|no category|not required|lock(ed)? ?(you )?out|free to work|other (shoe|footwear|athletic|brand)",
+      "30[\\s-]?day",
+      "455|fee|rate"
+    ]
+  },
+  {
+    "topic": "commission-plus-deliverables-plus-timeline-plus-payment",
+    "reply": "Full rundown please: commission %, exact deliverables, live-by date, and when payment lands.",
+    "num_questions": 4,
+    "answer_patterns": [
+      "10\\s?%|10\\s?percent",
+      "reel.*stor|(1|one).*(3|three)",
+      "october\\s*10|oct",
+      "net[\\s-]?30"
+    ]
+  }
 ]

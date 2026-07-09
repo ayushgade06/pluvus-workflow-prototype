@@ -1191,7 +1191,12 @@ answers it precisely:
 - `creatorQuestions`: a JSON array listing EVERY distinct question or request in
   the creator's latest message, one per element, in their own words (e.g.
   ["what is the fee?", "when does content go live?", "can I get 15% commission?"]).
-  If they asked nothing, return [].
+  SPLIT a compound question into separate elements: when one sentence asks about
+  two DIFFERENT things joined by "and"/","/"also" (e.g. "how many pieces am I
+  making, and what's the deadline?"), return ONE element per thing
+  (["how many pieces am I making?", "what's the deadline?"]) — not a single fused
+  string. (But a single thing that merely lists items — "do I keep the shoes and
+  socks?" — is ONE question.) If they asked nothing, return [].
 - `pushedFixedTerms`: a JSON array naming which FIXED (non-negotiable) terms the
   creator tried to change. Use ONLY these exact values: "commission", "perk",
   "deliverables", "timeline". Include a value if the creator tried to change that
