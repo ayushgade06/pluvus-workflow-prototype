@@ -112,10 +112,16 @@ export async function updateInstanceStateConditional(
   }
 }
 
+// HARD-R1: cap how many instances a single poll pulls, so a large backlog is
+// drained in bounded batches (successive polls pick up the rest) rather than one
+// unbounded query loading the whole table into memory at once.
+const POLL_BATCH_LIMIT = 200;
+
 /**
- * Returns all instances whose dueAt is in the past and whose current state
- * is one that the scheduler should act on (AWAITING_REPLY, FOLLOWED_UP).
- * Used by the scheduler poller every 30 s.
+ * Returns instances whose dueAt is in the past and whose current state is one the
+ * scheduler should act on (AWAITING_REPLY, FOLLOWED_UP). Used by the scheduler
+ * poller every 30 s. Bounded by POLL_BATCH_LIMIT (HARD-R1) and index-backed by
+ * the (currentState, dueAt) composite index.
  */
 export async function listDueInstances(
   now: Date = new Date(),
@@ -126,5 +132,42 @@ export async function listDueInstances(
       currentState: { in: ["AWAITING_REPLY", "FOLLOWED_UP"] },
     },
     orderBy: { dueAt: "asc" },
+    take: POLL_BATCH_LIMIT,
+  });
+}
+
+// HARD-R1: the TRANSIENT non-terminal states — ones a crash/Redis blip between an
+// OCC commit and the follow-on enqueue can strand invisibly. These are the states
+// the reconciliation sweep re-enqueues. Deliberately EXCLUDES the legitimate
+// WAITING states (AWAITING_REPLY/FOLLOWED_UP — covered by the due poller;
+// REWARD_PENDING/PAYMENT_PENDING/AWAITING_BRAND_DECISION — parked on an external
+// reply/form/brand): re-enqueuing those would spam, not recover.
+const RECONCILE_STATES: InstanceState[] = [
+  "ENROLLED",
+  "OUTREACH_SENT",
+  "REPLY_RECEIVED",
+  "NEGOTIATING",
+  "ACCEPTED",
+  "REWARD_CONFIRMED",
+  "PAYMENT_RECEIVED",
+];
+
+/**
+ * Returns instances stuck in a TRANSIENT non-terminal state whose last update is
+ * older than `staleBefore` (HARD-R1 reconciliation sweep). An instance sitting in
+ * one of these states well past the moment it should have auto-advanced was
+ * almost certainly stranded by a crash between its state commit and the follow-on
+ * job enqueue. Bounded by POLL_BATCH_LIMIT; index-backed by (currentState, dueAt).
+ */
+export async function listStuckInstances(
+  staleBefore: Date,
+): Promise<ExecutionInstance[]> {
+  return prisma.executionInstance.findMany({
+    where: {
+      currentState: { in: RECONCILE_STATES },
+      updatedAt: { lt: staleBefore },
+    },
+    orderBy: { updatedAt: "asc" },
+    take: POLL_BATCH_LIMIT,
   });
 }

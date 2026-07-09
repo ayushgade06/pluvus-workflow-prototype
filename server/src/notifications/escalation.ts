@@ -235,12 +235,18 @@ export async function notifyBrandOfEscalation(
 
     // ── Send ──────────────────────────────────────────────────────────────
     const draft = buildEscalationEmail(ctx, reason);
-    // Address the brand by re-using send() with a recipient-shaped object. Both
-    // the mock and Nylas providers read only email + name in send().
-    const recipientAsCreator = { ...ctx.creator, email: recipient, name: ctx.brandName ?? ctx.creator.name };
-
+    // CRITICAL-2: address the brand via the explicit EmailRecipient rather than a
+    // forged Creator-shaped object (the "brand-as-Creator" hack the audit flags).
+    // This notice goes out on MANUAL_REVIEW (a terminal state), so unlike the
+    // brand-DECISION email it does not persist a routable Message row — a reply
+    // here has nothing to route back into (the inbound worker skips terminal
+    // instances). The creator is still passed as the thread owner for the
+    // provider's fallback fields.
     try {
-      await email.send(draft, recipientAsCreator as Creator);
+      await email.send(draft, ctx.creator, {
+        email: recipient,
+        name: ctx.brandName ?? ctx.creator.name,
+      });
     } catch (sendErr) {
       const message = sendErr instanceof Error ? sendErr.message : String(sendErr);
       await deps.updateBrandNotificationStatus(reservedId, { status: "FAILED", error: message });

@@ -34,6 +34,9 @@ interface InboundMessage {
   threadId: string | undefined;
   subject: string;
   body: string;
+  /** The From: address (CRITICAL-1). Used downstream to verify a brand-decision
+   *  reply originates from the brand, not the creator. Undefined if unparseable. */
+  senderEmail: string | undefined;
 }
 
 // Tolerate both snake_case (raw Nylas webhook JSON) and camelCase (SDK-shaped).
@@ -68,7 +71,23 @@ function extractInboundMessage(payload: unknown): InboundMessage | null {
     threadId: pick<string>(msg, "thread_id", "threadId"),
     subject: pick<string>(msg, "subject") ?? "",
     body: pick<string>(msg, "body", "snippet") ?? "",
+    senderEmail: extractFromEmail(msg),
   };
+}
+
+// The From: address in a Nylas message is `from: [{ email, name }]` (or, on some
+// SDK/webhook shapes, a bare object). Pull the first email we can find, lowercased
+// for a case-insensitive compare downstream (CRITICAL-1). Undefined if absent —
+// the brand-decision handler treats a missing sender conservatively.
+function extractFromEmail(msg: Record<string, unknown>): string | undefined {
+  const from = pick<unknown>(msg, "from", "sender");
+  const first = Array.isArray(from) ? from[0] : from;
+  if (first && typeof first === "object") {
+    const email = (first as Record<string, unknown>)["email"];
+    if (typeof email === "string" && email.trim()) return email.trim().toLowerCase();
+  }
+  if (typeof from === "string" && from.trim()) return from.trim().toLowerCase();
+  return undefined;
 }
 
 // ── GET/HEAD: endpoint verification challenge ──────────────────────────────
@@ -157,6 +176,9 @@ router.post("/nylas", async (req: Request, res: Response) => {
     threadId: inbound.threadId,
     subject: inbound.subject,
     body: inbound.body,
+    // CRITICAL-1: carry the From: address so the brand-decision handler can verify
+    // a decision reply came from the brand, not the creator.
+    ...(inbound.senderEmail !== undefined ? { senderEmail: inbound.senderEmail } : {}),
   });
 
   console.log(

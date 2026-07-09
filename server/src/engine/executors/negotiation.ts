@@ -139,19 +139,23 @@ function openMaxRoundsBrandDecision(
     creatorRate !== undefined ? `Their latest ask is ${creatorRate}${band}.` : "";
   const question =
     `Negotiation with ${creator.name} reached the max of ${maxRounds} rounds ` +
-    `without agreement. ${rateClause} Do you want to accept their number, or name ` +
-    `one final counter? Any number you give is final — we won't negotiate further; ` +
-    `the creator can only take it or leave it.`;
+    `without agreement. ${rateClause} Do you want to accept their number, reject, ` +
+    `or hand this off to a human?`;
 
+  // MED-W4: the COUNTER option is REMOVED from the max-rounds escalation until the
+  // final-offer delivery sub-state exists. A brand COUNTER here parks in
+  // MANUAL_REVIEW pending MANUAL delivery — the counter is never actually sent to
+  // the creator — so offering it told the brand a counter went out when it
+  // didn't. Approve / reject / handoff only; a brand who wants to propose a
+  // different number hands off to a human, who sends it. (brandDecision.ts still
+  // defensively handles a free-text "COUNTER <n>" the same safe way.)
   return openBrandDecision(ctx, email, {
     reason: "max_rounds_reached",
     question,
-    // Max-rounds offers all four actions: approve their number, counter (final),
-    // reject, or hand off. (B10 over-ceiling, a later item, drops "counter".)
-    actions: ["approve", "reject", "counter", "handoff"],
+    actions: ["approve", "reject", "handoff"],
     context: {
       reason: "max_rounds_reached",
-      actions: ["approve", "reject", "counter", "handoff"],
+      actions: ["approve", "reject", "handoff"],
       negotiationNodeId: node.id,
       ...(creatorRate !== undefined ? { creatorRate } : {}),
       ...(floor !== undefined ? { floor } : {}),

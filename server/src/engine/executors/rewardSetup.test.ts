@@ -1,7 +1,12 @@
 /**
  * Unit tests for Reward Setup fee resolution — resolveAgreedFee derives the
- * final fixed fee to show/confirm from the persisted negotiation history, with
- * a band fallback. Pure — no DB, no network. Run:
+ * final fixed fee to show/confirm from the persisted negotiation history.
+ *
+ * CRITICAL-3: it no longer falls back to the negotiation band (ceiling → floor)
+ * when there's no genuine agreed rate — that fallback stated the INTERNAL CEILING
+ * as "the agreed fee" in contract-forming emails. It now returns `undefined`, and
+ * the contract-forming callers (Reward Setup / Content Brief) escalate to a human
+ * rather than fabricate a fee. Pure — no DB, no network. Run:
  *   npx tsx src/engine/executors/rewardSetup.test.ts
  */
 
@@ -51,28 +56,43 @@ test("uses the last offer on the table when the accept carried no explicit rate"
   assert.equal(resolveAgreedFee(events, { minBudget: 0, maxBudget: 500 }), 320);
 });
 
-test("no negotiation history → falls back to band ceiling (maxBudget)", () => {
-  assert.equal(resolveAgreedFee([], { minBudget: 100, maxBudget: 800 }), 800);
+// CRITICAL-3: with no genuine agreed rate in the history, resolveAgreedFee must
+// return undefined — NOT the band ceiling/floor. These previously asserted the
+// old ceiling/floor fallback (the bug); they now assert the hard-fail so callers
+// escalate instead of stating a fabricated fee.
+test("no negotiation history → undefined (no ceiling fallback)", () => {
+  assert.equal(resolveAgreedFee([], { minBudget: 100, maxBudget: 800 }), undefined);
 });
 
-test("no history, no ceiling → falls back to floor (minBudget)", () => {
-  assert.equal(resolveAgreedFee([], { minBudget: 250 }), 250);
+test("no history, floor only → undefined (no floor fallback)", () => {
+  assert.equal(resolveAgreedFee([], { minBudget: 250 }), undefined);
 });
 
 test("no history and no band → undefined", () => {
   assert.equal(resolveAgreedFee([], {}), undefined);
 });
 
-test("termFloor/termCeiling band shape is honored", () => {
+test("termFloor/termCeiling band is NOT used as a fee fallback", () => {
   assert.equal(
     resolveAgreedFee([], { termFloor: { rate: 200 }, termCeiling: { rate: 900 } }),
-    900,
+    undefined,
   );
 });
 
-test("falls back to the reward node's own band when the negotiation node has none", () => {
+test("the reward node's own band is NOT used as a fee fallback either", () => {
   // Empty negotiation config, band only on the fallback (reward) config.
-  assert.equal(resolveAgreedFee([], {}, { minBudget: 150, maxBudget: 600 }), 600);
+  assert.equal(resolveAgreedFee([], {}, { minBudget: 150, maxBudget: 600 }), undefined);
+});
+
+test("a brand-APPROVE turn (outcome ACCEPT + rate) IS recovered as the agreed fee", () => {
+  // CRITICAL-3: the brand-decision APPROVE now emits outcome:ACCEPT + rate, so the
+  // brand-approved number flows through to the finalized-terms resolver exactly
+  // like a normal negotiation ACCEPT.
+  const events = [
+    turn({ outcome: "counter", round: 1, rate: 400 }),
+    turn({ outcome: "ACCEPT", rate: 425, approvedRate: 425, decision: "APPROVE" }),
+  ];
+  assert.equal(resolveAgreedFee(events, { minBudget: 200, maxBudget: 500 }), 425);
 });
 
 console.log(`\n${n} passed\n`);

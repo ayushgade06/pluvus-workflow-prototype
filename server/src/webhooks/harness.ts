@@ -36,7 +36,7 @@ import webhooksRouter from "../routes/webhooks.js";
 import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
 import { getNodeExecutionQueue, getInboundEmailQueue } from "../workers/queues.js";
-import { releaseLock, closeLockClient } from "../scheduler/lock.js";
+import { forceReleaseLock, closeLockClient } from "../scheduler/lock.js";
 import {
   listInstancesByVersion,
   updateInstanceState,
@@ -376,7 +376,7 @@ async function main(): Promise<void> {
 
   // Clear any stale per-instance Redis lock left by a previously interrupted
   // run, and drain the inbound queue so old jobs don't interfere.
-  await releaseLock(instanceId);
+  await forceReleaseLock(instanceId);
   await getInboundEmailQueue().obliterate({ force: true });
   log(`run inbound message id: ${inboundMsgId}`);
 

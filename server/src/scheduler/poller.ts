@@ -2,6 +2,7 @@ import { listDueInstances } from "../db/instances.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { logTrace } from "../observability/logger.js";
 import { sweepExpiredBrandDecisions } from "./brandDecisionSweep.js";
+import { reconcileStuckInstances } from "./reconciliation.js";
 
 // ---------------------------------------------------------------------------
 // Due-instance poller
@@ -26,6 +27,10 @@ async function poll(): Promise<void> {
   // by the due-instance path below.
   await sweepExpiredBrandDecisions();
 
+  // HARD-R1: reconciliation sweep — re-enqueue instances stranded in a transient
+  // non-terminal state (crash between OCC commit and enqueue). Same cadence; its
+  // own internal try/catch so a failure never affects the due-instance path.
+  await reconcileStuckInstances();
 
   let instances;
   try {

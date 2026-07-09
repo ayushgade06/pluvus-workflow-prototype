@@ -5,7 +5,7 @@ import {
 } from "../../db/index.js";
 import type { Creator, Message, Prisma } from "@prisma/client";
 import type { EmailDraft } from "../types.js";
-import type { IEmailProvider } from "../providers.js";
+import type { IEmailProvider, EmailRecipient } from "../providers.js";
 
 // ---------------------------------------------------------------------------
 // Idempotent outbound send (FIX-11, generalized)
@@ -78,6 +78,11 @@ export async function sendOnce(
   draft: EmailDraft,
   idempotencyKey: string,
   deps: SendOnceDeps = defaultDeps,
+  // Optional explicit recipient (brand outbound — CRITICAL-2). When set, the
+  // email is addressed to the brand rather than the creator; the reserved
+  // Message row still belongs to the instance so the brand's reply correlates by
+  // threadId. A brand-decision reply-to is also carried here.
+  recipient?: EmailRecipient,
 ): Promise<SentResult> {
   // Step 1 — reserve.
   let reserved;
@@ -103,7 +108,7 @@ export async function sendOnce(
   }
 
   // Step 2 — send (guarded by the committed reservation).
-  const { messageId, threadId } = await email.send(draft, creator);
+  const { messageId, threadId } = await email.send(draft, creator, recipient);
 
   // Step 3 — finalize the reserved row with the provider's identifiers.
   await deps.updateMessageSent(reserved.id, { externalMessageId: messageId, threadId });

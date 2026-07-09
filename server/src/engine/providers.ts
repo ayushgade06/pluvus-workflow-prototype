@@ -15,15 +15,38 @@ import { resolveBand } from "./band.js";
 // IEmailProvider
 // ---------------------------------------------------------------------------
 
+// An explicit outbound recipient, used when the message goes to someone OTHER
+// than the creator whose thread we're on — specifically the BRAND on an
+// escalation email (CRITICAL-2). Previously brand outbound forged a Creator with
+// the email swapped ("brandAsCreator"), which meant no clean seam to persist a
+// Message row or set a decision-scoped reply-to. Passing this instead lets the
+// provider address the brand AND lets the caller persist the outbound row so the
+// brand's reply can correlate back by threadId.
+export interface EmailRecipient {
+  email: string;
+  name: string;
+  /** Optional Reply-To. Brand-decision emails set this to a token-scoped address
+   *  so a reply is attributable to exactly one decision (see brandDecision). */
+  replyTo?: string;
+}
+
 export interface IEmailProvider {
   draft(
     creator: Creator,
     template: string,
     config: Record<string, unknown>,
   ): Promise<EmailDraft>;
+  /**
+   * Send an email. By default it is addressed to `creator` (the thread owner).
+   * When `recipient` is supplied the message is addressed there instead — the
+   * brand-outbound path (escalation / brand-decision) uses this so the brand,
+   * not the creator, receives the email while the returned threadId still lets
+   * the reply correlate back to the instance.
+   */
   send(
     draft: EmailDraft,
     creator: Creator,
+    recipient?: EmailRecipient,
   ): Promise<{ messageId: string; threadId: string }>;
 }
 
@@ -86,10 +109,15 @@ export class MockEmailProvider implements IEmailProvider {
   async send(
     _draft: EmailDraft,
     creator: Creator,
+    recipient?: EmailRecipient,
   ): Promise<{ messageId: string; threadId: string }> {
+    // When addressed to a brand (recipient set), key the thread on the recipient
+    // email so a simulated brand reply on that address correlates to a distinct
+    // thread — mirroring how a real provider threads by recipient.
+    const threadKey = recipient?.email ?? creator.id;
     return {
       messageId: `mock-msg-${creator.id}-${Date.now()}`,
-      threadId: `mock-thread-${creator.id}`,
+      threadId: `mock-thread-${threadKey}`,
     };
   }
 }

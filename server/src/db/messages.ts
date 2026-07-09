@@ -36,6 +36,20 @@ export async function updateMessageSent(
   });
 }
 
+/**
+ * Mark an INBOUND reply as fully processed (CRITICAL-6). Called once the inbound
+ * handler completes (persist → transition → step). The idempotency short-circuit
+ * checks processedAt, so a row that was persisted but not processed (a crash
+ * mid-handler) is re-processed on retry rather than skipped. Best-effort by
+ * externalMessageId; a no-op if the row is already gone.
+ */
+export async function markMessageProcessed(externalMessageId: string): Promise<void> {
+  await prisma.message.updateMany({
+    where: { externalMessageId },
+    data: { processedAt: new Date() },
+  });
+}
+
 /** Find all messages in a thread. Used by Nylas webhook handler (Phase 6)
  *  to correlate an inbound reply to the right ExecutionInstance. */
 export async function findMessagesByThreadId(threadId: string): Promise<Message[]> {

@@ -96,9 +96,13 @@ function makeEmail(opts?: { throwOnSend?: boolean }) {
     async draft() {
       return { subject: "", body: "" };
     },
-    async send(draft, recipient) {
+    // CRITICAL-2: the real send() signature is (draft, creator, recipient?). Brand
+    // outbound now passes the brand as the explicit 3rd-arg recipient instead of
+    // forging a Creator in arg 2, so the captured "to" reads the recipient when
+    // present (the brand) and the creator otherwise.
+    async send(draft, creator, recipient) {
       if (opts?.throwOnSend) throw new Error("smtp unreachable");
-      sent.push({ to: recipient.email, subject: draft.subject });
+      sent.push({ to: recipient?.email ?? creator.email, subject: draft.subject });
       return { messageId: `ext-${sent.length}`, threadId: `thread-${sent.length}` };
     },
   };

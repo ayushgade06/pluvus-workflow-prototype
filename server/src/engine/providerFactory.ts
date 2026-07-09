@@ -23,6 +23,7 @@ import type {
   EmailDraft,
   PriorNegotiationContext,
 } from "./types.js";
+import { mapReplyIntentToBrandDecision } from "./brandDecisionParse.js";
 
 // ---------------------------------------------------------------------------
 // Default AI-provider mode (C1)
@@ -205,7 +206,11 @@ export class AgentProviderAdapter implements IAgentProvider {
     // no explicit cue; this is the AI fallback (§2.4). We reuse the SAME reply
     // classifier — and thus the same circuit-breaker/degradation guarantees — and
     // map its reply intent onto a brand-decision action:
-    //   POSITIVE / QUESTION → APPROVE  (the brand is affirming / moving forward)
+    //   POSITIVE            → APPROVE  (the brand is affirming / moving forward)
+    //   QUESTION            → AMBIGUOUS (MED-N1) — a brand asking a QUESTION has
+    //                         NOT approved. Mapping QUESTION→APPROVE meant a brand
+    //                         asking "what's their reach?" auto-approved an
+    //                         over-ceiling spend. It now re-asks instead.
     //   NEGATIVE / OPT_OUT  → REJECT
     //   UNKNOWN             → AMBIGUOUS (re-ask, never guess a money decision)
     // A counter AMOUNT can't come from this closed intent set, so a free-text
@@ -215,17 +220,8 @@ export class AgentProviderAdapter implements IAgentProvider {
     // not a fabricated approval.
     try {
       const result = await this.classifier.classify({ message: body });
-      const confidence = result.confidence;
-      switch (result.intent) {
-        case "POSITIVE":
-        case "QUESTION":
-          return { decision: "APPROVE", confidence };
-        case "NEGATIVE":
-        case "OPT_OUT":
-          return { decision: "REJECT", confidence };
-        default:
-          return { decision: "AMBIGUOUS", confidence: 0 };
-      }
+      // Pure intent→action mapping (MED-N1: QUESTION→AMBIGUOUS, not APPROVE).
+      return mapReplyIntentToBrandDecision(result.intent, result.confidence);
     } catch (err) {
       console.error(
         `[agentProvider] classifyBrandDecision failed, degrading to AMBIGUOUS (re-ask): ${errMessage(err)}`,

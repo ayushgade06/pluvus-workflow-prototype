@@ -115,6 +115,20 @@ export async function executeContentBrief(
       nodeGraph.find((n) => n.type === "NEGOTIATION")?.config ?? {};
     const events = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
     fixedFee = resolveAgreedFee(events, negotiationConfig, config);
+    // CRITICAL-3: the merged Content Brief email is contract-forming — it states
+    // the fee + payout link the creator submits against. If no genuine agreed
+    // rate was recorded (resolveAgreedFee returns undefined; the old code fell
+    // back to the internal ceiling here), escalate to a human rather than email a
+    // fabricated figure. Deterministic code must never invent a fee (PRINCIPLES.md).
+    if (fixedFee === undefined) {
+      return {
+        nextState: "MANUAL_REVIEW",
+        nextNodeId: null,
+        completedAt: new Date(),
+        eventType: "MANUAL_REVIEW_FLAGGED",
+        eventPayload: { outcome: "ESCALATE", reason: "no_agreed_fee", node: node.type },
+      };
+    }
     commissionRate = firstNumber(config["commissionRate"], negotiationConfig["commissionRate"]);
     deliverables = firstString(config["deliverables"], negotiationConfig["deliverables"]);
     timeline = firstString(config["timeline"], negotiationConfig["timeline"]);

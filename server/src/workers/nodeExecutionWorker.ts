@@ -63,8 +63,15 @@ async function handleNodeExecution(
   }
 
   // ── Acquire instance lock ────────────────────────────────────────────────
-  const locked = await acquireLock(instanceId);
-  if (!locked) {
+  // HARD-R2: acquireLock returns a fencing token (or null when busy). The token
+  // is passed to releaseLock so only this worker can free its own lock. A busy
+  // lock here is a safe skip: the scheduler poller + the reconciliation sweep
+  // (HARD-R1) re-enqueue a stranded instance, and OCC prevents any double-step.
+  // (This differs from the inbound worker, where a dropped job would LOSE a
+  // creator reply — there a busy lock must THROW to force a BullMQ retry; see
+  // CRITICAL-6.)
+  const lockToken = await acquireLock(instanceId);
+  if (!lockToken) {
     console.log(`[node-execution] lock busy — skip ${instanceId} (job ${job.id})`);
     return;
   }
@@ -87,7 +94,7 @@ async function handleNodeExecution(
     }
     throw err;
   } finally {
-    await releaseLock(instanceId);
+    await releaseLock(instanceId, lockToken);
   }
 
   const updated = await findInstanceById(instanceId);

@@ -93,6 +93,20 @@ export async function executeRewardSetup(
     // the missing name by email and re-run this node once it's supplied.
     return openMissingBrandDecision(ctx, email);
   }
+  // CRITICAL-3: the reward-confirmation email is contract-forming — it states the
+  // agreed fee and asks the creator to reply "I Agree". If no genuine agreed rate
+  // was recorded (resolveAgreedFee now returns undefined instead of falling back
+  // to the internal ceiling), escalate to a human rather than confirm an invented
+  // number. Code must never fabricate a fee (PRINCIPLES.md).
+  if (agreedFee === undefined) {
+    return {
+      nextState: "MANUAL_REVIEW",
+      nextNodeId: null,
+      completedAt: new Date(),
+      eventType: "MANUAL_REVIEW_FLAGGED",
+      eventPayload: { outcome: "ESCALATE", reason: "no_agreed_fee", node: node.type },
+    };
+  }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
   const templateDraft = renderRewardConfirmationEmail({

@@ -39,7 +39,7 @@ import {
 import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
 import { startPoller, stopPoller } from "./poller.js";
-import { closeLockClient, releaseLock } from "./lock.js";
+import { closeLockClient, forceReleaseLock } from "./lock.js";
 import type { InstanceState } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ async function scenarioA(instanceId: string, creatorId: string): Promise<void> {
   log(`state: ${inst?.currentState}, followUpCount: ${inst?.followUpCount}, dueAt: ${inst?.dueAt?.toISOString()}`);
 
   // Release any lock held from the setup steps above so the worker can proceed
-  await releaseLock(instanceId);
+  await forceReleaseLock(instanceId);
 
   // Start the poller with a 2-second interval so we don't have to wait 30 s
   startPoller(2_000);
@@ -213,7 +213,7 @@ async function scenarioA(instanceId: string, creatorId: string): Promise<void> {
   // After FOLLOWED_UP the runtime should set dueAt for the next window.
   // The follow-up executor transitions FOLLOWED_UP → AWAITING_REPLY with a new dueAt.
   // Release any lock from the scheduler-triggered job before enqueuing the reschedule step.
-  await releaseLock(instanceId);
+  await forceReleaseLock(instanceId);
   await enqueueNodeExecution({
     instanceId,
     expectedState: "FOLLOWED_UP",
@@ -253,7 +253,7 @@ async function scenarioB(instanceId: string, creatorId: string): Promise<void> {
     followUpCount: 0,
     dueAt: new Date(Date.now() - 1000),
   });
-  await releaseLock(instanceId); // clear any lingering lock from setup
+  await forceReleaseLock(instanceId); // clear any lingering lock from setup (HARD-R2: unconditional harness reset)
   log("forced to AWAITING_REPLY with past dueAt");
 
   // Inject a reply BEFORE the scheduler fires — reply should win
@@ -303,7 +303,7 @@ async function scenarioC(instanceId: string, creatorId: string): Promise<void> {
     followUpCount: 0,
     dueAt: new Date(Date.now() - 1000),
   });
-  await releaseLock(instanceId); // clear any lingering lock from prior scenarios
+  await forceReleaseLock(instanceId); // clear any lingering lock from prior scenarios
   log("set to AWAITING_REPLY");
 
   const eventsBefore = (await listEventsByInstance(instanceId)).length;

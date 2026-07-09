@@ -1,5 +1,5 @@
 import type { Creator } from "@prisma/client";
-import type { IEmailProvider } from "../../engine/providers.js";
+import type { IEmailProvider, EmailRecipient } from "../../engine/providers.js";
 import { MockEmailProvider } from "../../engine/providers.js";
 import type { EmailDraft } from "../../engine/types.js";
 import {
@@ -45,6 +45,7 @@ export class NylasEmailProvider implements IEmailProvider {
   async send(
     draft: EmailDraft,
     creator: Creator,
+    recipient?: EmailRecipient,
   ): Promise<{ messageId: string; threadId: string }> {
     // Presentation only: the draft body is authored as plain text, which Nylas
     // (rendering `body` as HTML) would otherwise collapse into one block. Wrap
@@ -60,12 +61,20 @@ export class NylasEmailProvider implements IEmailProvider {
       content: a.content.toString("base64"),
     }));
 
+    // Address the explicit recipient (brand outbound) when supplied, otherwise
+    // the creator whose thread we're on. A brand-decision email also sets a
+    // token-scoped Reply-To so the reply is attributable to exactly one decision.
+    const to = recipient
+      ? [{ email: recipient.email, name: recipient.name }]
+      : [{ email: creator.email, name: creator.name }];
+
     const response = await this.client.messages.send({
       identifier: this.grantId,
       requestBody: {
-        to: [{ email: creator.email, name: creator.name }],
+        to,
         subject: draft.subject,
         body: plainTextToHtmlEmail(draft.body),
+        ...(recipient?.replyTo ? { replyTo: [{ email: recipient.replyTo }] } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       },
     });

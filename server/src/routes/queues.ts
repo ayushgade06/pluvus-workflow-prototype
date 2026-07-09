@@ -182,7 +182,9 @@ router.post("/inbound-email", async (req, res) => {
     threadId: resolvedThreadId,
     subject,
     body,
-    mockIntent,
+    // Only include mockIntent when actually provided — under exactOptionalProperty
+    // Types an explicit `undefined` is not assignable to the optional string field.
+    ...(mockIntent !== undefined ? { mockIntent } : {}),
   });
 
   res.status(202).json({

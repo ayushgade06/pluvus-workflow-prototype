@@ -16,6 +16,43 @@
  *  can't-tell bucket. Persisted verbatim on BrandDecision.decision. */
 export type BrandDecisionAction = "APPROVE" | "REJECT" | "COUNTER" | "HANDOFF" | "AMBIGUOUS";
 
+/** Sentinel stored in Message.senderEmail for a magic-link-originated brand
+ *  decision (CRITICAL-1). The one-click route verifies the unguessable token
+ *  against the DB before synthesizing the reply, so the token is the capability —
+ *  the identity gate trusts this channel without a From-address match. It is not
+ *  a real address (contains no "@") so it can never collide with a campaign
+ *  notifyEmail. */
+export const BRAND_DECISION_LINK_SENDER = "brand-decision-link";
+
+/**
+ * The sender-identity gate for a brand-decision reply (CRITICAL-1).
+ *
+ * A decision that resolves a real-money escalation must originate from the BRAND
+ * — the campaign's notifyEmail — or from the verified magic-link channel. A reply
+ * from the CREATOR's own address (the party the system distrusts) must NEVER be
+ * treated as the brand approving their own over-ceiling ask.
+ *
+ * Returns true when the reply is authorized to resolve the decision:
+ *   - it arrived via the magic-link sentinel (token already verified), OR
+ *   - its From: address matches the campaign notifyEmail (case-insensitive).
+ *
+ * Conservative by design: an unknown/missing sender, or one that doesn't match
+ * the brand, returns false so the caller HOLDS rather than resolves. When the
+ * campaign has no notifyEmail configured, only the magic-link channel can resolve
+ * (an email reply can't be verified against a brand address that doesn't exist).
+ */
+export function isAuthorizedBrandSender(
+  senderEmail: string | null | undefined,
+  brandNotifyEmail: string | null | undefined,
+): boolean {
+  if (!senderEmail) return false;
+  const sender = senderEmail.trim().toLowerCase();
+  if (sender === BRAND_DECISION_LINK_SENDER) return true;
+  const brand = brandNotifyEmail?.trim().toLowerCase();
+  if (!brand) return false;
+  return sender === brand;
+}
+
 export interface BrandDecisionParse {
   decision: BrandDecisionAction;
   /** The counter amount when decision === "COUNTER". Undefined otherwise. */
@@ -37,7 +74,16 @@ export interface BrandDecisionParse {
 const COUNTER_RE = /\bCOUNTER\b[^0-9$]*\$?\s*([\d,]+(?:\.\d+)?)/i;
 const HANDOFF_RE = /\b(HANDOFF|HAND\s*OFF|HUMAN|CALL\s*ME|DASHBOARD|TAKE\s*OVER)\b/i;
 const REJECT_RE = /\b(REJECT|DECLINE|PASS|NO\s*DEAL|WALK\s*AWAY)\b/i;
-const APPROVE_RE = /\b(APPROVE|APPROVED|ACCEPT|ACCEPTED|AGREE|AGREED|YES|OK|OKAY|GO\s*AHEAD|SOUNDS?\s*GOOD)\b/i;
+// MED-N1 / CRITICAL-1: NARROWED. The escalation email instructs the brand to
+// reply with the literal cue "APPROVE", so a deterministic (confidence-1) match
+// is limited to the explicit approval verbs — APPROVE(D) and its close synonyms
+// ACCEPT(ED)/AGREE(D). The bare affirmatives "YES / OK / OKAY / GO AHEAD /
+// SOUNDS GOOD" are REMOVED from the deterministic path: they are far too loose to
+// authorize a real-money commitment (a stray "ok" or "sounds good" anywhere in
+// the reply used to auto-approve). Such phrasings now fall through to the
+// confidence-gated AI classifier, which cannot approve a QUESTION (see
+// providerFactory.classifyBrandDecision) and re-asks when unsure.
+const APPROVE_RE = /\b(APPROVE|APPROVED|ACCEPT|ACCEPTED|AGREE|AGREED)\b/i;
 
 /** Parse a dollar-ish amount ("$1,200", "1200.50", "480") to a finite number,
  *  or undefined. Kept local so COUNTER extraction never throws on odd input. */
@@ -89,3 +135,34 @@ export function scanBrandDecisionTokens(body: string): BrandDecisionParse | null
 /** Confidence floor for the AI fallback: at or above this the agent's decision
  *  is trusted; below it the reply is treated as AMBIGUOUS (spec §2.4). */
 export const BRAND_DECISION_CONFIDENCE_THRESHOLD = 0.5;
+
+/**
+ * Map a reply-classifier intent onto a brand-decision action (MED-N1). Used by
+ * the AI fallback (classifyBrandDecision) when no deterministic token matched.
+ *
+ *   POSITIVE            → APPROVE   (the brand is affirming / moving forward)
+ *   NEGATIVE / OPT_OUT  → REJECT
+ *   QUESTION            → AMBIGUOUS (MED-N1): a brand asking a QUESTION has NOT
+ *                         approved. Mapping QUESTION→APPROVE let a brand asking
+ *                         "what's their reach?" auto-approve an over-ceiling
+ *                         spend; it now re-asks instead.
+ *   UNKNOWN / anything  → AMBIGUOUS (re-ask; never guess a money decision)
+ *
+ * Pure so the mapping is unit-testable without the classifier/circuit-breaker.
+ * The returned confidence for AMBIGUOUS is 0 so the caller always re-asks.
+ */
+export function mapReplyIntentToBrandDecision(
+  intent: string,
+  confidence: number,
+): { decision: BrandDecisionAction; confidence: number } {
+  switch (intent) {
+    case "POSITIVE":
+      return { decision: "APPROVE", confidence };
+    case "NEGATIVE":
+    case "OPT_OUT":
+      return { decision: "REJECT", confidence };
+    case "QUESTION":
+    default:
+      return { decision: "AMBIGUOUS", confidence: 0 };
+  }
+}

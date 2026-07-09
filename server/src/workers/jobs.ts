@@ -39,6 +39,15 @@ export interface InboundEmailJobData {
   subject: string;
   body: string;
   /**
+   * The From: address of the inbound message (CRITICAL-1). Carried from the
+   * webhook so the brand-decision handler can verify the reply originated from
+   * the brand (campaign notifyEmail), not the creator. Optional: the mocked
+   * injection path (queues route / harness) omits it, and a real webhook may
+   * occasionally lack a parseable from — the handler treats a missing/mismatched
+   * sender conservatively (does not auto-resolve on it).
+   */
+  senderEmail?: string;
+  /**
    * Declared reply intent for Phase 4 (mocked).
    * Phase 6: real Nylas-webhook-originated jobs OMIT this field — the webhook
    * only ingests and correlates, it does not classify. The worker currently

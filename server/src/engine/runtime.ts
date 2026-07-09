@@ -8,9 +8,12 @@ import {
   updateInstanceStateConditional,
   appendEvent,
   createMessage,
+  findMessageByExternalId,
 } from "../db/index.js";
+import type { Prisma as PrismaTypes } from "@prisma/client";
 import { findCampaignById } from "../db/campaigns.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
+import { BRAND_DECISION_LINK_SENDER } from "./brandDecisionParse.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
 import { logTransition, type TransitionSource } from "../observability/logger.js";
@@ -31,7 +34,7 @@ import {
   executeBrandDecision,
   executeEnd,
 } from "./executors/index.js";
-import { markPaymentReceived, updateBrandDecision } from "../db/index.js";
+import { markPaymentReceived, expirePendingBrandDecision } from "../db/index.js";
 import type { PayoutMethod } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -300,6 +303,31 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // persistInboundMessageOnce
+  // -------------------------------------------------------------------------
+  // CRITICAL-6: create the INBOUND Message row idempotently. If a prior attempt
+  // already persisted this externalMessageId (then crashed before fully
+  // processing), the retry must NOT hit the unique constraint — it skips the
+  // insert and re-runs the rest of the handler. Returns the externalMessageId so
+  // callers can mark it processed on success. A row with no externalMessageId
+  // (mock-generated) is always fresh, so it is created unconditionally.
+
+  private async persistInboundMessageOnce(
+    instanceId: string,
+    externalMessageId: string,
+    data: Omit<PrismaTypes.MessageCreateInput, "instance" | "direction" | "externalMessageId">,
+  ): Promise<void> {
+    const existing = await findMessageByExternalId(externalMessageId);
+    if (existing) return; // already persisted by a prior (crashed) attempt
+    await createMessage({
+      instance: { connect: { id: instanceId } },
+      direction: "INBOUND",
+      externalMessageId,
+      ...data,
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // injectReply
   // -------------------------------------------------------------------------
 
@@ -323,16 +351,15 @@ export class WorkflowRuntime {
     const externalMessageId =
       opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
 
-    // Create inbound message record
-    await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "INBOUND",
-      subject: opts.subject,
-      body: opts.body,
-      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
-      externalMessageId,
-      receivedAt: now,
-    });
+    // CRITICAL-6 (b): assert the accepting transition BEFORE persisting the
+    // Message row. The old order (persist → assertTransition) meant a reply
+    // arriving in a state with no REPLY_RECEIVED edge left an orphan Message row
+    // and then threw — and because the worker's idempotency check keys on the
+    // persisted row, every retry no-op'd and the reply was lost forever. With the
+    // accepting edges added in stateMachine (OUTREACH_SENT / NEGOTIATING) this is
+    // now also defense-in-depth: an unexpected state fails fast with no orphan row
+    // (so a retry, or a state-machine fix, can still process the reply).
+    assertTransition(instance.currentState, "REPLY_RECEIVED");
 
     // Resolve the REPLY_DETECTION node from the actual workflow version so
     // loadContext can dispatch correctly regardless of what the node is named.
@@ -340,8 +367,17 @@ export class WorkflowRuntime {
     const nodeGraph = (version?.nodeGraph ?? []) as unknown as NodeSnapshot[];
     const replyNode = nodeGraph.find((n) => n.type === "REPLY_DETECTION");
 
+    // Create inbound message record (after the transition is known to be legal),
+    // idempotently so a retry after a mid-handler crash re-processes rather than
+    // hitting the unique constraint (CRITICAL-6).
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
+      subject: opts.subject,
+      body: opts.body,
+      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
+      receivedAt: now,
+    });
+
     // Transition to REPLY_RECEIVED — OCC: only succeeds if state hasn't changed
-    assertTransition(instance.currentState, "REPLY_RECEIVED");
     const updatedForReply = await updateInstanceStateConditional(instanceId, instance.currentState, {
       currentState: "REPLY_RECEIVED",
       currentNodeId: replyNode?.id ?? "node-reply-detection",
@@ -419,14 +455,13 @@ export class WorkflowRuntime {
       opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
 
     // Persist the inbound reply so executeRewardReply can read it (same contract
-    // as injectReply → executeReplyDetection).
-    await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "INBOUND",
+    // as injectReply → executeReplyDetection). Idempotent on externalMessageId so
+    // a retry after a mid-handler crash re-processes rather than double-inserting
+    // (CRITICAL-6).
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
       subject: opts.subject,
       body: opts.body,
       threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
-      externalMessageId,
       receivedAt: now,
     });
 
@@ -489,14 +524,12 @@ export class WorkflowRuntime {
       opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
 
     // Persist the inbound reply so executePaymentReply can read it (same contract
-    // as handleRewardReply → executeRewardReply).
-    await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "INBOUND",
+    // as handleRewardReply → executeRewardReply). Idempotent on externalMessageId
+    // (CRITICAL-6).
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
       subject: opts.subject,
       body: opts.body,
       threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
-      externalMessageId,
       receivedAt: now,
     });
 
@@ -540,6 +573,9 @@ export class WorkflowRuntime {
       body: string;
       threadId?: string;
       externalMessageId?: string;
+      /** The From: address of the reply (CRITICAL-1). Persisted on the Message row
+       *  so executeBrandDecision can verify the reply came from the brand. */
+      senderEmail?: string;
       source?: TransitionSource;
       worker?: string | undefined;
       queueJobId?: string | undefined;
@@ -560,14 +596,14 @@ export class WorkflowRuntime {
       opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
 
     // Persist the inbound reply so executeBrandDecision can read it (same
-    // contract as handleRewardReply → executeRewardReply).
-    await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "INBOUND",
+    // contract as handleRewardReply → executeRewardReply). The sender address is
+    // persisted for the identity check (CRITICAL-1). Idempotent on
+    // externalMessageId (CRITICAL-6).
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
       subject: opts.subject,
       body: opts.body,
       threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
-      externalMessageId,
+      ...(opts.senderEmail !== undefined ? { senderEmail: opts.senderEmail } : {}),
       receivedAt: now,
     });
 
@@ -638,6 +674,12 @@ export class WorkflowRuntime {
       body: canonical,
       threadId: `mock-thread-${instance.creatorId}`,
       externalMessageId,
+      // CRITICAL-1: tag the synthetic magic-link reply with the trusted sentinel.
+      // The route already verified the unguessable token against the DB before
+      // reaching here (findBrandDecisionByToken), so the token IS the capability —
+      // executeBrandDecision's identity gate trusts this channel without a
+      // From-address match.
+      senderEmail: BRAND_DECISION_LINK_SENDER,
       receivedAt: now,
     });
 
@@ -681,11 +723,19 @@ export class WorkflowRuntime {
   ): Promise<boolean> {
     const instance = await findInstanceById(instanceId);
     if (!instance) return false;
-    // Only sweep a run that is genuinely still parked. If it already moved (a
-    // late reply, a prior sweep), there's nothing to expire.
-    if (instance.currentState !== "AWAITING_BRAND_DECISION") return false;
 
     const now = new Date();
+
+    // EASY-W2: if the run already left AWAITING_BRAND_DECISION (a late reply, a
+    // prior sweep, or a PARTIAL failure where a previous expiry committed the
+    // transition but never closed the row), the instance is done but the row may
+    // still be PENDING — which the 72h sweep would re-select forever. Reconcile
+    // the orphan row to EXPIRED (idempotent; a no-op if already resolved) so the
+    // sweep converges, then no-op the transition (nothing left to move).
+    if (instance.currentState !== "AWAITING_BRAND_DECISION") {
+      await expirePendingBrandDecision(decisionId, now);
+      return false;
+    }
 
     // OCC transition AWAITING_BRAND_DECISION → MANUAL_REVIEW.
     assertTransition(instance.currentState, "MANUAL_REVIEW");
@@ -699,20 +749,23 @@ export class WorkflowRuntime {
       },
     );
     if (!updated) {
-      // Another sweep or a late reply already advanced it — no-op.
+      // Another sweep or a late reply won the OCC race and advanced it. Still
+      // reconcile the row so it doesn't linger PENDING for the next sweep.
+      await expirePendingBrandDecision(decisionId, now);
       return false;
     }
 
-    // Mark the decision row EXPIRED (best-effort; the transition already stands).
+    // Mark the decision row EXPIRED. Uses the status=PENDING-guarded update
+    // (idempotent) so a retry/overlap can't clobber a row a concurrent resolution
+    // just wrote. Best-effort — the transition already stands — but a failure here
+    // is now SELF-HEALING: the row stays PENDING and the very next sweep hits the
+    // orphan-reconcile branch above and closes it (rather than re-processing
+    // forever, which was the EASY-W2 bug).
     try {
-      await updateBrandDecision(decisionId, {
-        status: "EXPIRED",
-        decision: "AMBIGUOUS",
-        resolvedAt: now,
-      });
+      await expirePendingBrandDecision(decisionId, now);
     } catch (err) {
       console.error(
-        `[brand-decision] failed to mark decision ${decisionId} EXPIRED (transition already applied): ${
+        `[brand-decision] failed to mark decision ${decisionId} EXPIRED (transition already applied; next sweep will reconcile): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

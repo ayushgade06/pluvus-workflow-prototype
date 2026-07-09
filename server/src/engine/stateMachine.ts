@@ -9,7 +9,13 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // output guard catches a floor/ceiling leak in an AI-generated outreach or
   // follow-up email, the funnel halts for human review instead of sending it.
   ENROLLED: ["OUTREACH_SENT", "OPTED_OUT", "MANUAL_REVIEW"],
-  OUTREACH_SENT: ["AWAITING_REPLY", "OPTED_OUT"],
+  // CRITICAL-6: a creator reply can arrive while the instance is still
+  // OUTREACH_SENT (before the scheduler has transitioned it to AWAITING_REPLY).
+  // Without a REPLY_RECEIVED edge here, injectReply persisted the Message row and
+  // THEN assertTransition threw — leaving the reply persisted-but-unprocessed and
+  // permanently lost on retry (the idempotency check no-ops once the row exists).
+  // Accepting the edge lets the reply be buffered and processed instead of dropped.
+  OUTREACH_SENT: ["AWAITING_REPLY", "REPLY_RECEIVED", "OPTED_OUT"],
   // AWAITING_BRAND_DECISION is reachable alongside MANUAL_REVIEW for the *business*
   // escalations (A1/A2 unclassifiable creator reply): the brand reads intent by
   // email and the run auto-resumes. Pure safety/infra failures still take the
@@ -20,7 +26,12 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // Negotiation business escalations (B9 max rounds, B10 rate above ceiling, B11
   // max rounds on counter) reach AWAITING_BRAND_DECISION instead of dead-ending in
   // MANUAL_REVIEW. The draft-leak guard block (B12) still goes to MANUAL_REVIEW.
-  NEGOTIATING: ["NEGOTIATING", "AWAITING_REPLY", "ACCEPTED", "REJECTED", "OPTED_OUT", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
+  // CRITICAL-6: a creator can reply again mid-negotiation (a second reply arrives
+  // before we've sent our turn). Without a REPLY_RECEIVED edge, injectReply
+  // persisted the row then threw on assertTransition, losing the reply on retry.
+  // The edge buffers such a reply into the reply-detection/negotiation path
+  // instead of dropping it.
+  NEGOTIATING: ["NEGOTIATING", "AWAITING_REPLY", "REPLY_RECEIVED", "ACCEPTED", "REJECTED", "OPTED_OUT", "AWAITING_BRAND_DECISION", "MANUAL_REVIEW"],
   // Brand-decision waiting state. The run is parked on the brand's reply and
   // resumes automatically:
   //   AWAITING_BRAND_DECISION → stay put on an ambiguous reply (re-ask once)

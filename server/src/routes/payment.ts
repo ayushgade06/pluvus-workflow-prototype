@@ -33,6 +33,30 @@ router.use(urlencoded({ extended: false }));
 
 const VALID_METHODS = new Set(PAYOUT_METHODS.map((m) => m.value));
 
+// EASY-W3: the payout is truly FINALIZED only when the PaymentInfo row is
+// PAYMENT_RECEIVED **and** the instance has advanced past PAYMENT_PENDING.
+//
+// The bug this fixes: handlePaymentSubmission flips PaymentInfo.status →
+// PAYMENT_RECEIVED BEFORE the OCC step (executePaymentSubmission requires the row
+// to already read PAYMENT_RECEIVED). If that step then threw non-stale, the row
+// was PAYMENT_RECEIVED but the instance stayed stuck in PAYMENT_PENDING with no
+// recovery — and because the form showed "already submitted" on row status alone,
+// the creator could never re-submit to unstick it. The payout was bricked.
+//
+// Keying the "already submitted" notice on BOTH conditions means that a
+// row-received-but-instance-still-pending state re-renders the FORM (not the
+// notice), so a re-submit re-runs the idempotent step and advances the instance —
+// self-recovery. (PAYMENT_PENDING is a waiting state the HARD-R1 reconciliation
+// sweep deliberately does NOT re-enqueue, so the re-submit is the recovery path.)
+export function isPayoutFinalized(
+  payment: NonNullable<Awaited<ReturnType<typeof findPaymentInfoByToken>>>,
+): boolean {
+  return (
+    payment.status === "PAYMENT_RECEIVED" &&
+    payment.instance.currentState !== "PAYMENT_PENDING"
+  );
+}
+
 // Resolve the brand name for the page from the payment row's joined relations,
 // falling back gracefully when a campaign isn't linked.
 function brandNameOf(
@@ -83,7 +107,10 @@ router.get("/:token", async (req: Request, res: Response) => {
     const brandName = brandNameOf(payment);
 
     // Already submitted — show the idempotent notice rather than a fresh form.
-    if (payment.status === "PAYMENT_RECEIVED") {
+    // EASY-W3: only when the payout is truly finalized (row received AND instance
+    // advanced). A row-received-but-instance-stuck state falls through to re-render
+    // the form so the creator can re-submit and unstick the run.
+    if (isPayoutFinalized(payment)) {
       res
         .type("html")
         .send(renderPaymentAlreadySubmittedPage({ creatorName, brandName }));
@@ -116,8 +143,13 @@ router.post("/:token", async (req: Request, res: Response) => {
     const creatorName = payment.instance.creator.name;
     const brandName = brandNameOf(payment);
 
-    // Idempotent: a re-POST of an already-submitted link is a no-op success.
-    if (payment.status === "PAYMENT_RECEIVED") {
+    // Idempotent: a re-POST of an already-FINALIZED link is a no-op success.
+    // EASY-W3: "finalized" now requires the instance to have advanced too, so a
+    // re-POST after a row-received-but-instance-stuck failure is NOT short-
+    // circuited here — it proceeds to re-run handlePaymentSubmission, which
+    // idempotently re-persists the (already PAYMENT_RECEIVED) row and re-steps the
+    // node, this time advancing the instance and unsticking the payout.
+    if (isPayoutFinalized(payment)) {
       res
         .type("html")
         .send(renderPaymentAlreadySubmittedPage({ creatorName, brandName }));

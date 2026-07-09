@@ -4,7 +4,7 @@ import { QUEUE_INBOUND_EMAIL, enqueueNodeExecution } from "./queues.js";
 import type { InboundEmailJobData } from "./jobs.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
-import { findInstanceById, findMessageByExternalId } from "../db/index.js";
+import { findInstanceById, findMessageByExternalId, markMessageProcessed } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
 import type { ReplyIntent } from "@prisma/client";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
@@ -41,17 +41,27 @@ function resolveIntent(raw?: string): ReplyIntent | undefined {
 async function handleInboundEmail(
   job: Job<InboundEmailJobData>,
 ): Promise<void> {
-  const { instanceId, externalMessageId, threadId, subject, body, mockIntent } =
+  const { instanceId, externalMessageId, threadId, subject, body, mockIntent, senderEmail } =
     job.data;
 
   // ── Idempotency check ───────────────────────────────────────────────────
+  // CRITICAL-6 (b): skip ONLY when the reply was fully PROCESSED (processedAt
+  // set), not merely persisted. The old check short-circuited on row existence,
+  // so if a prior attempt persisted the Message row and then crashed before
+  // advancing the instance (or hit a post-persist error), every retry no-op'd and
+  // the reply was permanently stranded. A persisted-but-unprocessed row now falls
+  // through to be re-processed (the persist step itself is idempotent on the
+  // unique externalMessageId — see below).
   const existing = await findMessageByExternalId(externalMessageId);
-  if (existing) {
+  if (existing?.processedAt) {
     console.log(
       `[inbound-email] skip — message ${externalMessageId} already processed (job ${job.id})`,
     );
     return;
   }
+  // NB: a persisted-but-unprocessed row (existing != null, processedAt == null)
+  // falls through — the persist step below is idempotent on externalMessageId
+  // (persistInboundMessageOnce), so re-processing after a crash never double-inserts.
 
   const instance = await findInstanceById(instanceId);
   if (!instance) {
@@ -67,10 +77,16 @@ async function handleInboundEmail(
   }
 
   // ── Acquire instance lock ────────────────────────────────────────────────
-  const locked = await acquireLock(instanceId);
-  if (!locked) {
-    console.log(`[inbound-email] lock busy — skip ${instanceId} (job ${job.id})`);
-    return;
+  // CRITICAL-6 (a): a busy lock must THROW, not return success. The old code
+  // logged "skip" and returned — which COMPLETES the BullMQ job, so the inbound
+  // reply was never persisted and never retried: silently and permanently lost.
+  // Throwing lets BullMQ retry with backoff once the other worker releases the
+  // lock. HARD-R2's fencing token means the retry can't collide with the holder.
+  const lockToken = await acquireLock(instanceId);
+  if (!lockToken) {
+    throw new Error(
+      `[inbound-email] lock busy for ${instanceId} (job ${job.id}) — throwing to force BullMQ retry (reply must not be dropped)`,
+    );
   }
 
   // Phase 7: resolveIntent returns undefined when mockIntent is absent (real
@@ -85,6 +101,14 @@ async function handleInboundEmail(
     emailProvider(),
     agentProvider(intent !== undefined ? { replyIntent: intent } : {}),
   );
+
+  // CRITICAL-6: only mark the reply PROCESSED when a branch completes without an
+  // unhandled throw. On success (or an OCC conflict, which means the reply is
+  // being/was handled by the winning worker) we set `processed = true` and stamp
+  // processedAt in the finally. If a branch throws unexpectedly, processed stays
+  // false, processedAt is left NULL, and BullMQ retries re-process the persisted
+  // row rather than the idempotency check skipping it (the old lost-reply bug).
+  let processed = false;
 
   try {
     // ── Reward Setup reply branch ──────────────────────────────────────────
@@ -109,10 +133,12 @@ async function handleInboundEmail(
           console.log(
             `[inbound-email] OCC conflict on handleRewardReply — ${err.message} (job ${job.id})`,
           );
+          processed = true; // handled by the winning worker — don't retry-loop
           return;
         }
         throw err;
       }
+      processed = true;
 
       // The agreement reply may have advanced the instance to REWARD_CONFIRMED.
       // That transition happens here (inbound worker), not via a node-execution
@@ -151,6 +177,9 @@ async function handleInboundEmail(
           body,
           threadId,
           externalMessageId,
+          // CRITICAL-1: the From: address is threaded to the brand-decision handler
+          // so it can verify the reply came from the brand, not the creator.
+          ...(senderEmail !== undefined ? { senderEmail } : {}),
           worker: "inbound-email",
           queueJobId: job.id,
         });
@@ -159,10 +188,12 @@ async function handleInboundEmail(
           console.log(
             `[inbound-email] OCC conflict on handleBrandDecisionReply — ${err.message} (job ${job.id})`,
           );
+          processed = true; // handled by the winning worker — don't retry-loop
           return;
         }
         throw err;
       }
+      processed = true;
 
       // The brand reply may have advanced the instance to a state that needs a
       // node-execution job to continue — this happens here (inbound worker), not
@@ -211,10 +242,12 @@ async function handleInboundEmail(
           console.log(
             `[inbound-email] OCC conflict on handlePaymentReply — ${err.message} (job ${job.id})`,
           );
+          processed = true; // handled by the winning worker — don't retry-loop
           return;
         }
         throw err;
       }
+      processed = true;
       return;
     }
 
@@ -223,6 +256,7 @@ async function handleInboundEmail(
     } catch (err) {
       if (err instanceof StaleInstanceError) {
         console.log(`[inbound-email] OCC conflict on injectReply — ${err.message} (job ${job.id})`);
+        processed = true; // handled by the winning worker — don't retry-loop
         return;
       }
       throw err;
@@ -240,12 +274,20 @@ async function handleInboundEmail(
     } catch (err) {
       if (err instanceof StaleInstanceError) {
         console.log(`[inbound-email] OCC conflict on stepInstance — ${err.message} (job ${job.id})`);
+        processed = true; // handled by the winning worker — don't retry-loop
         return;
       }
       throw err;
     }
+    processed = true;
   } finally {
-    await releaseLock(instanceId);
+    // CRITICAL-6: stamp processedAt only on a clean completion (or OCC conflict).
+    // Released the lock first so the mark can't extend lock-hold time. If a branch
+    // threw, `processed` is false and the reply stays re-processable on retry.
+    await releaseLock(instanceId, lockToken);
+    if (processed) {
+      await markMessageProcessed(externalMessageId);
+    }
   }
 
   const updated = await findInstanceById(instanceId);

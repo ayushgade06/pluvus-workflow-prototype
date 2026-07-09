@@ -1,4 +1,3 @@
-import type { Creator } from "@prisma/client";
 import {
   listMessagesByInstance,
   createBrandDecision,
@@ -9,9 +8,11 @@ import {
 import { updateCampaign } from "../../db/campaigns.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
+import { sendOnce } from "./idempotentSend.js";
 import { extractReplyText } from "./replyText.js";
 import {
   scanBrandDecisionTokens,
+  isAuthorizedBrandSender,
   BRAND_DECISION_CONFIDENCE_THRESHOLD,
   type BrandDecisionAction,
   type BrandDecisionParse,
@@ -157,11 +158,27 @@ export async function openBrandDecision(
             ...(input.suggestedCounter !== undefined ? { suggestedCounter: input.suggestedCounter } : {}),
             ...(input.quotedReply ? { quotedReply: input.quotedReply } : {}),
           });
-    // Address the brand by re-using send() with a recipient-shaped object — the
-    // same trick notifyBrandOfEscalation uses; both providers read only email+name.
-    const brandAsCreator = { ...creator, email: recipient, name: brandName } as Creator;
+    // CRITICAL-2: PERSIST the brand outbound as a Message row (via sendOnce) so
+    // the brand's reply correlates back to this instance by threadId. Previously
+    // this used a bare email.send() with a forged Creator and wrote NO Message
+    // row, so the brand's reply hit findMessagesByThreadId with no thread and was
+    // dropped — the only reply that could reach the handler was the creator's
+    // (which is exactly what made CRITICAL-1 exploitable). We now address the
+    // brand via an explicit EmailRecipient and reserve the outbound row first.
+    //
+    // Idempotency key is decision-scoped (one open decision per instance), so a
+    // BullMQ retry of the escalating step re-reserves the same row rather than
+    // double-emailing the brand.
     try {
-      await email.send(draft, brandAsCreator);
+      await sendOnce(
+        email,
+        instance.id,
+        creator,
+        draft,
+        `brand-decision:${token}`,
+        undefined,
+        { email: recipient, name: brandName },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(
@@ -288,6 +305,22 @@ export async function executeBrandDecision(
   const rawReply = latestInbound?.body ?? "";
   const replyText = rawReply ? extractReplyText(rawReply) : "";
 
+  // ── Sender-identity gate (CRITICAL-1) ─────────────────────────────────────
+  // A brand DECISION resolves a real-money escalation, so it must come from the
+  // BRAND (campaign notifyEmail) or the verified magic-link channel — NEVER from
+  // the creator, the party the system distrusts. Without this, a creator whose
+  // over-ceiling ask triggered the escalation could reply "APPROVE"/"sounds good"
+  // on their own thread and close the deal at their own number.
+  //
+  // If the latest inbound is not from an authorized brand sender, we do NOT
+  // resolve: hold the run in AWAITING_BRAND_DECISION (the brand may still reply /
+  // click a link, or the 72h silence sweep will escalate to a human). The reply
+  // stays on the thread for the brand's context but cannot steer the decision.
+  const brandNotifyEmail = ctx.campaign?.notifyEmail;
+  if (!isAuthorizedBrandSender(latestInbound?.senderEmail, brandNotifyEmail)) {
+    return holdForNonBrandSender(latestInbound?.senderEmail ?? null, decision.id, decision.reason);
+  }
+
   // ── L4 config-fix variant (missing_brand_name) ────────────────────────────
   // The "decision" here is a CONFIG VALUE, not APPROVE/REJECT: the brand's reply
   // IS the brand name. Write it back to the campaign and re-run the blocked node
@@ -378,12 +411,30 @@ export async function executeBrandDecision(
           eventPayload: { ...commonPayload, resolvedIntent: "POSITIVE", resumedNegotiation: true },
         };
       }
+      // CRITICAL-3: emit outcome + rate on the approval so the finalized-terms
+      // resolver (buildPriorContextFromEvents → resolveAgreedFee) picks up the
+      // brand-approved number as the deal's currentOffer. Previously this event
+      // carried only `approvedRate`, which buildPriorContextFromEvents ignores
+      // (it counts only outcome ∈ {ACCEPT,COUNTER,PRESENT_OFFER} reading `rate`),
+      // so the approval contributed nothing and the Content Brief email fell back
+      // to the internal ceiling — stating a fee the brand never agreed to.
+      //
+      // `approvedRate` is retained for backward-compatible readers/audit; `rate`
+      // is the canonical field. When the brand approved without a readable creator
+      // rate on the table (context.creatorRate undefined), we do NOT invent one —
+      // the event carries no `rate`, and resolveAgreedFee will hard-fail to a
+      // human downstream rather than fabricate a fee (CRITICAL-3 second half).
       return {
         nextState: "ACCEPTED",
         nextNodeId: null,
         completedAt: new Date(),
         eventType: "NEGOTIATION_TURN",
-        eventPayload: { ...commonPayload, approvedRate: context.creatorRate },
+        eventPayload: {
+          ...commonPayload,
+          outcome: "ACCEPT",
+          ...(context.creatorRate !== undefined ? { rate: context.creatorRate } : {}),
+          approvedRate: context.creatorRate,
+        },
       };
 
     case "COUNTER":
@@ -405,6 +456,11 @@ export async function executeBrandDecision(
           },
         };
       }
+      // MED-W4: the COUNTER button is no longer OFFERED on the max-rounds email
+      // (openMaxRoundsBrandDecision now sends approve/reject/handoff only), so we
+      // only reach here if the brand FREE-TEXTS "COUNTER <n>". We still handle it
+      // safely rather than drop it.
+      //
       // B9/B11 locked decision 1: a brand COUNTER is a FINAL take-it-or-leave-it
       // offer to the creator, NOT a re-opened negotiation round. Delivering it
       // requires a one-shot "final offer sent" sub-state that waits on the
@@ -590,6 +646,35 @@ function manualReview(_instanceId: string, reason: string): NodeResult {
     completedAt: new Date(),
     eventType: "MANUAL_REVIEW_FLAGGED",
     eventPayload: { reason },
+  };
+}
+
+// The latest reply on a pending brand decision did NOT come from the brand
+// (CRITICAL-1) — typically the creator replying on their own thread. HOLD: stay
+// parked in AWAITING_BRAND_DECISION so the reply cannot resolve the decision, and
+// record it for the timeline. A genuine brand reply / magic-link click still
+// resolves it later; the 72h silence sweep is the backstop if the brand never
+// answers. We deliberately do NOT count this against the re-ask budget (that is
+// for AMBIGUOUS *brand* replies) or escalate — a creator reply here is expected
+// noise, not a brand decision we failed to parse.
+function holdForNonBrandSender(
+  senderEmail: string | null,
+  decisionId: string,
+  reason: string,
+): NodeResult {
+  return {
+    nextState: "AWAITING_BRAND_DECISION",
+    nextNodeId: null,
+    eventType: "MANUAL_REVIEW_FLAGGED",
+    eventPayload: {
+      brandDecisionId: decisionId,
+      reason,
+      heldForNonBrandSender: true,
+      // Record only the domain of the sender for the audit trail — not the full
+      // address — so the timeline shows "a non-brand reply arrived" without
+      // storing the creator's raw email in the event payload.
+      senderDomain: senderEmail?.split("@")[1] ?? null,
+    },
   };
 }
 

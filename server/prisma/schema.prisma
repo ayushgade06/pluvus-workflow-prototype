@@ -318,8 +318,13 @@ model ExecutionInstance {
   brandNotifications BrandNotification[]
   brandDecisions     BrandDecision[]
   paymentInfo        PaymentInfo?
+  outboxJobs         OutboxJob[]
 
   @@unique([workflowVersionId, creatorId])
+  /// HARD-R1: the poller and reconciliation sweep both query by currentState
+  /// (+ dueAt for the due-follow-up path). This composite index keeps those scans
+  /// index-backed as the instance table grows instead of degrading to full scans.
+  @@index([currentState, dueAt])
 }
 
 /// Every outbound and inbound email tied to an ExecutionInstance.
@@ -341,6 +346,12 @@ model Message {
   subject             String?
   body                String
   threadId            String?
+  /// The From: address of an INBOUND message (CRITICAL-1). Persisted so a brand
+  /// decision reply can be verified to originate from the campaign's notifyEmail
+  /// (the brand) rather than the creator — the party the system distrusts must
+  /// not be able to resolve their own escalation. NULL for OUTBOUND messages and
+  /// for inbound rows created before this field existed.
+  senderEmail         String?
   externalMessageId   String?          @unique
   /// Deterministic pre-send key for OUTBOUND AI messages (Phase: remediation
   /// FIX-11). Computed BEFORE email.send() from stable inputs
@@ -352,6 +363,13 @@ model Message {
   classifyConfidence  Float?
   sentAt              DateTime?
   receivedAt          DateTime?
+  /// When an INBOUND reply finished PROCESSING (CRITICAL-6). Set only after the
+  /// full inbound handler completes (persist → transition → step). The worker's
+  /// idempotency short-circuit keys on this, not on mere row existence: a reply
+  /// persisted but not yet processed (a crash mid-handler) has processedAt NULL,
+  /// so a BullMQ retry re-processes it instead of no-op'ing and losing it. NULL
+  /// for OUTBOUND rows and for inbound rows that predate this field.
+  processedAt         DateTime?
 
   createdAt DateTime @default(now())
 
@@ -381,6 +399,53 @@ model Event {
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 
   @@index([instanceId, occurredAt])
+}
+
+/// Transactional outbox (HARD-R1 — SCAFFOLD, not yet wired into every enqueue).
+///
+/// The reliability gap this closes: today a state commit (OCC update) and the
+/// follow-on job enqueue are two separate operations. A crash / Redis blip
+/// between them strands the instance — the state moved but no job was queued. The
+/// reconciliation sweep (scheduler/reconciliation.ts) recovers such strands by
+/// re-enqueuing stuck states, and is the operational backstop in place now.
+///
+/// The DURABLE fix is this outbox: at each OCC commit, write the intended job to
+/// this table IN THE SAME TRANSACTION as the state change, then a relay drains
+/// PENDING rows to BullMQ and marks them SENT. Because the row and the state
+/// commit are atomic, a job is never lost; because the relay is idempotent on
+/// (instanceId + triggerRef), it is never double-enqueued.
+///
+/// This model + status enum are the schema seam so the relay + per-call-site
+/// writes can land next without another migration. The sweep is the interim
+/// guarantee until the relay is wired.
+enum OutboxStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model OutboxJob {
+  id         String       @id @default(cuid())
+  instanceId String
+  /// The queue this job targets (e.g. "node-execution"). Kept as a string so a
+  /// new queue doesn't require a migration.
+  queue      String
+  /// The BullMQ job payload, verbatim (e.g. { expectedState, triggerRef }).
+  payload    Json
+  /// Idempotency key mirroring the BullMQ jobId (triggerRef) so the relay never
+  /// double-enqueues and a duplicate write is a no-op.
+  dedupeKey  String       @unique
+  status     OutboxStatus @default(PENDING)
+  attempts   Int          @default(0)
+  lastError  String?
+  createdAt  DateTime     @default(now())
+  sentAt     DateTime?
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  /// The relay scans PENDING oldest-first; this index keeps that scan cheap.
+  @@index([status, createdAt])
+  @@index([instanceId])
 }
 
 /// A record of a manual-queue escalation notice sent to the brand.

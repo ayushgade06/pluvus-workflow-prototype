@@ -148,6 +148,27 @@ export async function listPendingBrandDecisionsForInstances(
 }
 
 /**
+ * Idempotently mark a BrandDecision row EXPIRED — ONLY if it is still PENDING
+ * (EASY-W2). Returns the number of rows changed (0 if it was already resolved /
+ * expired). Used to reconcile an ORPHAN row: the expiry sweep committed the
+ * instance transition but the subsequent best-effort status update failed (or a
+ * late brand reply moved the instance first), leaving the row PENDING while the
+ * instance is no longer AWAITING_BRAND_DECISION — which the sweep would otherwise
+ * re-process every poll forever. The status=PENDING guard makes this safe to call
+ * unconditionally and race-free against a concurrent resolution.
+ */
+export async function expirePendingBrandDecision(
+  id: string,
+  now: Date = new Date(),
+): Promise<number> {
+  const res = await prisma.brandDecision.updateMany({
+    where: { id, status: "PENDING" },
+    data: { status: "EXPIRED", decision: "AMBIGUOUS", resolvedAt: now },
+  });
+  return res.count;
+}
+
+/**
  * Record the brand's parsed decision on a BrandDecision row and move it to a
  * new status. Mirrors updateBrandNotificationStatus (status model): only the
  * fields present are written, so an omitted optional isn't overwritten.
