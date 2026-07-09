@@ -2060,9 +2060,24 @@ def _knowledge_block(req: DraftRequest, ctx: dict[str, Any]) -> str:
     if not facts:
         return ""
     lines = "\n".join(f"- {label}: {value}" for label, value in facts.items())
+    # Audit finding B-01: with the OLD "state ONLY if asked; do NOT volunteer"
+    # wording, qwen3:8b was too timid — asked "when do I get paid?" it DEFERRED
+    # ("we'll confirm payment timing later") even though "Payment terms: Net-30
+    # after content goes live" was sitting right here. The defer-fallback in the
+    # question checklist was winning over stating a KNOWN fact. So the rule now
+    # makes it a HARD requirement: if a question matches one of these terms, STATE
+    # that exact fact — deferring a known answer is a mistake. "Don't volunteer"
+    # is kept (don't dump all four unprompted) but is subordinate to answering.
     return (
-        "Known campaign terms (state these as fact ONLY if the creator asks about "
-        "them; do NOT volunteer them unprompted, and never alter the wording):\n"
+        "Known campaign terms — these are FACTS we have. If the creator asks about "
+        "any of them, you MUST answer with the stated value (do NOT defer or say "
+        "\"we'll confirm later\" for a term listed here — the answer is known). "
+        "Match loosely: \"when do I get paid / payment terms / net terms\" -> the "
+        "payment line; \"how long can you use my content / usage / reshare\" -> the "
+        "usage-rights line; \"exclusivity / locked out / other brands\" -> the "
+        "exclusivity line; \"attribution / cookie / tracking window\" -> the "
+        "attribution line. Don't volunteer terms the creator didn't ask about, and "
+        "never alter the wording:\n"
         f"{lines}"
     )
 
@@ -2620,6 +2635,50 @@ def _draft_questions_to_verify(req: DraftRequest) -> list[str]:
     return out
 
 
+# Audit finding B-01: a question that maps to a KNOWN campaign fact must be
+# answered WITH that fact's value — an honest-deferral sentence ("we'll confirm
+# payment timing later") is NOT an acceptable answer when we actually know the
+# answer. Each entry: (topic-signal regex over the QUESTION, value-signal regex
+# the BODY must contain to prove the fact was stated). Keyed by the knowledge
+# field name so we only enforce a topic when that fact is actually present.
+_KNOWN_FACT_QA = {
+    "paymentTerms": (
+        r"paid|payment|net[- ]?\d|invoic|when.*(get|do).*pay",
+        r"net[- ]?\d|\d+\s*days|after (the )?content|after.*(goes|is) live",
+    ),
+    "usageRights": (
+        r"usage|reshare|reuse|use my|use the content|licen[cs]e|rights",
+        r"\d+[- ]?day|usage|reshare|licen[cs]e",
+    ),
+    "exclusivity": (
+        r"exclusiv|locked? out|lock me|other brand|competitor|category",
+        r"exclusiv|no category|not required|lock you out|free to work|other brand",
+    ),
+    "attributionWindow": (
+        r"attribut|cookie|tracking window|how long.*(sale|click|credit)|referral link",
+        r"\d+[- ]?day|attribut|cookie|window",
+    ),
+}
+
+
+def _deferred_known_facts(body: str, questions: list[str], facts_present: set[str]) -> list[str]:
+    """Knowledge fields the creator ASKED about but the body did NOT actually state
+    the value for (it deferred or skipped). `facts_present` is the set of knowledge
+    field names we HAVE a value for this turn — we only enforce those. Returns the
+    field names that need to be forced into a re-draft."""
+    body_lower = body.lower()
+    qtext = " ".join(questions).lower()
+    out: list[str] = []
+    for field, (q_sig, val_sig) in _KNOWN_FACT_QA.items():
+        if field not in facts_present:
+            continue
+        if not re.search(q_sig, qtext):
+            continue  # creator didn't ask about this term
+        if not re.search(val_sig, body_lower):
+            out.append(field)  # asked, but the value isn't stated -> deferred/dropped
+    return out
+
+
 def _unanswered_questions(body: str, questions: list[str]) -> list[str]:
     """Questions that look UNaddressed by the draft body. A question is considered
     addressed if the body honestly defers (a deferral marker present) OR shares
@@ -2814,25 +2873,50 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
         # (offer-turn guards apply downstream) — verification-with-repair, not a hard
         # block.
         must_answer = _draft_questions_to_verify(req)
+        # Audit finding B-01: which KNOWN facts did the creator ask about? A
+        # deferral is not an acceptable answer for those — the value must be
+        # stated. Compute the set of fact fields we HAVE a value for so the
+        # verifier only enforces known ones.
+        known_facts = _knowledge_facts(req, ctx)  # {label: value}
+        facts_present = {
+            key for key, label in _KNOWLEDGE_LABELS if label in known_facts
+        }
         if must_answer:
             missed = _unanswered_questions(parsed.body, must_answer)
-            if missed:
+            deferred_facts = _deferred_known_facts(parsed.body, must_answer, facts_present)
+            if missed or deferred_facts:
                 logger.info(
-                    "draft verification: %d/%d question(s) look unanswered, re-drafting",
-                    len(missed),
-                    len(must_answer),
+                    "draft verification: %d/%d question(s) unanswered, %d known-fact(s) "
+                    "deferred, re-drafting",
+                    len(missed), len(must_answer), len(deferred_facts),
                 )
-                reinforced = prompt + "\n\n" + _missed_questions_reinforcement(missed)
+                reinforcement = _missed_questions_reinforcement(missed) if missed else ""
+                # For a KNOWN fact the creator asked about but the draft deferred,
+                # supply the exact value so the re-draft STATES it (never invents).
+                if deferred_facts:
+                    fact_lines = "\n".join(
+                        f"  - {label}: {value}"
+                        for key, label in _KNOWLEDGE_LABELS
+                        if key in deferred_facts and (value := known_facts.get(label))
+                    )
+                    fact_reinforcement = (
+                        "IMPORTANT — the creator ASKED about the following, and we DO "
+                        "know the answer, but your draft deferred instead of stating it. "
+                        "Rewrite so the email states each value explicitly (do NOT say "
+                        "\"we'll confirm later\" for these — the answer is known):\n"
+                        f"{fact_lines}"
+                    )
+                    reinforcement = (reinforcement + "\n\n" + fact_reinforcement).strip()
+                reinforced = prompt + "\n\n" + reinforcement
                 parsed = _run_draft(reinforced)
                 still_missed = _unanswered_questions(parsed.body, must_answer)
-                if still_missed:
+                still_deferred = _deferred_known_facts(parsed.body, must_answer, facts_present)
+                if still_missed or still_deferred:
                     logger.warning(
-                        "draft verification: %d question(s) still unanswered after re-draft "
-                        "(purpose=%s creator=%s): %s",
-                        len(still_missed),
-                        req.purpose,
-                        req.creatorName,
-                        "; ".join(still_missed),
+                        "draft verification: after re-draft still %d unanswered + %d "
+                        "known-fact deferred (purpose=%s creator=%s): %s",
+                        len(still_missed), len(still_deferred), req.purpose,
+                        req.creatorName, "; ".join(still_missed + still_deferred),
                     )
     finally:
         set_active_prompt_version(None)
