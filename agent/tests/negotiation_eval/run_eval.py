@@ -37,8 +37,26 @@ BAND = {
     "timeline": "Content live by October 10, 2026.",
     "commissionRate": 10,
     "rewardDescription": "one pair of AeroSoft Cloudstride running shoes plus a branded sock set",
+    # HARD-K1 knowledge fields — the campaign terms creators ask about. The REAL
+    # executor threads these into /draft's campaignContext (see
+    # providerFactory.draftEmail → stripBandFromContext(config), with
+    # mergeCampaignFallback folding usageRights/exclusivity/paymentTerms/
+    # attributionWindow into config). call_draft below must carry them too, or the
+    # eval hands /draft a request MISSING the very facts production supplies — the
+    # model then correctly DEFERS (no fact) and every payment/usage/exclusivity/
+    # attribution answer-coverage case is tested against a crippled request.
+    "usageRights": "30-day usage rights; AeroSoft may reshare the content on its own channels.",
+    "exclusivity": "No category exclusivity is required.",
+    "paymentTerms": "Net-30 after the content goes live.",
+    "attributionWindow": "30-day attribution window on the affiliate link.",
     "recommendedOfferPosition": 0.5,
 }
+
+# The HARD-K1 knowledge fields the real executor threads into /draft's
+# campaignContext. Kept as an explicit list so call_draft mirrors production's
+# stripBandFromContext(config) — every knowledge field the campaign has reaches
+# the copy generator, never just the four brand-context fields.
+_KNOWLEDGE_CTX_FIELDS = ("usageRights", "exclusivity", "paymentTerms", "attributionWindow")
 
 
 def H(round0=0, action=None, rate=None):
@@ -481,6 +499,13 @@ def call_draft(action, rate, creator_reply, requested_rate=None,
             "rewardDescription": BAND["rewardDescription"],
             "deliverables": BAND["deliverables"],
             "timeline": BAND["timeline"],
+            # Mirror production: thread every HARD-K1 knowledge field the campaign
+            # has into campaignContext, so /draft can STATE payment/usage/
+            # exclusivity/attribution as fact instead of deferring. Only include
+            # fields actually present in BAND (matches stripBandFromContext, which
+            # carries whatever config holds — a genuinely-absent field stays absent
+            # so the honest-defer path is still exercised where it should be).
+            **{k: BAND[k] for k in _KNOWLEDGE_CTX_FIELDS if BAND.get(k)},
         },
         **({"proposedTerms": {"rate": rate}} if rate is not None else {}),
         **({"creatorRequestedRate": requested_rate} if requested_rate is not None else {}),
