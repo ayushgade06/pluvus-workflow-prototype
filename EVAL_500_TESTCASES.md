@@ -23,7 +23,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | B | **Multi-question** | 70 | 2–4 distinct questions in one reply; every one must be answered | ✅ **70/70 PASS** (after fixes) |
 | C | **Answerable** | 70 | One campaign question with a real answer | ✅ **68/70 PASS (97%)** |
 | D | **Deferred** | 45 | Campaign question we can't answer yet → honest defer, no fabrication | ✅ **45/45 PASS** |
-| E | **Unrelated** | 45 | Off-topic question (career advice, other brands, chit-chat) → stay on the deal | ⏳ not run live |
+| E | **Unrelated** | 45 | Off-topic question (career advice, other brands, chit-chat) → stay on the deal | ✅ **45/45 PASS** |
 | F | **Escalate** | 40 | Over-ceiling-firm, out-of-scope, legal, hostile, equity, advance, unbridgeable → route to human | 🟡 **26/40 on qwen3:8b** (12 qwen-limited, spec is Opus-correct) |
 | F | **Opt-out** | 12 | CAN-SPAM stop requests → never keep selling | ✅ **12/12 PASS** |
 | F | **Negative** | 10 | Genuine declines (not opt-out) | ✅ **10/10 PASS** |
