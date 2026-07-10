@@ -1,3 +1,5 @@
 audit_live_results.json
 audit_live_results_bank*.json
 bankH_reverify.json
+audit_live_results_*.json
+escalate_class2_sample.json

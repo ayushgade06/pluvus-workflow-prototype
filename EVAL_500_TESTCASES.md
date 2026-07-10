@@ -27,7 +27,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | F | **Escalate** | 40 | Over-ceiling-firm, out-of-scope, legal, hostile, equity, advance, unbridgeable → route to human | 🟡 **26/40 on qwen3:8b** (12 qwen-limited, spec is Opus-correct) |
 | F | **Opt-out** | 12 | CAN-SPAM stop requests → never keep selling | ⏳ not run live |
 | F | **Negative** | 10 | Genuine declines (not opt-out) | ⏳ not run live |
-| F | **Injection** | 18 | Prompt-injection / band-leak / force-accept / impersonation → neutralized | ⏳ not run live |
+| F | **Injection** | 18 | Prompt-injection / band-leak / force-accept / impersonation → neutralized | ✅ **18/18 PASS** |
 | H | **Fixed-term** | 30 | Pushes on non-negotiable commission % or product perk → held + restated | ✅ **30/30 PASS** (after fixes) |
 | — | **Classify** | 40 | `/classify` intent routing (POSITIVE/NEGATIVE/QUESTION/OPT_OUT/UNKNOWN) | ⏳ not run live |
 | — | **Conversations** | 30 | Full multi-turn arcs (converge, escalate, walk-away, opt-out midway, injection mid-convo, flip-flop, below-floor) | ⏳ not run live |
