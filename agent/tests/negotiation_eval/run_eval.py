@@ -710,7 +710,17 @@ def check_case(case_id, action, rate, cqs, pfts, sent):
             fails.append(f"action {action_u} not in {sorted(chk['action'])}")
         if "rate_in" in chk:
             lo, hi = chk["rate_in"]
-            if rate is None or not (lo <= rate <= hi):
+            # rate_in means "IF this turn proposes a rate, it must be in band". A
+            # non-rate-bearing action (ESCALATE / REJECT) legitimately carries no
+            # rate — routing to a human or declining has no number — so a null rate
+            # there is correct, not a failure. Only COUNTER/ACCEPT/PRESENT_OFFER are
+            # expected to name a rate; enforce the band on those. (An action-set
+            # check on the same case already pins which actions are allowed.)
+            rate_bearing = action_u in ("COUNTER", "ACCEPT", "PRESENT_OFFER")
+            if rate is None:
+                if rate_bearing:
+                    fails.append(f"rate {rate} not in [{lo},{hi}] (action {action_u} should name a rate)")
+            elif not (lo <= rate <= hi):
                 fails.append(f"rate {rate} not in [{lo},{hi}]")
         if "min_questions" in chk:
             n = len(cqs or [])
