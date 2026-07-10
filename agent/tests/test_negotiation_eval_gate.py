@@ -164,9 +164,11 @@ def test_over_ceiling_accept_escalates(monkeypatch):
     assert resp.proposedTerms is None
 
 
-def test_below_floor_counter_clamps_up(monkeypatch):
-    # Case 06 family: a below-floor number is clamped UP to the floor, never sent
-    # below the minimum. The re-draft seam blanks the pre-guard email.
+def test_below_floor_ask_closes_at_floor(monkeypatch):
+    # Case 06 family: the creator ASKS below our floor ("$20", floor 200). We never
+    # counter a below-floor ask UPWARD toward our standing offer (that hands them
+    # more than they asked); the anti-over-pay guard closes at the floor. The
+    # re-draft seam blanks the pre-guard email.
     _patch_llm(
         monkeypatch,
         ['{"action": "COUNTER", "rate": 20, "response": "How about $20?", "reasoning": "lowball"}'],
@@ -180,8 +182,8 @@ def test_below_floor_counter_clamps_up(monkeypatch):
             history=[_H(0, "PRESENT_OFFER", 300)],
         )
     )
-    assert resp.action == "COUNTER"
-    assert resp.proposedTerms == {"rate": 200.0}  # clamped up to floor
+    assert resp.action == "ACCEPT"  # below-floor ask → close at floor, don't counter up
+    assert resp.proposedTerms == {"rate": 200.0}  # the floor
     assert resp.responseDraft is None  # "$20" contradicts the clamped $200
 
 

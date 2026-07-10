@@ -1015,6 +1015,24 @@ def _apply_decision_guards(
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
         return NegotiationDecision(action="ACCEPT", proposed_rate=guarded)
 
+    # Anti-over-pay guards on a COUNTER (money bank A-14/19/25/53–62/87). The LLM
+    # (esp. a weaker local model) tends to counter at a default/midpoint that is
+    # ABOVE what the creator actually asked for — offering more money than they
+    # requested, which is irrational and burns budget. These are mechanical rules,
+    # so we enforce them in code rather than trust the prompt. Only fire when the
+    # creator stated a readable number this turn.
+    if action == "COUNTER" and creator_ask is not None:
+        # (a) Their ask is AT/BELOW our floor: they want less than our minimum.
+        # There is nothing to negotiate up — close at the floor (never counter a
+        # below-floor ask UPWARD toward our standing offer, e.g. $150 -> $300).
+        if creator_ask <= floor_rate:
+            return NegotiationDecision(action="ACCEPT", proposed_rate=floor_rate)
+        # (b) Our counter would exceed their ask: never offer MORE than they asked.
+        # Clamp down to their number (still >= floor). Meeting them at their own
+        # in-band ask is effectively an accept, so return ACCEPT for clarity.
+        if guarded > creator_ask:
+            return NegotiationDecision(action="ACCEPT", proposed_rate=creator_ask)
+
     return NegotiationDecision(action=action, proposed_rate=guarded)
 
 

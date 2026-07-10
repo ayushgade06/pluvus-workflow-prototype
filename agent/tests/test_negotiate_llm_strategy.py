@@ -236,11 +236,14 @@ def test_llm_draft_dropped_when_over_ceiling_accept_escalates(monkeypatch):
 
 def test_llm_draft_kept_when_guard_clamps_above_ceiling_but_still_counter(monkeypatch):
     # Model COUNTER@900 → clamped to ceiling 500 (rate changed) → draft dropped.
+    # The creator's own ask is ABOVE the ceiling ($900), so the anti-over-pay
+    # guard does NOT convert this to an accept (we're still under their ask) — the
+    # action stays COUNTER at the clamped ceiling.
     _patch_llm(
         monkeypatch,
         ['{"action": "COUNTER", "rate": 900, "response": "How about $900?", "reasoning": "high"}'],
     )
-    resp = neg_mod._langgraph_negotiate(_req())
+    resp = neg_mod._langgraph_negotiate(_req("My rate is $900."))
     assert resp.action == "COUNTER"
     assert resp.proposedTerms == {"rate": 500.0}
     assert resp.responseDraft is None  # "$900" contradicts the clamped $500
