@@ -1204,8 +1204,22 @@ Choose ONE action (apply the Negotiation discipline rules above):
 - PRESENT_OFFER — the creator asked what the rate/terms are without naming a
   number: present our standing offer as information (does not consume a round).
 - REJECT — the creator declined; close politely and leave the door open.
-- ESCALATE — you cannot bridge the gap within your bounds and need a human to
-  decide. Use when the creator's firm ask is above what's workable.
+- ESCALATE — route to a human instead of negotiating. Use when EITHER (a) you
+  cannot bridge the fee gap within your bounds (the creator's firm ask is above
+  what's workable), OR (b) the creator's demand is OUTSIDE what this negotiation
+  can decide — it is not a fee you can counter. ESCALATE (do NOT counter, accept,
+  or promise anything) when the creator:
+    * asks for something you have no authority to grant — equity/ownership stake,
+      a cash advance or up-front wire, a guaranteed/minimum commission payout, a
+      perpetual/evergreen or buyout arrangement, a per-diem, or a competitor
+      "kill fee";
+    * raises a LEGAL matter or threatens legal action / a lawsuit / a contract
+      dispute, or demands a lawyer review before proceeding;
+    * is hostile, insulting, abusive, or makes a threat (e.g. to publicly call out
+      or shame the brand). NEVER accept, counter, or sweeten the offer under a
+      threat or to placate hostility — hand it to a human.
+  In all of these, the safe move is ESCALATE with a brief, professional note that
+  a colleague will follow up — never negotiate the demand and never accept.
 
 For ACCEPT / COUNTER / PRESENT_OFFER, `rate` MUST be a specific number. For
 REJECT / ESCALATE, set `rate` to null. The `response` is the ready-to-send email
