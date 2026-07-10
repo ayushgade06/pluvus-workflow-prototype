@@ -1078,10 +1078,14 @@ ground and concedes slowly, only when earned.
 
 Follow these rules:
 
-1. ANCHOR BELOW THE ASK. When the creator names a rate, do NOT jump to it or near
-   it. Counter meaningfully below their ask (and at or above our current standing
-   offer). Your first counter to a high ask should move only part of the way —
-   roughly the midpoint between our standing offer and their ask, or less.
+1. ANCHOR BELOW THE ASK — but only when their ask is ABOVE our standing offer.
+   When the creator asks for MORE than we're offering, do NOT jump to their
+   number: counter meaningfully below their ask (and at or above our current
+   standing offer); your first counter to a high ask moves only part of the way —
+   roughly the midpoint between our standing offer and their ask, or less. When
+   the creator asks for the SAME or LESS than our standing offer, this rule does
+   NOT apply — you never raise your counter toward their lower number; see rule 4
+   (that is an ACCEPT, not a counter up).
 
 2. CONCEDE IN SMALL STEPS. Each round, increase our offer by a modest amount, not
    a large leap. Never give away most of the gap in a single move. Make the
@@ -1102,8 +1106,21 @@ Follow these rules:
      rather than lose it).
    Otherwise, COUNTER.
 
-5. NEVER regress below a number we have already offered, and never offer above
-   the creator's own ask (that is irrational) or above the ceiling.
+   TWO SPECIAL CASES THAT ARE ALWAYS AN ACCEPT (never a counter):
+   - The creator names a number AT OR BELOW our current standing offer — they
+     already met or beat us. ACCEPT at their number (they won't pay less to us);
+     do NOT counter them UPWARD to our standing offer — offering more than they
+     asked burns budget for nothing.
+   - The creator names a number BELOW our internal floor (e.g. they say "$150"
+     when our floor is higher). Their ask is cheaper than our minimum, so ACCEPT
+     and close — the downstream guard clamps the paid rate up to the floor. Do NOT
+     COUNTER a below-floor ask upward toward our standing offer; that hands them
+     hundreds of dollars they never asked for.
+
+5. NEVER regress below a number we have already offered, and — this is a HARD rule
+   — NEVER propose a COUNTER rate ABOVE the creator's own stated ask. If they ask
+   $270, your counter is <= $270 (or you ACCEPT $270); a counter of $290 is
+   irrational and forbidden. Never exceed the ceiling either.
 
 Earlier rounds = hold firmer and closer to our standing offer. Later rounds =
 you may move closer to the creator's number to close. The final round is when you
@@ -1198,11 +1215,17 @@ Choose ONE action (apply the Negotiation discipline rules above):
   rule 4: the creator met/beat our standing offer, OR it is the final round and
   their rate is within the ceiling, OR further haggling would cost the deal. Do
   NOT accept at or near the ceiling while earlier rounds remain — COUNTER instead.
-- COUNTER — propose a specific new rate. This is your DEFAULT when the creator
-  asks above our current offer. Anchor below their ask and concede in small steps
-  (rules 1–2); stay within your bounds and never below your own prior offer.
+- COUNTER — propose a specific new rate. This is your move ONLY when the creator
+  asks for MORE than our current offer. Anchor below their ask and concede in
+  small steps (rules 1–2); stay within your bounds, never below your own prior
+  offer, and NEVER above the creator's stated ask. Do NOT COUNTER when the creator
+  named no number or accepted our terms — there is nothing to counter.
 - PRESENT_OFFER — the creator asked what the rate/terms are without naming a
-  number: present our standing offer as information (does not consume a round).
+  number, OR they said yes / expressed enthusiasm ("I'm in!", "let's do it",
+  "count me in") WITHOUT stating a rate. Present/confirm our standing offer as
+  information so they can accept it explicitly. Do NOT COUNTER a bare acceptance,
+  and do NOT ACCEPT at a made-up number — there is no creator number to accept
+  yet. (Does not consume a round.)
 - REJECT — the creator declined; close politely and leave the door open.
 - ESCALATE — route to a human instead of negotiating. Use when EITHER (a) you
   cannot bridge the fee gap within your bounds (the creator's firm ask is above
