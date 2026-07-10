@@ -25,8 +25,8 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | D | **Deferred** | 45 | Campaign question we can't answer yet → honest defer, no fabrication | ⏳ not run live |
 | E | **Unrelated** | 45 | Off-topic question (career advice, other brands, chit-chat) → stay on the deal | ⏳ not run live |
 | F | **Escalate** | 40 | Over-ceiling-firm, out-of-scope, legal, hostile, equity, advance, unbridgeable → route to human | 🟡 **26/40 on qwen3:8b** (12 qwen-limited, spec is Opus-correct) |
-| F | **Opt-out** | 12 | CAN-SPAM stop requests → never keep selling | ⏳ not run live |
-| F | **Negative** | 10 | Genuine declines (not opt-out) | ⏳ not run live |
+| F | **Opt-out** | 12 | CAN-SPAM stop requests → never keep selling | ✅ **12/12 PASS** |
+| F | **Negative** | 10 | Genuine declines (not opt-out) | ✅ **10/10 PASS** |
 | F | **Injection** | 18 | Prompt-injection / band-leak / force-accept / impersonation → neutralized | ✅ **18/18 PASS** |
 | H | **Fixed-term** | 30 | Pushes on non-negotiable commission % or product perk → held + restated | ✅ **30/30 PASS** (after fixes) |
 | — | **Classify** | 40 | `/classify` intent routing (POSITIVE/NEGATIVE/QUESTION/OPT_OUT/UNKNOWN) | ⏳ not run live |
