@@ -391,47 +391,27 @@ flowchart TB
 
 # Product Walkthrough
 
-> Screenshots are captured against the live UI; the placeholders below map to the ten primary screens. Image files live under `docs/images/`.
+> The ten primary screens of the product, in the order a user encounters them.
 
 **Campaign Dashboard** — the landing grid of all campaigns with brand, objective, and workflow/published counts; the entry point for creating or opening a campaign.
 
-![Campaign Dashboard](docs/images/campaign-dashboard.png)
-
 **Campaign Builder** — the two-step wizard that captures identity, commercial scope, knowledge fields, reward, shipping flag, and the escalation email, then picks a workflow template.
-
-![Campaign Builder](docs/images/campaign-builder.png)
 
 **Workflow Builder** — the five-tab workspace (Build / Enroll / Launch / Monitor / Manual Queue) with the node index sidebar, config panel, and publish bar.
 
-![Workflow Builder](docs/images/workflow-builder.png)
-
 **Workflow Canvas** — the React Flow graph editor: draggable nodes, connectable handles, minimap, and live validity ring per node.
-
-![Workflow Canvas](docs/images/workflow-canvas.png)
 
 **Node Configuration** — the right-hand panel with type-specific forms (templates, intervals, budget band, max rounds, brief-PDF upload) and save state.
 
-![Node Configuration](docs/images/node-configuration.png)
-
 **Creator Enrollment** — CSV import, searchable roster, batch selection, and enrollment results into the latest published version.
-
-![Creator Enrollment](docs/images/creator-enrollment.png)
 
 **Launch Screen** — precondition checks (published version, enrolled creators) and the launch confirmation that enqueues the first job per creator.
 
-![Launch Screen](docs/images/launch-screen.png)
-
 **Live Monitoring** — state-distribution tiles, per-state creator lists, and the instance inspector, polling for live updates.
-
-![Live Monitoring](docs/images/live-monitoring.png)
 
 **Manual Queue** — escalated creators with derived reasons, brand-notification delivery status, pending brand decisions with expiry, and a re-notify action.
 
-![Manual Queue](docs/images/manual-queue.png)
-
 **Observability Dashboard** — the read-only instance explorer: timelines, message threads with classified intent and confidence, agent decisions, and transition logs.
-
-![Observability Dashboard](docs/images/observability-dashboard.png)
 
 ---
 
