@@ -205,6 +205,39 @@ Both failures were real code gaps (no assertion issues this bank).
   locally (agent wires only ollama/openai providers). **We deliberately did NOT
   relax the asserts** — the strict `{ESCALATE}` set is the correct safety target.
 
+### Money-math bank (A) — live run → 90/90 after fixes
+
+The largest bank (90) and the one where a wrong number costs real money. Two real
+anchoring/pricing bugs, no assertion issues. Both re-verified live.
+
+- **[CODE] counter-above-ask (A-09/14/19/25, discovery below-offer)** — the creator
+  named an in-band number BELOW our standing offer and the model countered ABOVE
+  their stated ask (e.g. countered $325 when they asked $280) — anchoring the wrong
+  direction and over-paying against ourselves. Fix: anchoring-discipline rule —
+  never counter above the creator's stated in-band ask; anchor at/below it and
+  concede upward in small steps, never below our own prior offer. (`negotiate.py`,
+  commit `e0ceac2`)
+
+- **[CODE] below-floor over-counter (A-53/55/56/57/58)** — the creator asked BELOW
+  the floor ($120–$190) and the model countered UP to $275–$300 instead of
+  accepting near the floor — leaving money on the table and inventing a number
+  above what was needed. Fix: deterministic anti-over-pay guards — a below-floor
+  ask clamps to an ACCEPT at the floor band, and no generated counter may exceed
+  the creator's in-band ask. (`negotiate.py`, commit `bf3060d`)
+
+- The **no-number false-accept guard** held across all no-number cases (a "yes I'm
+  interested" with no rate must not auto-ACCEPT at a fabricated midpoint) — that
+  path was hardened in a prior batch and stayed green.
+
+### Classify bank — live run → 40/40, no fixes
+
+All 40 `/classify` intent cases passed on the first live run against qwen3:8b — no
+code or assertion changes. The two failure modes this bank guards both stayed
+clean: reading a stated price as a decline (POSITIVE 12/12 incl. bare-price
+CL-02/06/12), and reading genuine ambiguity as commitment (UNKNOWN 4/4). NEGATIVE
+8/8 (incl. CL-19 "no footwear" = real refusal), QUESTION 10/10, OPT_OUT 6/6.
+Runner: `classify_live.py`.
+
 ---
 
 ## How to reproduce
@@ -215,6 +248,7 @@ python audit_coverage.py                 # offline fact audit (instant)
 python audit_live.py answerable          # live answer audit, bank C (70, ~40min)
 python audit_live.py multi-question      # bank B (70)
 python audit_live.py fixed-term          # bank H (30)
+python classify_live.py                  # 40 /classify intent cases (fast)
 ```
 Results land in `audit_live_results.json`. The offline audit is also wired into
 CI via `tests/test_dataset_500.py`.

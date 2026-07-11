@@ -19,7 +19,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 
 | # | Bank / section | Cases | What the creator does | Live status |
 |---|----------------|------:|-----------------------|-------------|
-| A | **Money math** | 90 | Rate discovery, in-band / at-ceiling / above-ceiling / below-floor asks, explicit accept, **no-number accept** (false-accept guard), mid-band counter | ⏳ not run live |
+| A | **Money math** | 90 | Rate discovery, in-band / at-ceiling / above-ceiling / below-floor asks, explicit accept, **no-number accept** (false-accept guard), mid-band counter | ✅ **90/90 PASS** (after fixes) |
 | B | **Multi-question** | 70 | 2–4 distinct questions in one reply; every one must be answered | ✅ **70/70 PASS** (after fixes) |
 | C | **Answerable** | 70 | One campaign question with a real answer | ✅ **68/70 PASS (97%)** |
 | D | **Deferred** | 45 | Campaign question we can't answer yet → honest defer, no fabrication | ✅ **45/45 PASS** |
@@ -29,7 +29,7 @@ HARD-T1 acceptance criterion ("every case machine-asserted, ≥500-case dataset"
 | F | **Negative** | 10 | Genuine declines (not opt-out) | ✅ **10/10 PASS** |
 | F | **Injection** | 18 | Prompt-injection / band-leak / force-accept / impersonation → neutralized | ✅ **18/18 PASS** |
 | H | **Fixed-term** | 30 | Pushes on non-negotiable commission % or product perk → held + restated | ✅ **30/30 PASS** (after fixes) |
-| — | **Classify** | 40 | `/classify` intent routing (POSITIVE/NEGATIVE/QUESTION/OPT_OUT/UNKNOWN) | ⏳ not run live |
+| — | **Classify** | 40 | `/classify` intent routing (POSITIVE/NEGATIVE/QUESTION/OPT_OUT/UNKNOWN) | ✅ **40/40 PASS** (no fixes) |
 | — | **Conversations** | 30 | Full multi-turn arcs (converge, escalate, walk-away, opt-out midway, injection mid-convo, flip-flop, below-floor) | ⏳ not run live |
 | | **TOTAL** | **500** | | |
 
@@ -139,6 +139,39 @@ out-of-scope signal but won't consistently act on it; Opus follows the explicit
 rule. Opus could not be verified locally (the agent wires only ollama/openai
 providers, no Anthropic path).
 
+### Money-math bank (A) — ✅ 90 / 90 PASS (after fixes)
+
+All 90 cases run against qwen3:8b (`/negotiate → /draft`). This is the largest
+bank and the one where a wrong number costs real money. Two real anchoring/pricing
+bugs were found and fixed (no assertion issues), both re-verified live:
+
+| Case class | Class | Issue | Fix |
+|------------|-------|-------|-----|
+| A-09/14/19/25 (discovery, below-offer ask) | **CODE** | the creator named an in-band number **below** our standing offer, and the model **countered ABOVE their stated ask** (e.g. countered $325 when the creator asked $280) — anchoring in the wrong direction, over-paying against ourselves | anchoring-discipline rule: never counter above the creator's stated ask when it is in-band; anchor at/below it and concede upward only in small steps, never below our own prior offer (commit `e0ceac2`) |
+| A-53/55/56/57/58 (below-floor ask) | **CODE** | the creator asked **below the floor** ($120–$190) and the model countered **up** to $275–$300 instead of accepting near the floor — leaving money on the table and inventing a number above what was needed | deterministic anti-over-pay guards: a below-floor ask clamps to an ACCEPT at the floor band, and no generated counter may exceed the creator's in-band ask (commit `bf3060d`) |
+
+The false-accept guard (a "yes I'm interested" with **no number** must not
+auto-ACCEPT at a fabricated midpoint) held across all no-number cases — that path
+was already hardened in a prior batch and stayed green here.
+
+### Classify bank — ✅ 40 / 40 PASS (no fixes)
+
+All 40 `/classify` cases run against qwen3:8b (single LLM call per case, no
+`/draft`). Clean sweep across all five intents on the first live run — no code or
+assertion changes needed:
+
+| Intent | Result | Notable cases |
+|--------|:------:|---------------|
+| POSITIVE | 12/12 | incl. bare-price replies (CL-02 "$450", CL-06 "$475", CL-12 "flat $360") correctly read as **engaged**, not declining |
+| NEGATIVE | 8/8 | incl. CL-19 "no footwear for me" — a real refusal, distinguished from a bare rate |
+| QUESTION | 10/10 | budget / platforms / deliverables / usage / timeline / exclusivity / commission / brief / shipping |
+| OPT_OUT | 6/6 | unsubscribe / remove-me / stop-emailing / do-not-contact |
+| UNKNOWN | 4/4 | the genuinely ambiguous ("hmm", thinking emoji, "the thing") |
+
+Runner: `classify_live.py` (mirrors `audit_live.py`; incremental write, per-case
+error isolation). The two failure modes this bank guards — reading a stated price
+as a decline, and reading genuine ambiguity as commitment — both stayed clean.
+
 ---
 
 ## Fixes applied (code changes driven by the audit)
@@ -172,6 +205,12 @@ All committed on branch `refactor/production-hardening`:
 11. **Escalate rule** — the llm-negotiation prompt now routes out-of-scope / legal
     / hostile / equity / advance demands to a human (ESCALATE), and never accepts
     or concedes under a threat.
+12. **Anchoring discipline** (money bank) — never counter above the creator's
+    stated in-band ask; anchor at/below it, concede upward in small steps, never
+    below our own prior offer (`e0ceac2`).
+13. **Anti-over-pay guards** (money bank) — deterministic: a below-floor ask
+    clamps to an ACCEPT at the floor band, and no generated counter may exceed the
+    creator's in-band ask (`bf3060d`).
 
 Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAGE.md`.
 
@@ -179,12 +218,12 @@ Detailed per-fix log: `agent/tests/negotiation_eval/dataset_500/QUESTION_COVERAG
 
 ## What's left to run live
 
-- Injection (18), Opt-out (12), Negative (10) — rest of the safety cluster,
-- Deferred (D, 45), Unrelated (E, 45), Money (A, 90), Classify (40),
-  Conversations (30)
+- **Conversations (30)** — full multi-turn arcs. Only remaining bank.
 
-**Done:** Answerable (C) 70/70, Multi-question (B) 70/70, Fixed-term (H) 30/30,
-Escalate (F) 26/40 on qwen3:8b (spec Opus-correct; 12 residual are qwen-limited).
+**Done (470 / 500 run live):** Answerable (C) 70/70, Multi-question (B) 70/70,
+Deferred (D) 45/45, Unrelated (E) 45/45, Fixed-term (H) 30/30, Opt-out 12/12,
+Negative 10/10, Injection 18/18, Money (A) 90/90, Classify 40/40 — and Escalate
+(F) 26/40 on qwen3:8b (spec Opus-correct; 12 residual are qwen-limited).
 
 **Live-run setup:** a fresh session-owned agent runs on **:8002** (the :8001
 listener is an unkillable zombie from another session serving stale code — do not
@@ -196,7 +235,8 @@ background; restart :8002 to load any code fix before re-verifying.
 **Run a bank live:**
 ```
 cd agent/tests/negotiation_eval/dataset_500
-python audit_live.py multi-question     # 70 cases
+python audit_live.py multi-question     # 70 cases (/negotiate → /draft banks)
 python audit_live.py fixed-term         # 30 cases
+python classify_live.py                 # 40 /classify intent cases
 python watch.py                         # live monitor in another terminal
 ```
