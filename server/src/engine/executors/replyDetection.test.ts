@@ -161,3 +161,64 @@ test("Phase E: no escalationReason → normal routing (a confident POSITIVE stil
 
   assert.equal(result.nextState, "NEGOTIATING", "no topic → unchanged behavior");
 });
+
+// ── Phase D — DEFERRED intent → soft follow-up ────────────────────────────
+
+// A graph that includes a FOLLOW_UP node so a DEFERRED reply has somewhere to
+// schedule the soft nudge from.
+const NODES_WITH_FOLLOWUP = [
+  { id: "node-reply-detection", type: "REPLY_DETECTION", order: 4, config: {} },
+  { id: "node-follow-up", type: "FOLLOW_UP", order: 2, config: {} },
+  { id: "node-negotiation", type: "NEGOTIATION", order: 5, config: {} },
+];
+
+function ctxWith(nodeGraph: unknown, negotiationRound = 0) {
+  return {
+    instance: { id: "i1", currentState: "REPLY_RECEIVED", negotiationRound },
+    node: NODES[0],
+    nodeGraph,
+    creator: { id: "c1", name: "Alex" },
+  } as never;
+}
+
+test("Phase D: a DEFERRED reply schedules a soft follow-up (AWAITING_REPLY + dueAt at the FOLLOW_UP node)", async () => {
+  const { deps, agent, setIntent, setConfidence } = makeDeps();
+  setIntent("DEFERRED");
+  setConfidence(0.9);
+  const before = Date.now();
+  const result = await executeReplyDetection(ctxWith(NODES_WITH_FOLLOWUP), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "AWAITING_REPLY", "stays in the pending-reply track");
+  assert.equal(result.nextNodeId, "node-follow-up", "routes to the follow-up node");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["deferred"], true);
+  assert.ok(result.dueAt instanceof Date, "a dueAt is set for the poller");
+  // Default Q5 delay is 3 days out.
+  const delayMs = (result.dueAt as Date).getTime() - before;
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  assert.ok(
+    Math.abs(delayMs - threeDaysMs) < 60_000,
+    `dueAt should be ~3 days out (got ${delayMs}ms)`,
+  );
+});
+
+test("Phase D: a low-confidence DEFERRED still routes to MANUAL_REVIEW (confidence gate wins)", async () => {
+  const { deps, agent, setIntent, setConfidence } = makeDeps();
+  setIntent("DEFERRED");
+  setConfidence(0.3); // below the 0.50 gate → overridden to UNKNOWN
+  const result = await executeReplyDetection(ctxWith(NODES_WITH_FOLLOWUP), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "MANUAL_REVIEW");
+  assert.equal((result.eventPayload as Record<string, unknown>)["reason"], "low_confidence_reply");
+});
+
+test("Phase D: a DEFERRED reply with no FOLLOW_UP node falls back to NEGOTIATING (not dropped)", async () => {
+  const { deps, agent, setIntent, setConfidence } = makeDeps();
+  setIntent("DEFERRED");
+  setConfidence(0.9);
+  // NODES has no FOLLOW_UP node.
+  const result = await executeReplyDetection(ctx(0), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "NEGOTIATING");
+  assert.equal((result.eventPayload as Record<string, unknown>)["deferredNoFollowUpNode"], true);
+});

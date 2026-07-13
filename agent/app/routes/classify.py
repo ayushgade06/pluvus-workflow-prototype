@@ -36,13 +36,13 @@ logger = logging.getLogger("agent.classify")
 # HARD-T2: prompt version stamped on every classifier LLM call so classifications
 # are attributable to a prompt revision (eval regression gates + drift
 # monitoring). Bump on any wording change to _CLASSIFY_PROMPT below.
-_CLASSIFY_PROMPT_VERSION = "classify-v1.0"
+_CLASSIFY_PROMPT_VERSION = "classify-v1.1"  # Phase D: added DEFERRED intent
 
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
 
-ReplyIntent = Literal["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN"]
+ReplyIntent = Literal["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN", "DEFERRED"]
 
 LOW_CONFIDENCE_THRESHOLD = 0.50
 
@@ -106,6 +106,12 @@ Given an email reply from a creator, classify their intent into exactly one of:
               a bare price is NOT a refusal.
 - QUESTION  : they have a question but haven't committed either way (e.g.
               "what's the budget?", "what are the charges?")
+- DEFERRED  : they replied but are NOT committing yet and are NOT asking a
+              question — they want time to think or will circle back later (e.g.
+              "I'll think about it", "let me get back to you", "give me some
+              time", "can we revisit next week?", "I'm still deciding"). This is
+              NOT a rejection (they didn't refuse) and NOT a QUESTION (they asked
+              nothing) — it is a postponed decision.
 - OPT_OUT   : they want to stop receiving emails
 - UNKNOWN   : the intent is genuinely ambiguous
 

@@ -23,7 +23,14 @@ export type InstanceState =
   | "MANUAL_REVIEW";
 
 export type MessageDirection = "OUTBOUND" | "INBOUND";
-export type ReplyIntent = "POSITIVE" | "NEGATIVE" | "QUESTION" | "OPT_OUT" | "UNKNOWN";
+export type ReplyIntent =
+  | "POSITIVE"
+  | "NEGATIVE"
+  | "QUESTION"
+  | "OPT_OUT"
+  | "UNKNOWN"
+  // Phase D (#3): creator replied with no clear commitment — schedules a soft follow-up.
+  | "DEFERRED";
 
 // ---- workflow summary ----
 

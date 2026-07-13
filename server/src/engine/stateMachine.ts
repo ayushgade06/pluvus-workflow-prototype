@@ -18,7 +18,10 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   OUTREACH_SENT: ["AWAITING_REPLY", "REPLY_RECEIVED", "OPTED_OUT"],
   AWAITING_REPLY: ["FOLLOWED_UP", "REPLY_RECEIVED", "NO_RESPONSE", "OPTED_OUT", "MANUAL_REVIEW"],
   FOLLOWED_UP: ["AWAITING_REPLY", "REPLY_RECEIVED", "OPTED_OUT"],
-  REPLY_RECEIVED: ["NEGOTIATING", "REJECTED", "OPTED_OUT", "MANUAL_REVIEW"],
+  // Phase D (#3): a DEFERRED reply ("I'll think about it") loops back to
+  // AWAITING_REPLY with a dueAt so the soft follow-up fires a few days out — the
+  // pending-reply STATE is reused, distinct from the DEFERRED intent.
+  REPLY_RECEIVED: ["NEGOTIATING", "REJECTED", "OPTED_OUT", "AWAITING_REPLY", "MANUAL_REVIEW"],
   // Negotiation escalations (#14) route to MANUAL_REVIEW (over-ceiling / draft
   // guard) or REJECTED (max-rounds no agreement, #15) — a clean one-way handoff,
   // no brand-decision loop. CRITICAL-6: a creator can reply again mid-negotiation

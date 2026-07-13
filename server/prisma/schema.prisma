@@ -102,6 +102,11 @@ enum ReplyIntent {
   QUESTION
   OPT_OUT
   UNKNOWN
+  // Phase D (#3): the creator replied but made NO clear commitment either way —
+  // "I'll think about it", "give me some time", "circle back next week". A
+  // distinct INTENT (not a pending-reply STATE): it schedules a soft follow-up a
+  // few days out rather than negotiating, rejecting, or escalating.
+  DEFERRED
 }
 
 /// Coarse category for Event log entries, used for filtering and replay.

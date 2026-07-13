@@ -10,6 +10,25 @@ import { looksLikeOptOut } from "../../adapters/classification/classifierSpec.js
 // routed to MANUAL_REVIEW rather than auto-advanced.
 const LOW_CONFIDENCE_THRESHOLD = 0.50;
 
+// Phase D (#3): default soft-follow-up delay for a DEFERRED reply. Q5 (locked) =
+// 3 days. Merchant-overridable per follow-up node via `deferredFollowUpDelayDays`.
+// The timeline-parse bonus ("next week" / a stated date) is intentionally OUT of
+// scope for this pass — TODO(phase-d-followup): parse a creator-stated timeline
+// and set dueAt around it instead of the fixed default (still behind the
+// confidence gate; low confidence keeps the fixed default).
+const DEFAULT_DEFERRED_FOLLOWUP_DELAY_DAYS = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function deferredFollowUpDelayMs(followUpConfig: Record<string, unknown> | undefined): number {
+  const days =
+    followUpConfig && typeof followUpConfig["deferredFollowUpDelayDays"] === "number" &&
+    Number.isFinite(followUpConfig["deferredFollowUpDelayDays"]) &&
+    (followUpConfig["deferredFollowUpDelayDays"] as number) > 0
+      ? (followUpConfig["deferredFollowUpDelayDays"] as number)
+      : DEFAULT_DEFERRED_FOLLOWUP_DELAY_DAYS;
+  return days * DAY_MS;
+}
+
 // DB seam — injectable so the routing logic (incl. the active-negotiation
 // short-circuit and the A1/A2 low-confidence MANUAL_REVIEW hand-off) is
 // unit-testable without a live database. Defaults to the real db helpers.
@@ -194,6 +213,43 @@ export async function executeReplyDetection(
         eventType: "REPLY_CLASSIFIED",
         eventPayload: { intent, confidence, messageId: latestInbound.id },
       };
+
+    case "DEFERRED": {
+      // Phase D (#3): the creator replied but hasn't committed either way
+      // ("I'll think about it", "circle back next week"). This is NOT a rejection
+      // and NOT a negotiation turn — schedule a soft follow-up a few days out and
+      // stay in the pending-reply track. We loop back to AWAITING_REPLY at the
+      // FOLLOW_UP node with a dueAt; the existing 30s poller re-enqueues the
+      // follow-up when it comes due, reusing the whole follow-up loop (incl. its
+      // maxCount protection). If there's no FOLLOW_UP node in the graph, there's
+      // nothing to nudge from — fall through to NEGOTIATING so the reply still
+      // gets a human-quality response rather than being dropped.
+      const followUpNode = nodeGraph.find((n) => n.type === "FOLLOW_UP") ?? null;
+      if (followUpNode) {
+        const dueAt = new Date(Date.now() + deferredFollowUpDelayMs(followUpNode.config));
+        return {
+          nextState: "AWAITING_REPLY",
+          nextNodeId: followUpNode.id,
+          dueAt,
+          eventType: "REPLY_CLASSIFIED",
+          eventPayload: {
+            intent,
+            confidence,
+            messageId: latestInbound.id,
+            deferred: true,
+            dueAt: dueAt.toISOString(),
+          },
+        };
+      }
+      // No follow-up node — treat an engaged-but-undecided reply like a QUESTION
+      // and let the negotiation agent respond (better than dropping it).
+      return {
+        nextState: "NEGOTIATING",
+        nextNodeId: negotiationNode?.id ?? null,
+        eventType: "REPLY_CLASSIFIED",
+        eventPayload: { intent, confidence, messageId: latestInbound.id, deferredNoFollowUpNode: true },
+      };
+    }
 
     case "UNKNOWN":
     default:

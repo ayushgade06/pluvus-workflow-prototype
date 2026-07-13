@@ -7,7 +7,10 @@ export type ReplyIntentValue =
   | "NEGATIVE"
   | "QUESTION"
   | "OPT_OUT"
-  | "UNKNOWN";
+  | "UNKNOWN"
+  // Phase D (#3): the creator replied with no clear commitment either way
+  // ("I'll think about it", "circle back next week") — schedules a soft follow-up.
+  | "DEFERRED";
 
 export interface ClassificationRequest {
   message: string;

@@ -81,18 +81,27 @@ replies that skip `/classify`, forcing `action=ESCALATE` + `escalationReason`.
 
 ---
 
-## 2. The five intents
+## 2. The intents
 
 `ReplyIntent` is the closed enum every layer agrees on. Defined identically in
-Python (`Literal`) and TypeScript (`ReplyIntentValue`).
+Python (`Literal`), the Prisma enum, and TypeScript (`ReplyIntentValue`).
 
 | Intent | Meaning | Resulting state (engine) |
 |---|---|---|
 | `POSITIVE` | Interested in collaborating — **includes naming a price/rate** ("I charge $480"). A number means engaged, not declining. | `NEGOTIATING` |
 | `NEGATIVE` | Actually refusing ("no thanks", "not a good fit"). A bare price is **not** a refusal. | `REJECTED` (terminal) |
 | `QUESTION` | Has a question, hasn't committed either way ("what's the budget?"). Still engaged. | `NEGOTIATING` |
+| `DEFERRED` | Replied but **postponing the decision** — no commitment and no question ("I'll think about it", "circle back next week"). Phase D (#3). | `AWAITING_REPLY` + `dueAt` (soft follow-up ~3 days out, at the FOLLOW_UP node) |
 | `OPT_OUT` | Wants to stop receiving email. Legally significant. | `OPTED_OUT` (terminal) |
 | `UNKNOWN` | Genuinely ambiguous, low-confidence, or flagged for safety. | `MANUAL_REVIEW` (human) |
+
+`DEFERRED` is a distinct **intent**, not a new state: it reuses the pending-reply
+`AWAITING_REPLY` state with a `dueAt` so the existing 30s poller re-enqueues the
+soft follow-up. The confidence gate still applies — a low-confidence `DEFERRED`
+falls to `UNKNOWN` → `MANUAL_REVIEW`. The default nudge delay is 3 days (Q5),
+overridable per FOLLOW_UP node via `deferredFollowUpDelayDays`. Parsing a
+creator-stated timeline ("next week" / a date) to set `dueAt` around it is a
+deliberate follow-up (TODO), not in this pass.
 
 The critical design point: **`POSITIVE` and `QUESTION` both continue the deal**,
 `NEGATIVE` and `OPT_OUT` are terminal, and `UNKNOWN` is the safe escape hatch to a

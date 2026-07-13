@@ -15,6 +15,8 @@ const intentColor: Record<ReplyIntent, string> = {
   QUESTION: "#8b96f8",
   OPT_OUT: "#e0784a",
   UNKNOWN: "#d9a03f",
+  // Phase D (#3): deferred/undecided — a calmer amber than UNKNOWN.
+  DEFERRED: "#c9a227",
 };
 
 export function MessageThread({ messages }: { messages: MessageDTO[] }) {
