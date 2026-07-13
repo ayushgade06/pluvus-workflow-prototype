@@ -622,13 +622,17 @@ function NegotiationForm({
   return (
     <FormStack>
       <InfoBox>
-        The AI agent negotiates terms within the budget range. Escalates to Manual Review after the
-        max rounds limit is reached.
+        The AI agent opens at the preferred budget and concedes up only as needed — never above the
+        maximum. Escalates to Manual Review after the max rounds limit is reached.
       </InfoBox>
 
       <Section title="Budget">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <FormField label="Min Budget ($)" htmlFor={minId}>
+          <FormField
+            label="Preferred Budget ($)"
+            htmlFor={minId}
+            hint="The rate you'd ideally close at — the agent opens here."
+          >
             <Input
               id={minId}
               type="number"
@@ -639,9 +643,10 @@ function NegotiationForm({
             />
           </FormField>
           <FormField
-            label="Max Budget ($)"
+            label="Maximum Budget ($)"
             htmlFor={maxId}
-            error={budgetInvalid ? "Must be ≥ min budget" : undefined}
+            hint="Absolute ceiling — the agent never offers above this."
+            error={budgetInvalid ? "Must be ≥ preferred budget" : undefined}
           >
             <Input
               id={maxId}
@@ -673,7 +678,7 @@ function NegotiationForm({
         <FormField
           label="Over-Budget Tolerance (%)"
           htmlFor={toleranceId}
-          hint="0 = escalate the moment an ask exceeds max budget. Above 0, an ask up to max×(1+tolerance) is countered at the max instead of escalated."
+          hint="0 = escalate the moment an ask exceeds the maximum budget. Above 0, an ask up to max×(1+tolerance) is countered at the max instead of escalated."
         >
           <Input
             id={toleranceId}

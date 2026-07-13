@@ -18,7 +18,17 @@ export interface NegotiationRequest {
   maxRounds: number;
   negotiationHistory: NegotiationHistoryEntry[];
   campaignConstraints: {
+    /**
+     * The floor of the fee band — "Preferred Budget" in the product (V1 #1):
+     * the rate the brand would ideally close at. The agent opens here and
+     * concedes up only as needed. Internal name kept for compatibility.
+     */
     termFloor: NegotiationTerm;
+    /**
+     * The ceiling of the fee band — "Maximum Budget" in the product (V1 #1):
+     * the absolute walk-away cap; offers never exceed it. Every dollar above
+     * the preferred budget is a worse outcome. Internal name kept.
+     */
     termCeiling: NegotiationTerm;
     // M5: `tone` removed — it was never populated (buildNegotiationRequest never
     // set it) and never read (the Python prompt hardcodes tone). Dead field.
@@ -39,7 +49,8 @@ export interface NegotiationRequest {
     rewardDescription?: string;
     /**
      * M1: where in the [floor, ceiling] band the recommended opening offer sits,
-     * as a fraction 0..1. Default 0.5 (midpoint). Lets a campaign open lower or
+     * as a fraction 0..1. Default 0.0 (the floor — V1 #2 open at the preferred
+     * budget, concede up); templates set it explicitly. Lets a campaign open
      * higher without a code change.
      */
     recommendedOfferPosition?: number;

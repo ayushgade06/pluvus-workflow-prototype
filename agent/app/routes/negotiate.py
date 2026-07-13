@@ -626,6 +626,18 @@ def _step_offer(our_last_offer: float, creator_ask: float, ceiling_rate: float) 
 
     Example (recommended 350, they hold 500): 350 -> 425 -> 462 -> 481 ...
     Example (they lower 500 -> 450 -> 400): 350 -> 425 -> 437 -> ... toward 400.
+
+    TODO(V1 #1, utility-curve concession — Phase F, deliberately deferred):
+    the founder's model treats the band as a utility curve (floor/preferred
+    budget = 1.0, ceiling/maximum = 0.0) — every dollar above the preferred
+    budget is a worse outcome, so $260 in a $200-500 band beats $490 by a lot.
+    This symmetric midpoint step drifts toward the creator's ask at the same
+    pace anywhere in the band; utility-weighting would make UPWARD steps
+    smaller (hold harder near the floor, concede slower as the offer climbs),
+    e.g. step_fraction shrinking with (offer - floor)/(ceiling - floor).
+    Touching this changes the money-path decision math (and the LLM-strategy
+    prompt discipline alongside it), so it is out of scope for the relabel
+    pass — Opus-tier change, do NOT fold it into a mechanical edit.
     """
     step = round((our_last_offer + creator_ask) / 2.0, 2)
     # Never offer more than they asked, never above the ceiling.

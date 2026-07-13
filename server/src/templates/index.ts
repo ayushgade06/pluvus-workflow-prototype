@@ -66,6 +66,9 @@ const affiliateNodes: NodeSnapshot[] = [
     type: "NEGOTIATION",
     order: 3,
     config: {
+      // V1 #1 labels: minBudget is "Preferred Budget" (the rate the brand would
+      // ideally close at) and maxBudget is "Maximum Budget" (the walk-away cap)
+      // in the builder UI. Field names kept for config compatibility.
       // HARD-N3: this is a fee band with a POSITIVE ceiling, so the floor must be
       // > 0 too. Previously minBudget was 0, which — combined with open-at-floor
       // (position 0.0) — computed a recommended opening offer of $0 for a bare

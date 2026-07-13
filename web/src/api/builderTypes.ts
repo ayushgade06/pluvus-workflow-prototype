@@ -40,7 +40,19 @@ export interface ReplyDetectionConfig {
 }
 
 export interface NegotiationConfig {
+  /**
+   * "Preferred Budget" in the UI (V1 #1). The rate the brand would ideally
+   * close at — the agent opens here and concedes up only as needed. Field name
+   * kept as minBudget for config compatibility; only the human-facing label
+   * changed.
+   */
   minBudget: number;
+  /**
+   * "Maximum Budget" in the UI (V1 #1). Absolute ceiling — the agent never
+   * offers above it. Every dollar above the preferred budget is a worse
+   * outcome, so $260 in a $200–500 band beats $490. Field name kept as
+   * maxBudget for config compatibility.
+   */
   maxBudget: number;
   maxRounds: number;
   approvalMode: "auto" | "manual";

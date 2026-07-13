@@ -435,9 +435,13 @@ function validateNodeConfig(n: GNode): ValidationIssue | null {
       const min = cfg["minBudget"];
       const max = cfg["maxBudget"];
       if (typeof min !== "number" || typeof max !== "number")
-        return err(n, "MISSING_BUDGET", "Negotiation needs a min and max budget.");
+        return err(n, "MISSING_BUDGET", "Negotiation needs a preferred and maximum budget.");
       if (max < min)
-        return err(n, "INVALID_BUDGET_RANGE", "Negotiation max budget is below the min budget.");
+        return err(
+          n,
+          "INVALID_BUDGET_RANGE",
+          "Negotiation maximum budget is below the preferred budget.",
+        );
       // HARD-N3: a fee band with a positive ceiling must have a positive floor. A
       // zero (or negative) min with a positive max opens the recommended offer at
       // $0 (floor-anchored) and lets the agent send a $0 fee — the $0-offer bug.
@@ -447,7 +451,7 @@ function validateNodeConfig(n: GNode): ValidationIssue | null {
         return err(
           n,
           "INVALID_ZERO_FLOOR",
-          "Negotiation min budget must be greater than 0 when a max budget is set (a $0 floor opens the offer at $0).",
+          "Negotiation preferred budget must be greater than 0 when a maximum budget is set (a $0 floor opens the offer at $0).",
         );
       return null;
     }
