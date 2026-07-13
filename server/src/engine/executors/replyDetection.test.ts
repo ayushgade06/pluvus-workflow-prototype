@@ -41,7 +41,7 @@ const fakeEmail = {} as never;
 // Track classify / classification-write calls so we can assert the
 // short-circuit truly bypasses both.
 function makeDeps() {
-  const calls = { classify: 0, updateClassification: 0, openBrandDecision: 0 };
+  const calls = { classify: 0, updateClassification: 0 };
   const agent = {
     classify: async (_body: string, _intent?: string) => {
       calls.classify++;
@@ -50,27 +50,12 @@ function makeDeps() {
   } as never;
   let returnIntent = "NEGATIVE";
   let returnConfidence = 1;
-  // Capture the input openBrandDecision was called with so the UNKNOWN test can
-  // assert the reason/actions/context, without touching the DB or email.
-  let lastBrandDecisionInput: Record<string, unknown> | null = null;
   const deps: ReplyDetectionDeps = {
     listMessagesByInstance: async () =>
       [{ id: "m1", instanceId: "i1", direction: "INBOUND", body: "I charge 480 dollars" } as unknown as Message],
     updateMessageClassification: async () => {
       calls.updateClassification++;
     },
-    openBrandDecision: (async (_ctx, _email, input) => {
-      calls.openBrandDecision++;
-      lastBrandDecisionInput = input as unknown as Record<string, unknown>;
-      // Mimic the real return: the run parks in AWAITING_BRAND_DECISION on the
-      // escalating node.
-      return {
-        nextState: "AWAITING_BRAND_DECISION",
-        nextNodeId: "node-reply-detection",
-        eventType: input.eventType,
-        eventPayload: { ...(input.eventPayload ?? {}), brandDecisionOpened: true },
-      };
-    }) as ReplyDetectionDeps["openBrandDecision"],
   };
   return {
     calls,
@@ -82,7 +67,6 @@ function makeDeps() {
     setConfidence: (c: number) => {
       returnConfidence = c;
     },
-    getBrandDecisionInput: () => lastBrandDecisionInput,
   };
 }
 
@@ -115,31 +99,30 @@ test("first reply (round 0) POSITIVE advances to NEGOTIATING (unchanged)", async
   assert.equal(result.nextState, "NEGOTIATING");
 });
 
-test("A1/A2: UNKNOWN intent opens a brand decision (low_confidence_reply) instead of dead-ending", async () => {
-  const { calls, deps, agent, setIntent, getBrandDecisionInput } = makeDeps();
+test("A1/A2: UNKNOWN intent routes to MANUAL_REVIEW (low_confidence_reply) instead of dead-ending silently", async () => {
+  // V1 (#14): escalation is a clean one-way handoff. An unclassifiable reply
+  // routes to MANUAL_REVIEW (terminal); runtime emails the brand an FYI and the
+  // conversation surfaces in the Manual Queue for a human to read the intent.
+  const { calls, deps, agent, setIntent } = makeDeps();
   setIntent("UNKNOWN");
   const result = await executeReplyDetection(ctx(0), fakeEmail, agent, deps);
 
   assert.equal(calls.classify, 1, "the reply is classified first");
-  assert.equal(calls.openBrandDecision, 1, "UNKNOWN routes to the brand-decision hand-off");
-  assert.equal(result.nextState, "AWAITING_BRAND_DECISION", "no longer MANUAL_REVIEW");
-
-  const input = getBrandDecisionInput()!;
-  assert.equal(input["reason"], "low_confidence_reply");
-  assert.deepEqual(input["actions"], ["approve", "reject", "counter", "handoff"]);
-  const context = input["context"] as Record<string, unknown>;
-  assert.equal(context["reason"], "low_confidence_reply");
-  assert.equal(context["negotiationNodeId"], "node-negotiation", "resume target is the negotiation node");
+  assert.equal(result.nextState, "MANUAL_REVIEW", "unclassifiable reply → clean human handoff");
+  assert.equal(result.eventType, "MANUAL_REVIEW_FLAGGED");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["reason"], "low_confidence_reply", "audit reason preserved for the Manual Queue");
+  assert.equal(payload["intent"], "UNKNOWN");
 });
 
-test("A1/A2: low-confidence classification (below threshold) also opens a brand decision", async () => {
-  const { calls, deps, agent, setIntent, setConfidence } = makeDeps();
+test("A1/A2: low-confidence classification (below threshold) also routes to MANUAL_REVIEW", async () => {
   // A confident-looking POSITIVE, but below the 0.50 threshold → overridden to
-  // UNKNOWN → brand decision (not auto-advanced to NEGOTIATING).
+  // UNKNOWN → MANUAL_REVIEW (not auto-advanced to NEGOTIATING).
+  const { deps, agent, setIntent, setConfidence } = makeDeps();
   setIntent("POSITIVE");
   setConfidence(0.3);
   const result = await executeReplyDetection(ctx(0), fakeEmail, agent, deps);
 
-  assert.equal(calls.openBrandDecision, 1);
-  assert.equal(result.nextState, "AWAITING_BRAND_DECISION");
+  assert.equal(result.nextState, "MANUAL_REVIEW");
+  assert.equal((result.eventPayload as Record<string, unknown>)["reason"], "low_confidence_reply");
 });

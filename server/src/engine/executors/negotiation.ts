@@ -16,8 +16,6 @@ import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
 import { extractReplyText } from "./replyText.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
-import { openBrandDecision } from "./brandDecision.js";
-import { resolveBand } from "../band.js";
 // HARD-A2: the output-guard-blocked MANUAL_REVIEW result is the SAME shape used
 // by other executors, so it lives in one place (guardEscalation.ts) rather than
 // being duplicated inline here. Previously negotiation.ts and guardEscalation.ts
@@ -262,63 +260,28 @@ async function sendCloseEmail(
   }
 }
 
-// Open the B10 over-ceiling / agent-escalate brand decision (§3 B10). The agent
-// escalated because the creator's ask is above the internal ceiling (or the rate
-// was unreadable). Instead of dead-ending in MANUAL_REVIEW, page the brand:
-// approve the creator's number (overspend), reject, or hand off to a human.
+// V1 (#14): the agent escalated because the creator's ask is above the internal
+// ceiling (or the rate was unreadable). Escalation is now a clean one-way handoff
+// — route straight to MANUAL_REVIEW (terminal). The brand is emailed an FYI by
+// runtime.notifyBrandOfEscalation (keyed on this reason) and the conversation is
+// surfaced in the Manual Queue for a human to take over out-of-band. No magic
+// links, no brand-decision round-trip, no auto-resume.
 //
-// This is APPROVE/REJECT/HANDOFF only — no `counter`. Per the locked spec (§3
-// B10 Step 2) an over-ceiling escalation is the brand's call to overspend or
-// walk; we do NOT re-open negotiation with a brand counter here (that would
-// require the creator-facing final-offer sub-state, a follow-on item). A brand
-// who wants to propose a different number can HANDOFF to a human.
-function openOverCeilingBrandDecision(
-  ctx: ExecutionContext,
-  email: IEmailProvider,
-  config: Record<string, unknown>,
-  args: {
-    creatorReply: string;
-    round: number;
-    message: string;
-    /** MED-N3: the /negotiate LLM's validated extraction of the creator's ask —
-     *  this is the number a brand APPROVE records as the deal rate, so it must
-     *  come from comprehension (substring-validated in the agent), not a regex. */
-    creatorRate: number | undefined;
-  },
-): Promise<NodeResult> {
-  const { node, creator } = ctx;
-  const { creatorReply, round, message, creatorRate } = args;
-  const { floor, ceiling } = resolveBand(config);
-
-  // Build the ask. When we could read the creator's number, quote it against the
-  // ceiling; when we couldn't, ask the brand to read the reply and decide.
-  const ceilingClause =
-    ceiling !== undefined ? ` (above your ceiling of ${ceiling})` : "";
-  const question =
-    creatorRate !== undefined
-      ? `${creator.name} is asking for ${creatorRate}${ceilingClause}, which is ` +
-        `more than this campaign's budget allows. This is approve-or-reject only ` +
-        `— we won't negotiate further. Approve at ${creatorRate}, reject, or hand ` +
-        `off to a human.`
-      : `${creator.name} replied but we couldn't read a clear rate from their ` +
-        `message. How do you want to proceed — approve continuing, reject, or ` +
-        `hand off to a human?`;
-
-  return openBrandDecision(ctx, email, {
-    reason: "escalated",
-    question,
-    // Over-ceiling: approve (overspend) / reject / handoff. No counter (see above).
-    actions: ["approve", "reject", "handoff"],
-    context: {
-      reason: "escalated",
-      actions: ["approve", "reject", "handoff"],
-      negotiationNodeId: node.id,
-      ...(creatorRate !== undefined ? { creatorRate } : {}),
-      ...(floor !== undefined ? { floor } : {}),
-      ...(ceiling !== undefined ? { ceiling } : {}),
-      round,
-    },
-    ...(creatorReply ? { quotedReply: creatorReply } : {}),
+// The `escalated` reason code is preserved so the existing REASON_LABELS +
+// Manual Queue render this correctly. `creatorRate` is recorded on the audit
+// payload only (there is no brand APPROVE to turn it into a deal rate anymore).
+function escalateOverCeiling(args: {
+  round: number;
+  message: string;
+  /** MED-N3: the /negotiate LLM's validated extraction of the creator's ask,
+   *  for the audit payload / Manual Queue context only. */
+  creatorRate: number | undefined;
+}): NodeResult {
+  const { round, message, creatorRate } = args;
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
     eventType: "NEGOTIATION_TURN",
     eventPayload: {
       outcome: "ESCALATE",
@@ -327,7 +290,7 @@ function openOverCeilingBrandDecision(
       message,
       ...(creatorRate !== undefined ? { creatorRate } : {}),
     },
-  });
+  };
 }
 
 export async function executeNegotiation(
@@ -648,14 +611,14 @@ export async function executeNegotiation(
     }
 
     case "escalate": {
-      // B10 (§3): the agent escalated because the creator's ask is above the
-      // internal ceiling (or the rate was unreadable). Instead of dead-ending in
-      // MANUAL_REVIEW, page the brand for an approve/reject/handoff decision and
-      // park in AWAITING_BRAND_DECISION; the run auto-resumes on the brand's reply.
-      // MED-N3: the ask quoted to the brand — and recorded as the deal rate on a
-      // brand APPROVE — is the model's validated extraction, never the regex.
-      return openOverCeilingBrandDecision(ctx, email, config, {
-        creatorReply,
+      // V1 (#14): the agent escalated because the creator's ask is above the
+      // internal ceiling (or the rate was unreadable). Escalation is a clean
+      // one-way handoff — route to MANUAL_REVIEW (terminal). runtime emails the
+      // brand an FYI and the conversation surfaces in the Manual Queue; a human
+      // takes over out-of-band. No brand-decision round-trip, no auto-resume.
+      // MED-N3: the creator's ask recorded for Manual Queue context is the
+      // model's validated extraction, never the regex.
+      return escalateOverCeiling({
         round: instance.negotiationRound,
         message,
         creatorRate: creatorRequestedRate,
