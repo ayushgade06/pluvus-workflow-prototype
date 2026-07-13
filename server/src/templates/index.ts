@@ -67,19 +67,20 @@ const affiliateNodes: NodeSnapshot[] = [
     order: 3,
     config: {
       // HARD-N3: this is a fee band with a POSITIVE ceiling, so the floor must be
-      // > 0 too. Previously minBudget was 0, which — combined with the old
-      // open-at-floor default (position 0.0) — computed a recommended opening
-      // offer of $0 for a bare "I'm interested" (the $0-offer bug). A small
-      // positive floor + an explicit midpoint position (below) fixes it.
+      // > 0 too. Previously minBudget was 0, which — combined with open-at-floor
+      // (position 0.0) — computed a recommended opening offer of $0 for a bare
+      // "I'm interested" (the $0-offer bug). Opening at the floor (V1 #2, below)
+      // is only safe because every template keeps minBudget > 0.
       minBudget: 50,
       maxBudget: 500,
       maxRounds: 3,
       approvalMode: "auto",
       commissionRate: 15,
-      // HARD-N3: open at the BAND MIDPOINT rather than the floor. Threaded through
-      // buildNegotiationRequest → CampaignConstraints.recommendedOfferPosition and
-      // clamped to [0,1] in the agent; 0.5 = floor + (ceiling-floor)*0.5.
-      recommendedOfferPosition: 0.5,
+      // V1 #2: open at the FLOOR (preferred budget) and concede UP. Threaded
+      // through buildNegotiationRequest → CampaignConstraints.recommendedOfferPosition
+      // and clamped to [0,1] in the agent; 0.0 = floor. Requires minBudget > 0
+      // (HARD-N3 guard above) so the opening offer can never be $0.
+      recommendedOfferPosition: 0.0,
       // Phase C (#12): merchant tolerance ABOVE maxBudget, as a percentage. 0 =
       // zero tolerance (escalate the moment an ask exceeds the ceiling — today's
       // behavior). E.g. 10 means an ask up to ceiling*1.10 is countered AT the
@@ -155,8 +156,9 @@ const hybridNodes: NodeSnapshot[] = [
       maxRounds: 4,
       approvalMode: "auto",
       commissionRate: 10,
-      // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
-      recommendedOfferPosition: 0.5,
+      // V1 #2: open at the floor (preferred budget), concede up. minBudget > 0
+      // guards the $0-offer regression (HARD-N3). See the first template's note.
+      recommendedOfferPosition: 0.0,
       // Phase C (#12): tolerance % above maxBudget; 0 = escalate the moment an ask
       // exceeds the ceiling (today's behavior). See the first template's note.
       overCeilingTolerance: 0,
@@ -228,8 +230,9 @@ const fixedFeeNodes: NodeSnapshot[] = [
       maxBudget: 5000,
       maxRounds: 3,
       approvalMode: "manual",
-      // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
-      recommendedOfferPosition: 0.5,
+      // V1 #2: open at the floor (preferred budget), concede up. minBudget > 0
+      // guards the $0-offer regression (HARD-N3). See the first template's note.
+      recommendedOfferPosition: 0.0,
       // Phase C (#12): tolerance % above maxBudget; 0 = escalate the moment an ask
       // exceeds the ceiling (today's behavior). See the first template's note.
       overCeilingTolerance: 0,
