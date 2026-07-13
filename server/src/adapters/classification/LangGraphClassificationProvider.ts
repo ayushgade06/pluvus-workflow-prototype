@@ -10,8 +10,14 @@ import { agentBaseUrl, agentPostJson, classifyTimeoutMs } from "../agentServiceC
 //
 // Base URL, auth header (FIX-12), and timeout are handled by agentPostJson.
 
+// Must stay in sync with ReplyIntentValue (types.ts) / the Prisma ReplyIntent
+// enum / the agent's classify intents. A missing member here rejects an
+// otherwise-valid agent response as "malformed" and degrades it to UNKNOWN →
+// MANUAL_REVIEW. That is exactly what silently swallowed Phase D's DEFERRED:
+// the agent returned DEFERRED@0.95 but this allowlist (which predated Phase D)
+// didn't list it, so every "I'll think about it" reply was mis-routed to a human.
 const VALID_INTENTS = new Set<ReplyIntentValue>([
-  "POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN",
+  "POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN", "DEFERRED",
 ]);
 
 function isValidIntent(value: unknown): value is ReplyIntentValue {
