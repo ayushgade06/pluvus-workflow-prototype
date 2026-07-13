@@ -1,0 +1,349 @@
+/**
+ * T1 — Escalation-trap ROUTING tests (deterministic, no LLM, no DB/Redis).
+ *
+ * Purpose: lock the founder's V1 escalation ROUTING so it can't regress. Given a
+ * canned agent verdict / classifier output, assert the instance lands in the
+ * correct state with the correct side effects — WITHOUT calling a real model or
+ * touching Neon/Redis. This is the durable backbone; it complements the T2 agent
+ * guard-math tests (agent/tests/test_escalation_traps.py) and the T3 live runbook
+ * (readme_docs/testing/README.md).
+ *
+ * What this file proves (the trap matrix, routing layer):
+ *   1. Max-rounds no agreement        → REJECTED + courteous close email
+ *   2. Max-rounds close email          → best-effort (send failure still REJECTED)
+ *   3. Agent ESCALATE (over-ceiling)   → MANUAL_REVIEW, reason "escalated"
+ *   4. Always-escalate topic           → MANUAL_REVIEW regardless of confidence
+ *   5. Low-confidence reply (<0.50)    → MANUAL_REVIEW, reason "low_confidence_reply"
+ *   6. Deferred reply (#3)             → AWAITING_REPLY + dueAt ~+3d at FOLLOW_UP node
+ *   7. Opt-out (deterministic)         → OPTED_OUT
+ *   8. NEGATIVE (#14): no path yields AWAITING_BRAND_DECISION; the state no longer
+ *      exists and no magic-link/brand-decision machinery is reachable.
+ *
+ * ASSERTION BASIS (locked decision): these assert CURRENT documented behavior so
+ * the suite stays green and describes reality. Any place current behavior diverges
+ * from the founder's LITERAL wording is marked `KNOWN DIVERGENCE` inline and
+ * catalogued in readme_docs/testing/README.md → "Known divergences". We do NOT
+ * bake in a guessed target here.
+ *
+ * Run:  cd server && npx tsx --test src/engine/escalationTraps.test.ts
+ *   (or the whole suite: npm test)
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { Message, ReplyIntent } from "@prisma/client";
+
+import {
+  executeReplyDetection,
+  type ReplyDetectionDeps,
+} from "./executors/replyDetection.js";
+import {
+  maxRoundsReject,
+  escalateOverCeiling,
+} from "./executors/negotiation.js";
+import { assertTransition, InvalidTransitionError, isTerminal } from "./stateMachine.js";
+
+// ---------------------------------------------------------------------------
+// Shared stubs
+// ---------------------------------------------------------------------------
+
+const REPLY_NODES = [
+  { id: "node-reply-detection", type: "REPLY_DETECTION", order: 4, config: {} },
+  { id: "node-negotiation", type: "NEGOTIATION", order: 5, config: {} },
+];
+
+// Reply-detection graph WITH a follow-up node (needed for the DEFERRED trap).
+const REPLY_NODES_WITH_FOLLOWUP = [
+  { id: "node-reply-detection", type: "REPLY_DETECTION", order: 4, config: {} },
+  { id: "node-follow-up", type: "FOLLOW_UP", order: 3, config: {} },
+  { id: "node-negotiation", type: "NEGOTIATION", order: 5, config: {} },
+];
+
+function replyCtx(
+  nodeGraph: typeof REPLY_NODES,
+  opts: { negotiationRound?: number } = {},
+) {
+  return {
+    instance: {
+      id: "i1",
+      currentState: "REPLY_RECEIVED",
+      negotiationRound: opts.negotiationRound ?? 0,
+    },
+    node: nodeGraph[0],
+    nodeGraph,
+    creator: { id: "c1", name: "Alex" },
+  } as never;
+}
+
+const fakeEmail = {} as never;
+
+/**
+ * Build a stubbed agent + injectable deps for executeReplyDetection. The agent's
+ * classify() returns the configured intent/confidence/escalationReason, and the
+ * inbound message body is configurable (so the deterministic opt-out gate can be
+ * exercised).
+ */
+function makeReplyDeps(cfg: {
+  intent: string;
+  confidence: number;
+  escalationReason?: string;
+  body?: string;
+}) {
+  const calls = { classify: 0, updateClassification: 0 };
+  const agent = {
+    classify: async (_body: string) => {
+      calls.classify++;
+      return {
+        intent: cfg.intent as ReplyIntent,
+        confidence: cfg.confidence,
+        ...(cfg.escalationReason ? { escalationReason: cfg.escalationReason } : {}),
+      };
+    },
+  } as never;
+  const deps: ReplyDetectionDeps = {
+    listMessagesByInstance: async () =>
+      [
+        {
+          id: "m1",
+          instanceId: "i1",
+          direction: "INBOUND",
+          body: cfg.body ?? "Tell me more about the deal.",
+        } as unknown as Message,
+      ],
+    updateMessageClassification: async () => {
+      calls.updateClassification++;
+    },
+  };
+  return { calls, agent, deps };
+}
+
+/**
+ * Minimal email provider stub for the negotiation-helper tests. Records draft/send
+ * calls; `failSend` makes send() throw so we can prove the close email is
+ * best-effort (a failure must not block the REJECTED transition).
+ */
+function makeEmailStub(opts: { failSend?: boolean } = {}) {
+  const calls = { draft: 0, send: 0 };
+  const email = {
+    draft: async (_creator: unknown, template: string) => {
+      calls.draft++;
+      return { subject: "Close", body: template };
+    },
+    send: async () => {
+      calls.send++;
+      if (opts.failSend) throw new Error("simulated provider outage");
+      return { messageId: "msg-1", threadId: "thr-1" };
+    },
+  } as never;
+  return { calls, email };
+}
+
+function negCtx() {
+  return {
+    instance: { id: "i1", currentState: "NEGOTIATING", negotiationRound: 3 },
+    node: { id: "node-negotiation", type: "NEGOTIATION", order: 5, config: {} },
+    nodeGraph: [{ id: "node-negotiation", type: "NEGOTIATION", order: 5, config: {} }],
+    creator: { id: "c1", name: "Alex" },
+  } as never;
+}
+
+// ---------------------------------------------------------------------------
+// Trap 1 + 2 — Max-rounds no agreement → REJECTED + best-effort close email (#15)
+// ---------------------------------------------------------------------------
+
+test("trap: max-rounds no agreement → REJECTED and a close email is drafted (#15)", async () => {
+  const { calls, email } = makeEmailStub();
+  const result = await maxRoundsReject(negCtx(), email, {}, {
+    maxRounds: 3,
+    round: 3,
+    creatorRate: 600,
+  });
+
+  assert.equal(result.nextState, "REJECTED", "failed negotiation auto-closes (no human)");
+  assert.equal(result.completedAt instanceof Date, true, "REJECTED is terminal");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["outcome"], "REJECT");
+  assert.equal(payload["reason"], "max_rounds_no_agreement");
+  assert.equal(calls.draft, 1, "a courteous close email is drafted before rejecting");
+  // NOTE: we assert draft() (reachable at this layer), not send(). sendOnce()
+  // reserves a Message row in the DB BEFORE calling email.send(), and this is a
+  // no-DB unit test — so the actual send is swallowed by sendCloseEmail's
+  // best-effort catch here. That the email is truly DELIVERED is a T3 (live)
+  // assertion; see readme_docs/testing/README.md → "T1 boundary: close-email send".
+});
+
+test("trap: close email is best-effort — REJECTED is reached even when the send path fails (#15, Q2)", async () => {
+  // With no DB the sendOnce reservation throws and sendCloseEmail swallows it.
+  // The whole point of Q2's best-effort contract is that this does NOT block the
+  // transition — so REJECTED must still be the result.
+  const { email } = makeEmailStub({ failSend: true });
+  const result = await maxRoundsReject(negCtx(), email, {}, {
+    maxRounds: 3,
+    round: 3,
+    creatorRate: undefined,
+  });
+
+  assert.equal(result.nextState, "REJECTED", "a close-email failure does not block the auto-reject");
+});
+
+// ---------------------------------------------------------------------------
+// Trap 3 — Agent ESCALATE (over-ceiling / unreadable) → MANUAL_REVIEW (#12/#14)
+// ---------------------------------------------------------------------------
+
+test("trap: agent ESCALATE (over-ceiling) → MANUAL_REVIEW, reason 'escalated' (#14)", () => {
+  const result = escalateOverCeiling({
+    round: 1,
+    message: "This ask is above budget.",
+    creatorRate: 5000,
+  });
+
+  assert.equal(result.nextState, "MANUAL_REVIEW", "escalation is a clean one-way handoff");
+  assert.equal(result.completedAt instanceof Date, true, "MANUAL_REVIEW is terminal");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["outcome"], "ESCALATE");
+  assert.equal(payload["reason"], "escalated");
+  assert.equal(payload["creatorRate"], 5000, "the over-ceiling ask is recorded for the queue");
+  // Not a topic escalation, so no alwaysEscalateTopic marker.
+  assert.equal(payload["alwaysEscalateTopic"], undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Trap 4 — Always-escalate topic → MANUAL_REVIEW regardless of confidence (#5)
+// ---------------------------------------------------------------------------
+
+test("trap: always-escalate topic → MANUAL_REVIEW even at HIGH confidence (#5)", async () => {
+  // Classifier is fully confident (0.99) but the agent flagged an always-escalate
+  // topic (e.g. usage_rights_or_licensing). The topic reason must win regardless.
+  const { agent, deps } = makeReplyDeps({
+    intent: "QUESTION",
+    confidence: 0.99,
+    escalationReason: "usage_rights_or_licensing",
+    body: "Can we discuss exclusive usage rights and licensing?",
+  });
+  const result = await executeReplyDetection(replyCtx(REPLY_NODES), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "MANUAL_REVIEW", "topic escalation routes to a human");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["reason"], "usage_rights_or_licensing");
+  assert.equal(payload["alwaysEscalateTopic"], true);
+});
+
+// ---------------------------------------------------------------------------
+// Trap 5 — Low-confidence reply (<0.50) → MANUAL_REVIEW (#10)
+// ---------------------------------------------------------------------------
+
+test("trap: low-confidence reply (<0.50) → MANUAL_REVIEW, reason 'low_confidence_reply' (#10)", async () => {
+  const { agent, deps } = makeReplyDeps({ intent: "QUESTION", confidence: 0.3 });
+  const result = await executeReplyDetection(replyCtx(REPLY_NODES), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "MANUAL_REVIEW");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["reason"], "low_confidence_reply");
+});
+
+// ---------------------------------------------------------------------------
+// Trap 6 — Deferred reply → AWAITING_REPLY + dueAt ~+3d at the FOLLOW_UP node (#3)
+// ---------------------------------------------------------------------------
+
+test("trap: DEFERRED reply → AWAITING_REPLY + dueAt ~+3 days at FOLLOW_UP node (#3)", async () => {
+  const { agent, deps } = makeReplyDeps({
+    intent: "DEFERRED",
+    confidence: 0.9,
+    body: "I'll think about it and circle back next week.",
+  });
+  const before = Date.now();
+  const result = await executeReplyDetection(
+    replyCtx(REPLY_NODES_WITH_FOLLOWUP),
+    fakeEmail,
+    agent,
+    deps,
+  );
+
+  // DEFERRED is an INTENT that maps to the pending-reply STATE (not NEGOTIATING,
+  // not MANUAL_REVIEW) — the founder's key separation.
+  assert.equal(result.nextState, "AWAITING_REPLY", "deferred loops back into the follow-up track");
+  assert.equal(result.nextNodeId, "node-follow-up");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["deferred"], true);
+
+  // dueAt is ~3 days out (default). Assert it's in the 3-day ballpark, not exact.
+  const dueAt = result.dueAt as Date;
+  assert.ok(dueAt instanceof Date, "a dueAt is scheduled");
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  const delta = dueAt.getTime() - before;
+  assert.ok(
+    delta > threeDaysMs - 60_000 && delta < threeDaysMs + 60_000,
+    `dueAt should be ~3 days out (got ${Math.round(delta / 3_600_000)}h)`,
+  );
+});
+
+test("trap: low-confidence DEFERRED still routes to MANUAL_REVIEW (confidence gate wins) (#3/#10)", async () => {
+  // A DEFERRED intent under the 0.50 threshold is overridden to UNKNOWN before the
+  // switch, so it escalates instead of scheduling a follow-up on a shaky read.
+  const { agent, deps } = makeReplyDeps({ intent: "DEFERRED", confidence: 0.3 });
+  const result = await executeReplyDetection(
+    replyCtx(REPLY_NODES_WITH_FOLLOWUP),
+    fakeEmail,
+    agent,
+    deps,
+  );
+
+  assert.equal(result.nextState, "MANUAL_REVIEW");
+  assert.equal((result.eventPayload as Record<string, unknown>)["reason"], "low_confidence_reply");
+});
+
+// ---------------------------------------------------------------------------
+// Trap 7 — Opt-out (deterministic gate) → OPTED_OUT
+// ---------------------------------------------------------------------------
+
+test("trap: 'unsubscribe' → OPTED_OUT via the deterministic gate (CAN-SPAM)", async () => {
+  const { calls, agent, deps } = makeReplyDeps({
+    intent: "POSITIVE", // even if the model would say POSITIVE, the gate wins
+    confidence: 1,
+    body: "Please unsubscribe me and stop emailing me.",
+  });
+  const result = await executeReplyDetection(replyCtx(REPLY_NODES), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "OPTED_OUT");
+  assert.equal(
+    (result.eventPayload as Record<string, unknown>)["deterministicOptOut"],
+    true,
+  );
+  assert.equal(calls.classify, 0, "the opt-out gate short-circuits before the model");
+});
+
+// ---------------------------------------------------------------------------
+// Trap 8 — NEGATIVE CHECK (#14): AWAITING_BRAND_DECISION no longer exists.
+// ---------------------------------------------------------------------------
+
+test("negative (#14): AWAITING_BRAND_DECISION is not a reachable state anymore", () => {
+  // The brand-decision loop was removed. There must be no way to transition INTO
+  // AWAITING_BRAND_DECISION from any prior escalation state — the value isn't in
+  // the InstanceState enum, so assertTransition throws on the (now bogus) target.
+  const escalationSources = ["AWAITING_REPLY", "REPLY_RECEIVED", "NEGOTIATING", "ACCEPTED"] as const;
+  for (const from of escalationSources) {
+    assert.throws(
+      () => assertTransition(from, "AWAITING_BRAND_DECISION" as never),
+      InvalidTransitionError,
+      `${from} → AWAITING_BRAND_DECISION must be an invalid transition (state removed)`,
+    );
+  }
+});
+
+test("negative (#14): MANUAL_REVIEW is terminal — an escalated run has no way back", () => {
+  // A clean one-way handoff: MANUAL_REVIEW is terminal (no outgoing edges), so an
+  // escalated instance cannot auto-resume into negotiation or anything else.
+  assert.equal(isTerminal("MANUAL_REVIEW"), true);
+  for (const to of ["NEGOTIATING", "AWAITING_REPLY", "ACCEPTED", "REPLY_RECEIVED"] as const) {
+    assert.throws(
+      () => assertTransition("MANUAL_REVIEW", to),
+      InvalidTransitionError,
+      `MANUAL_REVIEW → ${to} must be invalid (terminal, no auto-resume)`,
+    );
+  }
+});
+
+test("negative (#14): REJECTED is terminal — a failed negotiation stays closed", () => {
+  assert.equal(isTerminal("REJECTED"), true);
+  assert.throws(() => assertTransition("REJECTED", "NEGOTIATING"), InvalidTransitionError);
+});

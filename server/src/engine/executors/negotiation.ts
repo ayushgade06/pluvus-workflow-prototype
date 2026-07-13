@@ -177,7 +177,9 @@ function countTrailingPresentOffers(history: NegotiationHistoryEntryLite[]): num
 // best-effort — a provider failure must NOT block the transition, so the run
 // still reaches REJECTED. It's idempotent (sendOnce, keyed on the round) so a
 // BullMQ retry of this step can't double-email the creator.
-async function maxRoundsReject(
+// Exported for the T1 escalation-trap tests (routing assertions). Visibility
+// only — behavior unchanged. See readme_docs/testing/.
+export async function maxRoundsReject(
   ctx: ExecutionContext,
   email: IEmailProvider,
   config: Record<string, unknown>,
@@ -271,7 +273,9 @@ async function sendCloseEmail(
 // pricing-exception/undefined-terms/usage-rights) overrides it with the specific
 // topic reason so the Manual Queue shows WHY. `creatorRate` is recorded on the
 // audit payload only (there is no brand APPROVE to turn it into a deal rate).
-function escalateOverCeiling(args: {
+// Exported for the T1 escalation-trap tests (routing assertions). Visibility
+// only — behavior unchanged. See readme_docs/testing/.
+export function escalateOverCeiling(args: {
   round: number;
   message: string;
   /** MED-N3: the /negotiate LLM's validated extraction of the creator's ask,
