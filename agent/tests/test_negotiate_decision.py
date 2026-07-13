@@ -407,3 +407,162 @@ def test_last_offered_rate_ignores_turns_without_a_rate():
 def test_last_offered_rate_none_when_only_non_offer_turns():
     history = [_turn("ESCALATE"), _turn("REJECT")]
     assert _last_offered_rate(history) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase C (#12) — over-ceiling tolerance
+# ---------------------------------------------------------------------------
+# floor 100, ceiling 500. A 10% tolerance → tolerance_ceiling = 550. Within the
+# (500, 550] band the agent counters/accepts AT the ceiling (never above it);
+# above 550 it escalates. tolerance_ceiling omitted (None) must reproduce today's
+# zero-tolerance behavior (boundary == ceiling).
+
+from app.routes.negotiate import _apply_decision_guards  # noqa: E402
+
+TOL_CEILING = 550.0  # ceiling 500 * (1 + 10/100)
+
+
+def decide_tol(intent, rate, prior_offer=None, is_final_round=False):
+    return _decide_action(
+        intent,
+        rate,
+        recommended_offer=RECOMMENDED,
+        ceiling_rate=CEILING,
+        tolerance_ceiling=TOL_CEILING,
+        floor_rate=100.0,
+        prior_offer=prior_offer,
+        is_final_round=is_final_round,
+    )
+
+
+# ── _decide_action with tolerance ──────────────────────────────────────────
+
+
+def test_decide_ask_within_tolerance_counters_toward_but_never_above_ceiling():
+    # Ask 520 is over the ceiling (500) but within tolerance (<=550). We COUNTER
+    # (rather than escalate), stepping toward them but the offer is CAPPED at the
+    # ceiling — never above it. With prior_offer 300 the step is avg(300,520)=410.
+    d = decide_tol("RATE_PROPOSAL", 520, prior_offer=300.0)
+    assert d.action == "COUNTER"
+    assert d.proposed_rate == 410.0
+    assert d.proposed_rate <= CEILING
+
+
+def test_decide_ask_within_tolerance_counter_caps_at_ceiling_when_prior_high():
+    # When our prior offer is already near the ceiling, the step is capped AT the
+    # ceiling (never above), so an in-tolerance over-ceiling ask counters at 500.
+    d = decide_tol("RATE_PROPOSAL", 540, prior_offer=490.0)
+    assert d.action == "COUNTER"
+    assert d.proposed_rate == CEILING
+
+
+def test_decide_ask_above_tolerance_escalates():
+    # Ask 600 is beyond the tolerance ceiling (550) → escalate.
+    d = decide_tol("RATE_PROPOSAL", 600, prior_offer=300.0)
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
+
+
+def test_decide_final_round_within_tolerance_closes_at_ceiling():
+    # Final round, ask 530 (over ceiling, within tolerance) → ACCEPT at the
+    # ceiling (not their number, and not escalate).
+    d = decide_tol("RATE_PROPOSAL", 530, prior_offer=480.0, is_final_round=True)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == CEILING
+
+
+def test_decide_final_round_above_tolerance_escalates():
+    d = decide_tol("RATE_PROPOSAL", 700, prior_offer=480.0, is_final_round=True)
+    assert d.action == "ESCALATE"
+
+
+def test_decide_acceptance_within_tolerance_closes_at_ceiling():
+    # They "accept" at 540 (over ceiling, within tolerance) → ACCEPT at the
+    # ceiling; we never agree above the real ceiling.
+    d = decide_tol("ACCEPTANCE", 540)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == CEILING
+
+
+def test_decide_acceptance_above_tolerance_escalates():
+    d = decide_tol("ACCEPTANCE", 560)
+    assert d.action == "ESCALATE"
+
+
+def test_decide_in_band_unchanged_by_tolerance():
+    # An ask at/below the ceiling behaves exactly as before (tolerance is inert).
+    d = decide_tol("RATE_PROPOSAL", 450, prior_offer=300.0)
+    assert d.action == "COUNTER"
+    assert d.proposed_rate == round((300.0 + 450.0) / 2.0, 2)
+
+
+def test_decide_zero_tolerance_default_escalates_over_ceiling():
+    # tolerance_ceiling omitted (None) → defaults to the ceiling → an over-ceiling
+    # ask escalates, exactly as before Phase C.
+    d = _decide_action(
+        "RATE_PROPOSAL",
+        520,
+        recommended_offer=RECOMMENDED,
+        ceiling_rate=CEILING,
+        floor_rate=100.0,
+        prior_offer=300.0,
+    )
+    assert d.action == "ESCALATE"
+
+
+# ── _apply_decision_guards (LLM path) with tolerance ───────────────────────
+
+
+def guard_tol(action, rate, is_final_round=False, creator_ask=None):
+    return _apply_decision_guards(
+        action,
+        rate,
+        floor_rate=100.0,
+        ceiling_rate=CEILING,
+        tolerance_ceiling=TOL_CEILING,
+        is_final_round=is_final_round,
+        creator_ask=creator_ask,
+    )
+
+
+def test_guard_accept_within_tolerance_clamps_to_ceiling():
+    # The model accepts at 540 (over ceiling, within tolerance) → ACCEPT clamped
+    # DOWN to the ceiling (never agree above it).
+    d = guard_tol("ACCEPT", 540)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == CEILING
+
+
+def test_guard_accept_above_tolerance_escalates():
+    d = guard_tol("ACCEPT", 600)
+    assert d.action == "ESCALATE"
+
+
+def test_guard_final_round_counter_within_tolerance_closes_at_ceiling():
+    # CRITICAL-4 boundary shifted to the tolerance ceiling: a final-round COUNTER
+    # with the creator's ask over the ceiling but within tolerance closes at the
+    # ceiling instead of escalating.
+    d = guard_tol("COUNTER", 500, is_final_round=True, creator_ask=530)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == CEILING
+
+
+def test_guard_final_round_counter_above_tolerance_escalates():
+    # Ask beyond tolerance on the final round → ESCALATE (Case-19 protection,
+    # boundary = tolerance ceiling).
+    d = guard_tol("COUNTER", 500, is_final_round=True, creator_ask=650)
+    assert d.action == "ESCALATE"
+
+
+def test_guard_zero_tolerance_default_matches_ceiling_boundary():
+    # tolerance_ceiling omitted → boundary == ceiling → a final-round over-ceiling
+    # ask escalates, exactly as before Phase C.
+    d = _apply_decision_guards(
+        "COUNTER",
+        500,
+        floor_rate=100.0,
+        ceiling_rate=CEILING,
+        is_final_round=True,
+        creator_ask=530,
+    )
+    assert d.action == "ESCALATE"

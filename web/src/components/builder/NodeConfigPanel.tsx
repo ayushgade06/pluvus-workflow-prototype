@@ -580,11 +580,13 @@ function NegotiationForm({
   const [maxRounds, setMaxRounds] = useState(config.maxRounds ?? 3);
   const [approvalMode, setApprovalMode] = useState<"auto" | "manual">(config.approvalMode ?? "auto");
   const [commissionRate, setCommissionRate] = useState(config.commissionRate ?? 0);
+  const [overCeilingTolerance, setOverCeilingTolerance] = useState(config.overCeilingTolerance ?? 0);
   const minId = useId();
   const maxId = useId();
   const roundsId = useId();
   const modeId = useId();
   const commissionId = useId();
+  const toleranceId = useId();
 
   useEffect(() => {
     setMinBudget(config.minBudget ?? 0);
@@ -592,9 +594,11 @@ function NegotiationForm({
     setMaxRounds(config.maxRounds ?? 3);
     setApprovalMode(config.approvalMode ?? "auto");
     setCommissionRate(config.commissionRate ?? 0);
+    setOverCeilingTolerance(config.overCeilingTolerance ?? 0);
   }, [nodeId]);
 
-  // Identical payload: commissionRate only included when > 0.
+  // Identical payload: commissionRate + overCeilingTolerance only included when > 0
+  // (0 is the omitted default — zero tolerance / no commission).
   function flush(over?: Partial<NegotiationConfig>) {
     const next = {
       minBudget,
@@ -602,12 +606,14 @@ function NegotiationForm({
       maxRounds,
       approvalMode,
       commissionRate,
+      overCeilingTolerance,
       ...over,
     };
-    const { commissionRate: rate, ...rest } = next;
+    const { commissionRate: rate, overCeilingTolerance: tolerance, ...rest } = next;
     onUpdate(nodeId, {
       ...rest,
       ...(rate > 0 ? { commissionRate: rate } : {}),
+      ...(tolerance > 0 ? { overCeilingTolerance: tolerance } : {}),
     });
   }
 
@@ -660,6 +666,22 @@ function NegotiationForm({
             max={100}
             value={commissionRate}
             onChange={(e) => setCommissionRate(Number(e.target.value))}
+            onBlur={() => flush()}
+            style={{ width: 90 }}
+          />
+        </FormField>
+        <FormField
+          label="Over-Budget Tolerance (%)"
+          htmlFor={toleranceId}
+          hint="0 = escalate the moment an ask exceeds max budget. Above 0, an ask up to max×(1+tolerance) is countered at the max instead of escalated."
+        >
+          <Input
+            id={toleranceId}
+            type="number"
+            min={0}
+            max={100}
+            value={overCeilingTolerance}
+            onChange={(e) => setOverCeilingTolerance(Number(e.target.value))}
             onBlur={() => flush()}
             style={{ width: 90 }}
           />

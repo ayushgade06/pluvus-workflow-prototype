@@ -80,6 +80,12 @@ const affiliateNodes: NodeSnapshot[] = [
       // buildNegotiationRequest → CampaignConstraints.recommendedOfferPosition and
       // clamped to [0,1] in the agent; 0.5 = floor + (ceiling-floor)*0.5.
       recommendedOfferPosition: 0.5,
+      // Phase C (#12): merchant tolerance ABOVE maxBudget, as a percentage. 0 =
+      // zero tolerance (escalate the moment an ask exceeds the ceiling — today's
+      // behavior). E.g. 10 means an ask up to ceiling*1.10 is countered AT the
+      // ceiling (never above) rather than escalated; anything higher still
+      // escalates to a human. Only the fixed fee has tolerance in V1.
+      overCeilingTolerance: 0,
     },
   },
   {
@@ -151,6 +157,9 @@ const hybridNodes: NodeSnapshot[] = [
       commissionRate: 10,
       // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
       recommendedOfferPosition: 0.5,
+      // Phase C (#12): tolerance % above maxBudget; 0 = escalate the moment an ask
+      // exceeds the ceiling (today's behavior). See the first template's note.
+      overCeilingTolerance: 0,
     },
   },
   {
@@ -221,6 +230,9 @@ const fixedFeeNodes: NodeSnapshot[] = [
       approvalMode: "manual",
       // HARD-N3: open at the band midpoint (anchor from the middle, not the floor).
       recommendedOfferPosition: 0.5,
+      // Phase C (#12): tolerance % above maxBudget; 0 = escalate the moment an ask
+      // exceeds the ceiling (today's behavior). See the first template's note.
+      overCeilingTolerance: 0,
     },
   },
   {

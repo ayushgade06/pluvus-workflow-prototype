@@ -187,6 +187,14 @@ class CampaignConstraints(BaseModel):
     # FLOOR (anchor low, concede up) — a conservative fallback, not the template
     # default. Out-of-range / missing values fall back to 0.0.
     recommendedOfferPosition: float | None = None
+    # Phase C (#12): merchant-configurable tolerance ABOVE the ceiling, as a
+    # PERCENT. None/0 = zero tolerance (escalate the moment the creator's ask
+    # exceeds the ceiling — today's behavior). When > 0, an ask up to
+    # ceiling*(1 + overCeilingTolerance/100) is COUNTERED at the ceiling (never
+    # above it) instead of escalated; on the final round it ACCEPTS at the ceiling;
+    # anything ABOVE the tolerance band still escalates to a human. V1: fee only.
+    # A negative value is treated as 0 (see handle_negotiate).
+    overCeilingTolerance: float | None = None
 
 
 class NegotiateRequest(BaseModel):
@@ -623,6 +631,7 @@ def _decide_action(
     *,
     recommended_offer: float,
     ceiling_rate: float,
+    tolerance_ceiling: float | None = None,
     floor_rate: float = 0.0,
     prior_offer: float | None = None,
     is_final_round: bool = False,
@@ -655,14 +664,27 @@ def _decide_action(
     out: if the creator's ask is within the ceiling we ACCEPT their number to
     close the deal rather than escalate to a human.
 
-    Accept-band semantics for RATE_PROPOSAL (recommended R, ceiling C, our last
-    offer O = prior_offer or R):
-      * rate > C                 -> ESCALATE (out of range; human)
+    ``tolerance_ceiling`` (Phase C / #12) is the ESCALATE boundary: the ceiling
+    raised by the merchant's over-ceiling tolerance percent. It defaults to
+    ``ceiling_rate`` (zero tolerance = today's behavior) so existing call sites /
+    tests are unaffected. When a campaign sets a tolerance, an ask ABOVE the
+    ceiling but at/below ``tolerance_ceiling`` is countered AT the ceiling (the
+    clamp target is still ``ceiling_rate`` — we never offer above the ceiling),
+    and on the final round it CLOSES at the ceiling; an ask above
+    ``tolerance_ceiling`` escalates.
+
+    Accept-band semantics for RATE_PROPOSAL (recommended R, ceiling C, tolerance
+    ceiling T >= C, our last offer O = prior_offer or R):
+      * rate > T                 -> ESCALATE (beyond tolerance; human)
       * rate <= O                -> ACCEPT   (they met/beat our offer; take it)
-      * is_final_round           -> ACCEPT   (close at their ask; <= C here)
-      * O < rate <= C            -> COUNTER  at step = avg(O, rate) toward them
+      * is_final_round           -> ACCEPT   (close at min(ask, C); <= T here)
+      * O < rate <= T            -> COUNTER  at step = avg(O, rate) toward them,
+                                             clamped to C (never above the ceiling)
       * rate unreadable (None)   -> ESCALATE (fail safe to human)
     """
+    # Phase C: default the escalate boundary to the ceiling (zero tolerance).
+    if tolerance_ceiling is None:
+        tolerance_ceiling = ceiling_rate
     if intent == "ACCEPTANCE":
         # An ACCEPTANCE only closes a deal if there is a real, agreed number.
         # Priority order for "what number did they actually agree to?":
@@ -676,12 +698,16 @@ def _decide_action(
         # silently inventing an agreed rate the creator never saw — the bug.)
         rate = _coerce_rate(creator_rate_raw)
         if rate is not None:
-            if rate > ceiling_rate:
-                # They "accepted" but at a number above what's workable.
+            if rate > tolerance_ceiling:
+                # They "accepted" at a number beyond even the tolerance band.
                 return NegotiationDecision(action="ESCALATE", proposed_rate=None)
             # HARD-N1 §3: clamp a below-floor acceptance UP to the floor (never
-            # pay below the minimum), unifying the invariant with the LLM path.
-            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+            # pay below the minimum). Phase C: clamp an in-tolerance over-ceiling
+            # acceptance DOWN to the ceiling (never agree above the real ceiling —
+            # tolerance means "meet them at the cap", not "pay their number").
+            return NegotiationDecision(
+                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+            )
         if prior_offer is not None:
             # Accepting the number we already offered — close at that number
             # (raised to the floor if a stale prior offer somehow sits below it).
@@ -725,22 +751,31 @@ def _decide_action(
     # and our own prior offer.
     rate = _coerce_rate(creator_rate_raw)
     if rate is not None:
-        if rate > ceiling_rate:
-            # Above what's workable — human (unchanged).
+        if rate > tolerance_ceiling:
+            # Beyond even the tolerance band — human (Phase C: boundary is the
+            # tolerance ceiling, which == the ceiling when tolerance is 0).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
         if rate <= our_offer:
             # They met or beat our current offer — accept their number (clamped
             # up to the floor per HARD-N1 §3; never below the minimum).
             return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
         if is_final_round:
-            # Last round, within the ceiling — close at their ask rather than
-            # escalating into a dead end (clamped up to the floor per HARD-N1 §3).
-            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+            # Last round — close rather than escalate into a dead end. Clamp up to
+            # the floor (HARD-N1 §3) AND down to the ceiling (Phase C): an
+            # in-tolerance over-ceiling ask closes AT the ceiling, never above it.
+            return NegotiationDecision(
+                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+            )
         # Negotiation band — step our offer UP toward their ask (midpoint of our
-        # offer and theirs), never exceeding their ask or the ceiling.
+        # offer and theirs). _step_offer already caps at the ceiling, so an
+        # in-tolerance over-ceiling ask is countered AT the ceiling, never above.
         step = _step_offer(our_offer, rate, ceiling_rate)
         if step >= rate:
-            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+            # Our capped step already meets/exceeds their ask (their ask is at/below
+            # the ceiling): close at min(ask, ceiling) — never above the ceiling.
+            return NegotiationDecision(
+                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+            )
         return NegotiationDecision(action="COUNTER", proposed_rate=max(step, floor_rate))
 
     # RATE_PROPOSAL but no readable number — the model claimed a rate we can't
@@ -957,6 +992,7 @@ def _apply_decision_guards(
     *,
     floor_rate: float,
     ceiling_rate: float,
+    tolerance_ceiling: float | None = None,
     is_final_round: bool,
     creator_ask: float | None = None,
 ) -> NegotiationDecision:
@@ -977,7 +1013,18 @@ def _apply_decision_guards(
     human (never auto-commit above budget, never fabricate a deal the creator
     rejected). Defaults to None so existing call sites / tests that don't pass it
     keep the prior in-band close behavior.
+
+    ``tolerance_ceiling`` (Phase C / #12) is the ESCALATE boundary — the ceiling
+    raised by the merchant's over-ceiling tolerance percent. It defaults to
+    ``ceiling_rate`` (zero tolerance) so existing behavior is unchanged. The CLAMP
+    target stays ``ceiling_rate``: an accepted/countered rate is always capped at
+    the real ceiling (we never offer or agree above it), but the ESCALATE trigger
+    (both the ACCEPT-over-cap check and the CRITICAL-4 final-round guard) uses the
+    tolerance ceiling, so an in-tolerance over-ceiling ask closes AT the ceiling
+    instead of escalating.
     """
+    if tolerance_ceiling is None:
+        tolerance_ceiling = ceiling_rate
     action = (action_raw or "").strip().upper()
     if action not in ("ACCEPT", "COUNTER", "REJECT", "ESCALATE", "PRESENT_OFFER"):
         # Unrecognized action from the model → hand to a human rather than guess.
@@ -994,12 +1041,16 @@ def _apply_decision_guards(
         return NegotiationDecision(action="ESCALATE", proposed_rate=None)
 
     if action == "ACCEPT":
-        if rate > ceiling_rate:
-            # The model "accepted" above what's workable — do NOT agree over
-            # budget; escalate to a human (mirrors the deterministic path).
+        if rate > tolerance_ceiling:
+            # The model "accepted" beyond even the tolerance band — do NOT agree
+            # over budget; escalate to a human (mirrors the deterministic path).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-        # Clamp a below-floor acceptance up to the floor (we never pay below it).
-        return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+        # Clamp a below-floor acceptance up to the floor (never pay below it) AND
+        # an in-tolerance over-ceiling acceptance down to the ceiling (Phase C:
+        # tolerance means "meet them at the cap", never agree above the ceiling).
+        return NegotiationDecision(
+            action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+        )
 
     # COUNTER / PRESENT_OFFER: clamp the offer into [floor, ceiling].
     guarded = min(max(rate, floor_rate), ceiling_rate)
@@ -1009,14 +1060,15 @@ def _apply_decision_guards(
         # we would normally close at the (guarded, in-band) number instead of
         # countering into a dead end.
         #
-        # CRITICAL-4: but ONLY when the creator's own ask is within the ceiling.
-        # If the creator firmly asked for MORE than the ceiling (e.g. "$650 firm,
-        # won't budge" with ceiling $475), closing at the clamped-down $475 and
-        # calling it ACCEPT invents an agreement the creator explicitly rejected.
-        # Over-ceiling is a HARD bound (PRINCIPLES.md) → ESCALATE to a human rather
-        # than coerce a false acceptance. The executor re-drafts from this escalate
-        # outcome (HARD-N1 §4), so no "congrats on our agreed rate" email ships.
-        if creator_ask is not None and creator_ask > ceiling_rate:
+        # CRITICAL-4: but ONLY when the creator's own ask is within TOLERANCE.
+        # If the creator firmly asked for MORE than the tolerance ceiling (e.g.
+        # "$650 firm, won't budge" with ceiling $475, no tolerance), closing at the
+        # clamped-down $475 and calling it ACCEPT invents an agreement the creator
+        # explicitly rejected. Over-tolerance is a HARD bound → ESCALATE rather than
+        # coerce a false acceptance. Phase C: when the ask is over the ceiling but
+        # WITHIN tolerance, we DO close — at the ceiling (`guarded`), not their
+        # number. The executor re-drafts from the outcome (HARD-N1 §4).
+        if creator_ask is not None and creator_ask > tolerance_ceiling:
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
         return NegotiationDecision(action="ACCEPT", proposed_rate=guarded)
 
@@ -1388,6 +1440,7 @@ def _llm_negotiate_decision(
     *,
     floor_rate: float,
     ceiling_rate: float,
+    tolerance_ceiling: float,
     recommended_offer: float,
     current_offer: float,
     is_final_round: bool,
@@ -1489,6 +1542,7 @@ def _llm_negotiate_decision(
         parsed.rate,
         floor_rate=floor_rate,
         ceiling_rate=ceiling_rate,
+        tolerance_ceiling=tolerance_ceiling,
         is_final_round=is_final_round,
         creator_ask=creator_ask,
     )
@@ -1681,6 +1735,23 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
 
     floor_rate = req.campaignConstraints.termFloor.rate or 0
     ceiling_rate = req.campaignConstraints.termCeiling.rate or float("inf")
+    # Phase C (#12): the ESCALATE boundary — the ceiling raised by the merchant's
+    # tolerance percent. An ask <= tolerance_ceiling is countered AT the ceiling
+    # (the clamp target stays ceiling_rate, so we NEVER offer above the ceiling);
+    # an ask > tolerance_ceiling escalates. tolerance defaults to 0 (None/negative
+    # → 0), so tolerance_ceiling == ceiling_rate and behavior is unchanged. An
+    # infinite ceiling (no cap) stays infinite. Kept as a SEPARATE value from
+    # ceiling_rate so the two roles — clamp target vs escalate boundary — never
+    # get conflated (an offer must never exceed the real ceiling).
+    tolerance_pct = req.campaignConstraints.overCeilingTolerance
+    if not isinstance(tolerance_pct, (int, float)) or isinstance(tolerance_pct, bool):
+        tolerance_pct = 0.0
+    tolerance_pct = max(0.0, float(tolerance_pct))
+    tolerance_ceiling = (
+        round(ceiling_rate * (1.0 + tolerance_pct / 100.0), 2)
+        if ceiling_rate != float("inf")
+        else float("inf")
+    )
     # Recommended offer: a configurable position within the [floor, ceiling]
     # band (M1). Default 0.0 = open at the FLOOR — when the creator hasn't pushed,
     # anchor at the lowest workable number and concede UP from there (protects
@@ -1730,6 +1801,7 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
                 req,
                 floor_rate=floor_rate,
                 ceiling_rate=ceiling_rate,
+                tolerance_ceiling=tolerance_ceiling,
                 recommended_offer=recommended_offer,
                 current_offer=current_offer,
                 is_final_round=is_final_round,
@@ -1755,6 +1827,7 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
         req,
         floor_rate=floor_rate,
         ceiling_rate=ceiling_rate,
+        tolerance_ceiling=tolerance_ceiling,
         recommended_offer=recommended_offer,
         prior_offer=prior_offer,
         is_final_round=is_final_round,
@@ -1766,6 +1839,7 @@ def _rules_negotiate(
     *,
     floor_rate: float,
     ceiling_rate: float,
+    tolerance_ceiling: float,
     recommended_offer: float,
     prior_offer: float | None,
     is_final_round: bool,
@@ -1849,6 +1923,7 @@ def _rules_negotiate(
         creator_rate,
         recommended_offer=recommended_offer,
         ceiling_rate=ceiling_rate,
+        tolerance_ceiling=tolerance_ceiling,
         floor_rate=floor_rate,
         prior_offer=prior_offer,
         is_final_round=is_final_round,

@@ -43,6 +43,13 @@ export interface NegotiationRequest {
      * higher without a code change.
      */
     recommendedOfferPosition?: number;
+    /**
+     * Phase C (#12): merchant tolerance ABOVE the ceiling, as a percent. Default
+     * 0 (zero tolerance — escalate the moment an ask exceeds the ceiling). When
+     * > 0, an ask up to ceiling*(1 + tolerance/100) is countered AT the ceiling
+     * (never above); anything higher escalates. V1 applies only to the fixed fee.
+     */
+    overCeilingTolerance?: number;
   };
 }
 

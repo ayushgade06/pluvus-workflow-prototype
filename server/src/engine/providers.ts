@@ -297,6 +297,16 @@ export function buildNegotiationRequest(
     typeof config["recommendedOfferPosition"] === "number" && Number.isFinite(config["recommendedOfferPosition"])
       ? config["recommendedOfferPosition"]
       : undefined;
+  // Phase C (#12): merchant-configurable tolerance ABOVE the ceiling, as a
+  // percent. Passed through only when a finite, non-negative number; the agent
+  // defaults to 0 (zero tolerance = today's behavior: escalate the moment an ask
+  // exceeds the ceiling). A negative value is dropped (treated as omitted → 0).
+  const overCeilingTolerance =
+    typeof config["overCeilingTolerance"] === "number" &&
+    Number.isFinite(config["overCeilingTolerance"]) &&
+    config["overCeilingTolerance"] >= 0
+      ? config["overCeilingTolerance"]
+      : undefined;
 
   // FIX-2: thread the last offer we actually proposed; fall back to the floor
   // only when there is no prior offer (round 0 / no history).
@@ -329,6 +339,7 @@ export function buildNegotiationRequest(
       ...(commissionRate !== undefined ? { commissionRate } : {}),
       ...(rewardDescription ? { rewardDescription } : {}),
       ...(recommendedOfferPosition !== undefined ? { recommendedOfferPosition } : {}),
+      ...(overCeilingTolerance !== undefined ? { overCeilingTolerance } : {}),
     },
   };
 }

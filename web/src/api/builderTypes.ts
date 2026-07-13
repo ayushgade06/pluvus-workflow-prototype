@@ -45,6 +45,14 @@ export interface NegotiationConfig {
   maxRounds: number;
   approvalMode: "auto" | "manual";
   commissionRate?: number;
+  /**
+   * Phase C (#12): merchant tolerance ABOVE the max budget, as a percent. 0 (or
+   * omitted) = zero tolerance — the agent escalates the moment a creator's ask
+   * exceeds the max. When > 0, an ask up to maxBudget*(1 + tolerance/100) is
+   * countered/closed AT the max (never above it) instead of escalated; anything
+   * higher still escalates to a human. V1 applies only to the fixed fee.
+   */
+  overCeilingTolerance?: number;
 }
 
 // Reward Setup finalizes the agreement after a successful negotiation. The final

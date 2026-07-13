@@ -377,7 +377,26 @@ From `.env.example` (root) and where each is read:
 
 ### Negotiation config (per‑workflow node config, **not** env)
 Set on the `NEGOTIATION` node from the template (`server/src/templates/index.ts`):
-`maxRounds`, `minBudget`/`maxBudget`, `commissionRate`, `approvalMode`.
+`maxRounds`, `minBudget`/`maxBudget`, `commissionRate`, `approvalMode`,
+`recommendedOfferPosition`, `overCeilingTolerance`.
+
+**`overCeilingTolerance` (Phase C / founder #12)** — a merchant-configurable
+tolerance ABOVE `maxBudget`, as a **percent** (default `0` = zero tolerance =
+today's behavior). It defines a separate **escalate boundary**
+`tolerance_ceiling = ceiling × (1 + overCeilingTolerance/100)` while the **clamp
+target stays the ceiling** — so an offer/acceptance is never above the real
+ceiling. Behavior by creator ask:
+- `ask ≤ ceiling` — unchanged.
+- `ceiling < ask ≤ tolerance_ceiling` — **COUNTER at (or stepping toward) the
+  ceiling**, never above it; on the **final round, ACCEPT at the ceiling** (not
+  their number). Does not escalate.
+- `ask > tolerance_ceiling` — **ESCALATE** (→ `MANUAL_REVIEW`).
+
+Threaded server→agent via `buildNegotiationRequest` →
+`CampaignConstraints.overCeilingTolerance` → `negotiate.py`, which passes
+`tolerance_ceiling` into both the deterministic `_decide_action` and the LLM-path
+`_apply_decision_guards` (whose CRITICAL-4 final-round guard now uses
+`tolerance_ceiling` as its escalate boundary). V1: applies to the fixed fee only.
 
 | Template | minBudget | maxBudget | maxRounds | commissionRate | approvalMode | offerPosition |
 |---|---|---|---|---|---|---|
