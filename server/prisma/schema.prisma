@@ -35,14 +35,6 @@ enum InstanceState {
   FOLLOWED_UP
   REPLY_RECEIVED
   NEGOTIATING
-  // A business escalation is parked here waiting on the brand's decision, reached
-  // instead of MANUAL_REVIEW whenever a human is making a genuine business call
-  // (unclassifiable creator reply, max negotiation rounds, rate above ceiling).
-  // NOT terminal: the run resumes automatically on the brand's reply (or a
-  // magic-link click). Mirrors the REWARD_PENDING / PAYMENT_PENDING waiting
-  // states, but the round-trip is with the brand rather than the creator. Pure
-  // safety/infra failures still go straight to MANUAL_REVIEW.
-  AWAITING_BRAND_DECISION
   // Negotiation succeeded on an agreed rate. No longer terminal: the Reward
   // Setup node auto-runs from here to finalize the commercial agreement.
   ACCEPTED
@@ -335,7 +327,6 @@ model ExecutionInstance {
   messages           Message[]
   events             Event[]
   brandNotifications BrandNotification[]
-  brandDecisions     BrandDecision[]
   paymentInfo        PaymentInfo?
   outboxJobs         OutboxJob[]
 
@@ -503,77 +494,6 @@ model BrandNotification {
   error          String?
 
   createdAt DateTime @default(now())
-
-  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
-
-  @@index([instanceId])
-}
-
-/// The lifecycle of one brand-decision round-trip (see MANUAL_ESCALATION_RESOLUTION.md §2.2).
-///
-/// A BrandDecision is created when a *business* escalation parks the run in
-/// AWAITING_BRAND_DECISION and we email the brand an actionable question. It is
-/// resolved when the brand replies (free-text reply parsed, or a magic-link click).
-///
-///   PENDING    — emailed the brand; awaiting their reply.
-///   RESOLVED   — brand gave a parseable decision (approve/reject/counter); run resumed.
-///   REASKED    — the reply was ambiguous; one clarification email was sent (cap 1).
-///   HANDED_OFF — brand asked for a full human handoff → MANUAL_REVIEW.
-///   EXPIRED    — 72h silence timeout swept the row → MANUAL_REVIEW + operator ping.
-enum BrandDecisionStatus {
-  PENDING
-  RESOLVED
-  REASKED
-  HANDED_OFF
-  EXPIRED
-}
-
-/// A round-trip brand decision that resolves a business escalation by email.
-///
-/// Modeled on BrandNotification (idempotency-keyed brand contact), extended to a
-/// full request/response cycle. The `token` is the key trick: it is embedded in
-/// the escalation email's reply-to/subject AND in the magic-link URLs, so an
-/// inbound reply (or a button click) matches back to this row → instanceId,
-/// exactly the way the PaymentInfo token resolves a hosted-form submission back
-/// to an instance.
-model BrandDecision {
-  id         String @id @default(cuid())
-  instanceId String
-
-  /// The escalation reason code that triggered this decision (mirrors the codes
-  /// used by BrandNotification.reason, e.g. "low_confidence_reply",
-  /// "max_rounds_reached", "escalated", "missing_brand_name").
-  reason   String
-  /// The human-readable question we asked the brand, persisted for the timeline.
-  question String
-  /// Opaque, unguessable token embedded in the reply-to + magic links. Matches
-  /// inbound replies / link clicks back to this decision. UNIQUE — it is the
-  /// capability that authorizes resolving exactly this decision.
-  token    String              @unique
-  status   BrandDecisionStatus @default(PENDING)
-
-  /// Captured context needed to resume without re-deriving it from the thread:
-  /// creator rate, current round, floor/ceiling band, guard details, injection
-  /// flag, the blocked node id, etc. Shape is per-reason.
-  contextJson Json
-
-  /// The brand's raw reply body (audit trail). Null until a reply arrives.
-  brandReplyRaw String?
-  /// The parsed decision: APPROVE | REJECT | COUNTER | HANDOFF | AMBIGUOUS.
-  /// Null until parsed.
-  decision      String?
-  /// The numeric value attached to the decision (the counter amount when
-  /// decision = COUNTER; the supplied rate/config value for variant cases).
-  decisionValue Float?
-
-  /// How many clarification round-trips have happened. Capped at 1: a second
-  /// ambiguous reply parks the run in the dashboard (MANUAL_REVIEW).
-  reaskCount Int       @default(0)
-  /// Silence timeout. A PENDING decision past this instant is swept into
-  /// MANUAL_REVIEW by the scheduler (default 72h from creation).
-  expiresAt  DateTime
-  createdAt  DateTime  @default(now())
-  resolvedAt DateTime?
 
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 
