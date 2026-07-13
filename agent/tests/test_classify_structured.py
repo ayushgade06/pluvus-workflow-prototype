@@ -28,7 +28,7 @@ class FakeLLM:
 
 
 def _patch_llm(monkeypatch, outputs):
-    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0: FakeLLM(outputs))
+    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0, **_kw: FakeLLM(outputs))
 
 
 def test_valid_classification(monkeypatch):

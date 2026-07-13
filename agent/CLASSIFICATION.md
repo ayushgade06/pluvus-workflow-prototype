@@ -270,12 +270,14 @@ Every route gets its chat model from `get_llm()`. Switching providers is
 
 | Symbol | Role |
 |---|---|
-| `get_llm(temperature=0.2)` | Public entry. Returns the primary chat model directly (zero overhead) or, if a fallback is configured, a `FailoverChat`. The classifier calls `get_llm(temperature=0)` for determinism. |
+| `get_llm(temperature=0.2, num_predict=None, role=None)` | Public entry. Returns the primary chat model directly (zero overhead) or, if a fallback is configured, a `FailoverChat`. The classifier calls `get_llm(temperature=0, role="classify")` for determinism; each route passes its `role` so the per-task provider override applies. |
 | `FailoverChat` | Tries an ordered list of `(label, factory)` candidates on every `invoke`; on failure falls over to the next (logged). Models built lazily and cached. |
+| `_make_anthropic(temperature)` | Builds `ChatAnthropic` / Claude (clear error if SDK/key missing). Only passes `temperature` to models that accept it (Opus 4.7+/Fable are adaptive-thinking-only and 400 on sampling params). |
+| `_make_deepseek(temperature)` | Builds `ChatOpenAI` pointed at `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`) — DeepSeek is OpenAI-compatible, so it rides `langchain-openai`. Reads `DEEPSEEK_MODEL` / `DEEPSEEK_API_KEY`. |
 | `_make_ollama(temperature)` | Builds `ChatOllama`. |
-| `_make_openai(temperature)` | Builds `ChatOpenAI` (clear error if SDK/key missing). |
 | `_ollama_model_id()` | Resolves model id, optionally **pinning an immutable digest** (`model@sha256:…`) so a later `ollama pull` can't silently change decision-path behavior. |
-| `_candidate_chain()` | `[LLM_PROVIDER]` + optional `LLM_FALLBACK_PROVIDER` (dedup/blank-dropped). |
+| `_role_env(base, role)` | Resolves `<BASE>_<ROLE>` (e.g. `LLM_PROVIDER_DRAFT`), falling back to the global `<BASE>` when the role override is blank. |
+| `_candidate_chain(role=None)` | `[LLM_PROVIDER_<ROLE> or LLM_PROVIDER]` + optional `LLM_FALLBACK_PROVIDER_<ROLE> or LLM_FALLBACK_PROVIDER` (dedup/blank-dropped). |
 
 Lazy imports mean you only need the SDK for the provider(s) you actually select.
 
@@ -486,13 +488,18 @@ pytest tests/test_eval_gate.py     # the gate
 | `AGENT_RATE_LIMIT` | Py | `60` | Requests per window per client/route. |
 | `AGENT_RATE_WINDOW_SECONDS` | Py | `60` | Rate-limit window length. |
 | `NEGOTIATION_STRATEGY` | Py | `rules` | `rules` = deterministic decision (model classifies + extracts, code picks the number). `llm` = model reads full history and picks action **and** rate itself, bounded by `_apply_decision_guards` (clamp to [floor, ceiling], escalate over-ceiling/unreadable, close on final round); falls back to `rules` on any LLM/transport failure. |
-| `LLM_PROVIDER` | Py | `ollama` | Primary chat provider (`ollama` / `openai`). |
-| `LLM_FALLBACK_PROVIDER` | Py | _(unset)_ | Optional failover provider. |
+| `LLM_PROVIDER` | Py | `anthropic` | Global default chat provider (`anthropic` / `deepseek` / `ollama`). |
+| `LLM_PROVIDER_<ROLE>` | Py | _(unset)_ | Per-task override for `NEGOTIATE` / `CLASSIFY` / `DRAFT` (blank → inherits `LLM_PROVIDER`). Current split pins `LLM_PROVIDER_DRAFT=deepseek`. |
+| `LLM_FALLBACK_PROVIDER` | Py | _(unset)_ | Optional failover provider (also per-role via `LLM_FALLBACK_PROVIDER_<ROLE>`). |
+| `ANTHROPIC_MODEL` | Py | `claude-opus-4-8` | Claude model id (`claude-haiku-4-5` fastest, `claude-sonnet-4-6` balanced). |
+| `ANTHROPIC_API_KEY` | Py | _(unset)_ | Required when a slot resolves to `anthropic`. |
+| `ANTHROPIC_MAX_TOKENS` | Py | `768` | Output-token cap (negotiate route overrides per-call). |
+| `DEEPSEEK_MODEL` | Py | `deepseek-chat` | DeepSeek model id (`deepseek-reasoner` for R1). |
+| `DEEPSEEK_API_KEY` | Py | _(unset)_ | Required when a slot resolves to `deepseek` (e.g. the draft path). |
+| `DEEPSEEK_BASE_URL` | Py | `https://api.deepseek.com` | DeepSeek endpoint (OpenAI-compatible). |
 | `OLLAMA_MODEL` | Py | `qwen3:30b-a3b` | Ollama model tag. |
 | `OLLAMA_MODEL_DIGEST` | Py | _(unset)_ | Pin an immutable digest. |
 | `OLLAMA_BASE_URL` | Py | `http://localhost:11434` | Ollama endpoint. |
-| `OPENAI_MODEL` | Py | `gpt-4o-mini` | OpenAI model id. |
-| `OPENAI_API_KEY` | Py | _(unset)_ | Required when `LLM_PROVIDER=openai`. |
 | `LLM_INVOKE_TIMEOUT_SECONDS` | Py | `60` | Per-`invoke` wall-clock bound. `0` disables. |
 
 ---

@@ -4,8 +4,23 @@ LLM provider switch with failover + model pinning for the agent service.
 Every route (classify, negotiate, draft) gets its chat model from get_llm().
 Switching providers is env-only — no code edits:
 
-    LLM_PROVIDER=ollama   # local dev, Qwen via Ollama (default)
-    LLM_PROVIDER=openai   # prod, OpenAI — set OPENAI_API_KEY
+    LLM_PROVIDER=ollama      # local dev, Qwen via Ollama
+    LLM_PROVIDER=anthropic   # prod, Claude — set ANTHROPIC_API_KEY (default)
+    LLM_PROVIDER=deepseek    # DeepSeek cloud (OpenAI-compatible) — DEEPSEEK_API_KEY
+
+Per-TASK provider override (mixed-model deployments):
+    Each call site passes a role — "negotiate" | "classify" | "draft". A role can
+    pin its OWN provider chain via env, falling back to the global LLM_PROVIDER
+    when unset. This lets one deployment run e.g. Claude on the money/decision path
+    and a cheaper model for email copy, still env-only, no code edits:
+
+        LLM_PROVIDER=anthropic          # global default (negotiate + classify)
+        LLM_PROVIDER_DRAFT=deepseek     # drafting only → DeepSeek cloud
+
+    Recognized role overrides: LLM_PROVIDER_NEGOTIATE, LLM_PROVIDER_CLASSIFY,
+    LLM_PROVIDER_DRAFT (and matching LLM_FALLBACK_PROVIDER_<ROLE> for per-role
+    failover). An unset role override inherits the global chain unchanged, so
+    existing single-provider deployments behave exactly as before.
 
 FIX-8 — production hardening:
 
@@ -22,12 +37,19 @@ FIX-8 — production hardening:
     the exact OPENAI_MODEL id.
 
 Provider-specific knobs:
-    Ollama:  OLLAMA_MODEL (default "qwen3:30b-a3b"), OLLAMA_MODEL_DIGEST (optional),
-             OLLAMA_BASE_URL (default http://localhost:11434)
-    OpenAI:  OPENAI_MODEL (default "gpt-4o-mini"), OPENAI_API_KEY (required)
+    Ollama:     OLLAMA_MODEL (default "qwen3:30b-a3b"), OLLAMA_MODEL_DIGEST (optional),
+                OLLAMA_BASE_URL (default http://localhost:11434)
+    Anthropic:  ANTHROPIC_MODEL (default "claude-opus-4-8"), ANTHROPIC_API_KEY (required).
+                Set ANTHROPIC_MODEL=claude-haiku-4-5 for the fast/cheap tier or
+                claude-opus-4-8 for the most capable — same code, env-only switch.
+    DeepSeek:   DEEPSEEK_MODEL (default "deepseek-chat"), DEEPSEEK_API_KEY (required),
+                DEEPSEEK_BASE_URL (default https://api.deepseek.com). OpenAI-compatible,
+                so it rides langchain-openai's ChatOpenAI — no extra SDK. Use
+                "deepseek-chat" (V3) for copy/drafting; "deepseek-reasoner" (R1) if a
+                path ever needs chain-of-thought.
 
 Imports are lazy so you only need the SDK for the provider(s) you actually
-select — running local Qwen never imports / requires langchain-openai.
+select — running local Qwen never imports / requires langchain-anthropic.
 """
 
 from __future__ import annotations
@@ -100,7 +122,7 @@ def _parse_keep_alive(raw: str | None):
         return s  # "30m", "1h", "90s" -> Go duration string
 
 
-def _make_ollama(temperature: float, num_predict_override: int | None = None):
+def _make_ollama(temperature: float, num_predict_override: int | None = None, role: str | None = None):
     from langchain_ollama import ChatOllama  # type: ignore[import]
 
     # qwen3 is a HYBRID REASONING model — left to its defaults it emits a long
@@ -164,64 +186,196 @@ def _make_ollama(temperature: float, num_predict_override: int | None = None):
     return ChatOllama(**kwargs)
 
 
-def _make_openai(temperature: float, num_predict_override: int | None = None):
+# Claude model families that REJECT sampling params (temperature/top_p) with a
+# 400: the Opus 4.7+/Fable tier is adaptive-thinking-only. Haiku and Sonnet still
+# accept temperature. We detect by model-id substring so a `temperature=` kwarg is
+# only passed to a model that actually accepts it — otherwise the call 400s.
+_ANTHROPIC_NO_SAMPLING_PARAMS = ("opus-4-8", "opus-4-7", "fable", "mythos")
+
+
+def _anthropic_accepts_temperature(model: str) -> bool:
+    m = model.lower()
+    return not any(tag in m for tag in _ANTHROPIC_NO_SAMPLING_PARAMS)
+
+
+def _make_anthropic(temperature: float, num_predict_override: int | None = None, role: str | None = None):
+    try:
+        from langchain_anthropic import ChatAnthropic  # type: ignore[import]
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise RuntimeError(
+            "LLM_PROVIDER=anthropic but langchain-anthropic is not installed. "
+            "Run: pip install langchain-anthropic"
+        ) from exc
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set.")
+
+    # ANTHROPIC_MODEL is itself the pin — use an exact model id from the Claude
+    # catalog (claude-opus-4-8 most capable, claude-haiku-4-5 fastest/cheapest).
+    # Default to the most capable Opus tier; a deployment can drop to Haiku for
+    # cost via env with no code change.
+    model = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+
+    # MED-L2: cap output tokens on the same rationale as Ollama's num_predict, so
+    # the verbose llm-negotiate JSON isn't truncated mid-string. The negotiate
+    # route passes a larger override for its path.
+    max_tokens = num_predict_override or _env_int("ANTHROPIC_MAX_TOKENS", 768)
+
+    kwargs = dict(
+        model=model,
+        api_key=api_key,
+        max_tokens=max_tokens,
+        timeout=_env_float("ANTHROPIC_TIMEOUT_SECONDS", 60.0),
+        max_retries=_env_int("ANTHROPIC_MAX_RETRIES", 2),
+    )
+    # Claude has no OpenAI-style `response_format` JSON mode — the prompts already
+    # say "return ONLY JSON" and structured.py extracts + repairs the object, so
+    # no server-side JSON constraint is needed. Only pass temperature to a model
+    # that accepts it (Opus 4.7+/Fable are adaptive-thinking-only and 400 on it).
+    if _anthropic_accepts_temperature(model):
+        kwargs["temperature"] = temperature
+    return ChatAnthropic(**kwargs)
+
+
+def _make_deepseek(temperature: float, num_predict_override: int | None = None, role: str | None = None):
+    """DeepSeek via its OpenAI-compatible endpoint, on langchain-openai's ChatOpenAI.
+
+    DeepSeek ships an OpenAI-compatible API, so it needs NO new SDK — ChatOpenAI
+    pointed at DEEPSEEK_BASE_URL with a DEEPSEEK_API_KEY is the whole integration.
+    Used on the drafting/copy path (temperature 0.7) where V3's writing is strong
+    and cheap; the money/decision path stays on Claude via the per-role override.
+    """
     try:
         from langchain_openai import ChatOpenAI  # type: ignore[import]
     except ImportError as exc:  # pragma: no cover - depends on optional install
         raise RuntimeError(
-            "LLM_PROVIDER=openai but langchain-openai is not installed. "
+            "LLM provider 'deepseek' requires langchain-openai. "
             "Run: pip install langchain-openai"
         ) from exc
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        raise RuntimeError("LLM_PROVIDER=openai but OPENAI_API_KEY is not set.")
+        raise RuntimeError("LLM provider 'deepseek' selected but DEEPSEEK_API_KEY is not set.")
 
-    # MED-L3: pin a seed + top_p and request JSON object mode so identical inputs
-    # yield identical decisions (OpenAI's `seed` is best-effort but stabilizes
-    # sampling; response_format json_object constrains the decode to valid JSON,
-    # matching the prompts' "return ONLY JSON" contract). Overridable via env.
-    seed = _env_int("OPENAI_SEED", 42)
-    top_p = _env_float("OPENAI_TOP_P", 1.0)
-    json_mode = _env_flag("OPENAI_JSON_MODE", default=True)
-    # MED-L2: cap output tokens on the same rationale as Ollama's num_predict, so
-    # the verbose llm-negotiate JSON isn't truncated mid-string. The negotiate
-    # route passes a larger override for its path.
-    max_tokens = num_predict_override or _env_int("OPENAI_MAX_TOKENS", 768)
+    # DEEPSEEK_MODEL is the pin — "deepseek-chat" (V3) for copy, "deepseek-reasoner"
+    # (R1) if a path ever needs a visible chain of thought. DeepSeek supports the
+    # OpenAI response_format json_object mode, but the drafting prompt wants free
+    # text (an email), and structured.py still repairs/extracts JSON on the paths
+    # that need it, so we don't force server-side JSON here.
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    max_tokens = num_predict_override or _env_int("DEEPSEEK_MAX_TOKENS", 768)
+
+    return ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=_env_float("DEEPSEEK_TIMEOUT_SECONDS", 60.0),
+        max_retries=_env_int("DEEPSEEK_MAX_RETRIES", 2),
+    )
+
+
+# OpenRouter is a single OpenAI-compatible gateway that proxies MANY upstreams
+# (Anthropic, DeepSeek, etc.) behind ONE key + ONE base URL. You pick the upstream
+# by the MODEL ID string ("anthropic/claude-opus-4.1", "deepseek/deepseek-chat"),
+# not by a different provider/key. So — unlike the anthropic/deepseek factories —
+# a single `openrouter` provider serves EVERY role; the model is chosen PER ROLE.
+_openrouter_model_for_role_logged: set[str | None] = set()
+
+
+def _openrouter_model(role: str | None) -> str:
+    """Resolve the OpenRouter model id for a role.
+
+    OPENROUTER_MODEL_<ROLE> wins; else OPENROUTER_MODEL (global default). This is
+    how the Claude-decisions / DeepSeek-copy split is expressed on a single key:
+        OPENROUTER_MODEL=anthropic/claude-opus-4.1     # negotiate + classify
+        OPENROUTER_MODEL_DRAFT=deepseek/deepseek-chat  # drafting
+    """
+    scoped = _role_env("OPENROUTER_MODEL", role)
+    return scoped or "anthropic/claude-opus-4.1"
+
+
+def _make_openrouter(temperature: float, num_predict_override: int | None = None, role: str | None = None):
+    """All roles via OpenRouter's OpenAI-compatible gateway on one OPENROUTER_API_KEY.
+
+    The per-role model (Claude for the money path, DeepSeek for copy) is selected by
+    OPENROUTER_MODEL_<ROLE>. Reuses ChatOpenAI — no new SDK.
+    """
+    try:
+        from langchain_openai import ChatOpenAI  # type: ignore[import]
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise RuntimeError(
+            "LLM provider 'openrouter' requires langchain-openai. "
+            "Run: pip install langchain-openai"
+        ) from exc
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("LLM provider 'openrouter' selected but OPENROUTER_API_KEY is not set.")
+
+    model = _openrouter_model(role)
+    max_tokens = num_predict_override or _env_int("OPENROUTER_MAX_TOKENS", 768)
+
+    # OpenRouter recommends (not requires) HTTP-Referer + X-Title headers for
+    # attribution/rate-limit tiering; harmless if omitted. Set via env if wanted.
+    default_headers = {}
+    referer = os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+    title = os.getenv("OPENROUTER_APP_TITLE", "").strip()
+    if referer:
+        default_headers["HTTP-Referer"] = referer
+    if title:
+        default_headers["X-Title"] = title
 
     kwargs = dict(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=model,
         api_key=api_key,
+        base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         temperature=temperature,
-        seed=seed,
-        top_p=top_p,
         max_tokens=max_tokens,
+        timeout=_env_float("OPENROUTER_TIMEOUT_SECONDS", 60.0),
+        max_retries=_env_int("OPENROUTER_MAX_RETRIES", 2),
     )
-    if json_mode:
-        kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    if default_headers:
+        kwargs["default_headers"] = default_headers
     return ChatOpenAI(**kwargs)
 
 
 _PROVIDERS = {
     "ollama": _make_ollama,
-    "openai": _make_openai,
+    "anthropic": _make_anthropic,
+    "deepseek": _make_deepseek,
+    "openrouter": _make_openrouter,
 }
 
 
-def _provider_label(provider: str) -> str:
+def _provider_label(provider: str, role: str | None = None) -> str:
     """Human-readable model identity for logs (no secrets)."""
     if provider == "ollama":
         return f"ollama:{_ollama_model_id()}"
-    if provider == "openai":
-        return f"openai:{os.getenv('OPENAI_MODEL', 'gpt-4o-mini')}"
+    if provider == "anthropic":
+        return f"anthropic:{os.getenv('ANTHROPIC_MODEL', 'claude-opus-4-8')}"
+    if provider == "deepseek":
+        return f"deepseek:{os.getenv('DEEPSEEK_MODEL', 'deepseek-chat')}"
+    if provider == "openrouter":
+        # The model is role-dependent (Claude vs DeepSeek on one key), so the label
+        # names the resolved model for THIS role.
+        return f"openrouter:{_openrouter_model(role)}"
     return provider
 
 
-def current_model_label() -> str:
-    """HARD-O1: the PRIMARY provider's label ("ollama:qwen3:30b-a3b" /
-    "openai:gpt-4o-mini") for the direct (no-fallback) telemetry path. The failover
-    path stamps each candidate's own label; the direct path only ever uses the
-    primary, so that's what we report here."""
+def current_model_label(llm: object | None = None) -> str:
+    """HARD-O1: model identity for the direct (no-fallback) telemetry path.
+
+    Prefer the label stamped on the model when get_llm() built it — that carries
+    the per-ROLE provider (e.g. deepseek on the draft path even when the global
+    LLM_PROVIDER is anthropic). Only when no model is passed (or it wasn't stamped)
+    do we fall back to the global primary's label. The failover path stamps each
+    candidate's own label; the direct path only ever uses the primary."""
+    stamped = getattr(llm, "_agent_model_label", None)
+    if stamped:
+        return stamped
     return _provider_label(_candidate_chain()[0])
 
 
@@ -311,24 +465,43 @@ class FailoverChat:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-_pinning_logged = False
+
+def _role_env(base: str, role: str | None) -> str:
+    """Read a per-role env override, falling back to the global var.
+
+    e.g. _role_env("LLM_PROVIDER", "draft") reads LLM_PROVIDER_DRAFT and, if that
+    is unset/blank, LLM_PROVIDER. An unset role (role=None) reads the global only,
+    so nothing changes for callers that don't pass a role.
+    """
+    if role:
+        scoped = os.getenv(f"{base}_{role.strip().upper()}", "").strip()
+        if scoped:
+            return scoped
+    return os.getenv(base, "").strip()
 
 
-def _candidate_chain() -> list[str]:
+def _candidate_chain(role: str | None = None) -> list[str]:
     """Ordered list of provider names: primary then optional fallback.
 
-    Duplicates and blanks are dropped, so LLM_FALLBACK_PROVIDER == LLM_PROVIDER
-    is a harmless no-op rather than a pointless double-try.
+    A role ("negotiate" | "classify" | "draft") lets a single deployment pin a
+    DIFFERENT provider per task via LLM_PROVIDER_<ROLE> (and LLM_FALLBACK_PROVIDER_
+    <ROLE>), inheriting the global LLM_PROVIDER when the override is unset.
+
+    Duplicates and blanks are dropped, so a fallback == primary is a harmless
+    no-op rather than a pointless double-try.
     """
-    primary = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+    primary = (_role_env("LLM_PROVIDER", role) or "ollama").lower()
     chain = [primary]
-    fallback = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
+    fallback = _role_env("LLM_FALLBACK_PROVIDER", role).lower()
     if fallback and fallback != primary:
         chain.append(fallback)
     return chain
 
 
-def get_llm(temperature: float = 0.2, num_predict: int | None = None):
+_pinning_logged_roles: set[str | None] = set()
+
+
+def get_llm(temperature: float = 0.2, num_predict: int | None = None, role: str | None = None):
     """Return a chat model for the configured provider chain.
 
     With no fallback configured this returns the primary model directly (zero
@@ -340,38 +513,52 @@ def get_llm(temperature: float = 0.2, num_predict: int | None = None):
     larger value than the default so the verbose llm-negotiate JSON isn't
     truncated mid-string; classify/draft leave it None and use the global default.
 
+    ``role`` selects a per-task provider chain (LLM_PROVIDER_<ROLE>, else the
+    global LLM_PROVIDER) so one deployment can, e.g., run Claude on the negotiate/
+    classify path and DeepSeek on the draft path. Unset role → global chain, so
+    existing callers are unchanged. The resolved primary label is stamped on the
+    returned model as ``_agent_model_label`` so the direct-path telemetry in
+    structured.py reports the ROLE's model, not the global default.
+
     Raises a clear RuntimeError if a provider name is unknown. Prerequisite
     errors (missing SDK / API key) for the PRIMARY surface eagerly; for a
     fallback they surface only if the primary actually fails over to it.
     """
-    global _pinning_logged
-
-    chain = _candidate_chain()
+    chain = _candidate_chain(role)
     for provider in chain:
         if provider not in _PROVIDERS:
             raise RuntimeError(
                 f"Unknown LLM provider {provider!r}. Supported: {', '.join(_PROVIDERS)}."
             )
 
-    if not _pinning_logged:
-        labels = " -> ".join(_provider_label(p) for p in chain)
-        logger.info("LLM chain (pinned): %s", labels)
-        _pinning_logged = True
+    # Log the resolved chain once PER ROLE (so a mixed deployment logs each task's
+    # pinned model exactly once, not just the first role that happens to run).
+    if role not in _pinning_logged_roles:
+        labels = " -> ".join(_provider_label(p, role) for p in chain)
+        logger.info("LLM chain (pinned)%s: %s", f" [{role}]" if role else "", labels)
+        _pinning_logged_roles.add(role)
 
-    # Bind num_predict into each factory so both the direct and failover paths
-    # honor the per-call cap. When no override is requested (num_predict is None)
-    # the factory is called with temperature ONLY, so a single-arg factory (the
-    # real factories accept num_predict_override with a None default anyway) keeps
-    # working unchanged — the cap is threaded solely when a caller asked for one.
+    primary_label = _provider_label(chain[0], role)
+
+    # Bind num_predict + role into each factory so both the direct and failover
+    # paths honor the per-call cap and the per-role model. role is passed as a
+    # keyword; every factory accepts (temperature, num_predict_override=None,
+    # role=None), so a factory that ignores role (ollama/anthropic/deepseek) is
+    # unaffected while openrouter uses it to pick its per-role model.
     def _bind(provider: str):
         factory = _PROVIDERS[provider]
-        if num_predict is None:
-            return lambda temperature: factory(temperature)
-        return lambda temperature: factory(temperature, num_predict)
+        return lambda temperature: factory(temperature, num_predict, role=role)
 
     if len(chain) == 1:
         # No fallback — keep the direct model (no wrapper) for zero overhead.
-        return _bind(chain[0])(temperature)
+        model = _bind(chain[0])(temperature)
+        # Stamp the role's resolved label so telemetry (structured.py direct path)
+        # reports THIS model. Best-effort: some model objects forbid new attrs.
+        try:
+            model._agent_model_label = primary_label
+        except Exception:  # noqa: BLE001 — telemetry label is non-critical
+            pass
+        return model
 
-    candidates = [(_provider_label(p), _bind(p)) for p in chain]
+    candidates = [(_provider_label(p, role), _bind(p)) for p in chain]
     return FailoverChat(candidates, temperature)

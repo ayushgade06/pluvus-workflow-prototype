@@ -10,17 +10,17 @@ dependencies = [
     "python-dotenv>=1.0.1",
 ]
 
-# LLM provider is selected at runtime by LLM_PROVIDER (ollama | openai); see app/llm.py.
+# LLM provider is selected at runtime by LLM_PROVIDER (anthropic | ollama); see app/llm.py.
 [project.optional-dependencies]
-# Local dev (Ollama / Qwen) — LLM_PROVIDER=ollama
+# Prod (Anthropic / Claude) — LLM_PROVIDER=anthropic (default). Install with: pip install -e ".[ai]"
 ai = [
     "langgraph>=0.1.0",
-    "langchain-ollama>=0.2.0",
+    "langchain-anthropic>=0.3.0",
 ]
-# Prod (OpenAI) — LLM_PROVIDER=openai. Install with: pip install -e ".[ai-openai]"
-ai-openai = [
+# Local dev (Ollama / Qwen) — LLM_PROVIDER=ollama. Install with: pip install -e ".[ai-ollama]"
+ai-ollama = [
     "langgraph>=0.1.0",
-    "langchain-openai>=0.1.0",
+    "langchain-ollama>=0.2.0",
 ]
 dev = [
     "pytest>=8.2.0",

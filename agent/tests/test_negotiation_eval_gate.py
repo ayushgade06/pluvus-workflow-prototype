@@ -71,7 +71,7 @@ def _req(reply, *, floor=200, ceiling=500, round_, max_rounds, current_offer, hi
 def _patch_llm(monkeypatch, outputs):
     monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
     monkeypatch.setattr(
-        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None: _FakeLLM(outputs)
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None, **_kw: _FakeLLM(outputs)
     )
 
 

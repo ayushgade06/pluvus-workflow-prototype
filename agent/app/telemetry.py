@@ -65,9 +65,19 @@ def _price_table() -> dict[str, tuple[float, float]]:
     table: dict[str, tuple[float, float]] = {
         # Local models are self-hosted → no per-token cost.
         "ollama:": (0.0, 0.0),
-        # Rough public list price for the default OpenAI model (per 1K tokens).
-        "openai:gpt-4o-mini": (0.00015, 0.0006),
-        "openai:": (0.005, 0.015),  # generic fallback for other OpenAI models
+        # Public Claude list prices (per 1K tokens = per-MTok / 1000).
+        "anthropic:claude-opus-4-8": (0.005, 0.025),   # $5 / $25 per MTok
+        "anthropic:claude-opus-4-7": (0.005, 0.025),
+        "anthropic:claude-sonnet-4-6": (0.003, 0.015), # $3 / $15 per MTok
+        "anthropic:claude-haiku-4-5": (0.001, 0.005),  # $1 / $5 per MTok
+        "anthropic:": (0.005, 0.025),  # generic fallback for other Claude models
+        # Public DeepSeek list prices (per 1K tokens = per-MTok / 1000). The draft
+        # path runs DeepSeek (LLM_PROVIDER_DRAFT=deepseek), so this is the paid
+        # cloud path that most needs a cost estimate. Confirm current pricing at
+        # platform.deepseek.com before relying on these; override via LLM_PRICE_TABLE.
+        "deepseek:deepseek-chat": (0.00027, 0.0011),      # V3: $0.27 / $1.10 per MTok
+        "deepseek:deepseek-reasoner": (0.00055, 0.00219), # R1: $0.55 / $2.19 per MTok
+        "deepseek:": (0.00027, 0.0011),  # generic fallback for other DeepSeek models
     }
     raw = os.getenv("LLM_PRICE_TABLE", "").strip()
     if raw:
@@ -87,7 +97,7 @@ def _estimate_cost(model: str, input_tokens: int | None, output_tokens: int | No
     if input_tokens is None and output_tokens is None:
         return None
     table = _price_table()
-    # Longest matching prefix wins (so "openai:gpt-4o-mini" beats "openai:").
+    # Longest matching prefix wins (so "anthropic:claude-opus-4-8" beats "anthropic:").
     match = None
     for prefix in sorted(table, key=len, reverse=True):
         if model.startswith(prefix):
@@ -103,7 +113,7 @@ def extract_usage(result: object) -> tuple[int | None, int | None, int | None]:
     """Pull (input, output, total) token counts from a LangChain result.
 
     Reads `.usage_metadata` (the modern LangChain field, populated by ChatOllama /
-    ChatOpenAI when the backend returns usage). Returns (None, None, None) when the
+    ChatAnthropic when the backend returns usage). Returns (None, None, None) when the
     provider didn't report usage — telemetry degrades to latency-only, never fails.
     """
     usage = getattr(result, "usage_metadata", None)

@@ -179,7 +179,7 @@ class FakeLLM:
 
 def _patch_llm(monkeypatch, content):
     fake = FakeLLM(content)
-    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0: fake)
+    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0, **_kw: fake)
     return fake
 
 

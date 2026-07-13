@@ -33,7 +33,7 @@ class CapturingLLM:
 
 def _run(monkeypatch, req: DraftRequest) -> str:
     cap = CapturingLLM()
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7: cap)
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7, **_kw: cap)
     neg_mod._langgraph_draft(req)
     return cap.prompt
 
@@ -79,7 +79,7 @@ def test_followup_prompt_forbids_money_and_placeholders(monkeypatch):
 
 def test_followup_still_returns_a_valid_draft(monkeypatch):
     cap = CapturingLLM()
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7: cap)
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7, **_kw: cap)
     out = neg_mod._langgraph_draft(_followup_req())
     assert out.subject and out.body
     assert "following up" in out.body.lower()
@@ -105,7 +105,7 @@ def test_reward_confirmation_is_a_valid_purpose():
 
 def test_reward_confirmation_routes_through_onboarding_prompt(monkeypatch):
     cap = CapturingLLM()
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7: cap)
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0.7, **_kw: cap)
     req = DraftRequest(
         purpose="reward_confirmation",
         creatorName="Alex",

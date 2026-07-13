@@ -59,8 +59,8 @@ def test_chain_primary_only(monkeypatch):
 
 def test_chain_with_fallback(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "openai")
-    assert _candidate_chain() == ["ollama", "openai"]
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "anthropic")
+    assert _candidate_chain() == ["ollama", "anthropic"]
 
 
 def test_chain_dedups_identical_fallback(monkeypatch):
@@ -153,14 +153,110 @@ def test_get_llm_no_fallback_returns_direct_model(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
     sentinel = object()
-    monkeypatch.setitem(llm_mod._PROVIDERS, "ollama", lambda _t: sentinel)
+    monkeypatch.setitem(llm_mod._PROVIDERS, "ollama", lambda _t, *_a, **_kw: sentinel)
     assert llm_mod.get_llm() is sentinel
 
 
 def test_get_llm_with_fallback_returns_wrapper(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "openai")
-    monkeypatch.setitem(llm_mod._PROVIDERS, "ollama", lambda _t: _OkModel("a"))
-    monkeypatch.setitem(llm_mod._PROVIDERS, "openai", lambda _t: _OkModel("b"))
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER", "anthropic")
+    monkeypatch.setitem(llm_mod._PROVIDERS, "ollama", lambda _t, *_a, **_kw: _OkModel("a"))
+    monkeypatch.setitem(llm_mod._PROVIDERS, "anthropic", lambda _t, *_a, **_kw: _OkModel("b"))
     chat = llm_mod.get_llm()
     assert isinstance(chat, FailoverChat)
+
+
+# ---------------------------------------------------------------------------
+# Per-role provider override (Claude on negotiate/classify, DeepSeek on draft)
+# ---------------------------------------------------------------------------
+
+
+def test_role_override_falls_back_to_global(monkeypatch):
+    # A role with no LLM_PROVIDER_<ROLE> set inherits the global chain unchanged.
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.delenv("LLM_PROVIDER_DRAFT", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
+    assert _candidate_chain("draft") == ["anthropic"]
+
+
+def test_role_override_pins_own_provider(monkeypatch):
+    # LLM_PROVIDER_DRAFT wins for the draft role only; the global (and other roles)
+    # still resolve to the global provider.
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("LLM_PROVIDER_DRAFT", "deepseek")
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_FALLBACK_PROVIDER_DRAFT", raising=False)
+    assert _candidate_chain("draft") == ["deepseek"]
+    assert _candidate_chain("negotiate") == ["anthropic"]
+    assert _candidate_chain() == ["anthropic"]
+
+
+def test_role_override_supports_per_role_fallback(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("LLM_PROVIDER_DRAFT", "deepseek")
+    monkeypatch.setenv("LLM_FALLBACK_PROVIDER_DRAFT", "anthropic")
+    assert _candidate_chain("draft") == ["deepseek", "anthropic"]
+
+
+def test_deepseek_provider_registered_and_labeled(monkeypatch):
+    assert "deepseek" in llm_mod._PROVIDERS
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    assert llm_mod._provider_label("deepseek") == "deepseek:deepseek-chat"
+
+
+def test_get_llm_stamps_role_label_on_direct_model(monkeypatch):
+    # The direct (no-fallback) model carries the resolved label so telemetry
+    # reports the role's model, not the global default.
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("LLM_PROVIDER_DRAFT", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setitem(llm_mod._PROVIDERS, "deepseek", lambda _t, *_a, **_kw: _OkModel("draft"))
+    model = llm_mod.get_llm(role="draft")
+    assert llm_mod.current_model_label(model) == "deepseek:deepseek-chat"
+
+
+def test_current_model_label_defaults_to_global_without_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+    assert llm_mod.current_model_label() == "anthropic:claude-opus-4-8"
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter — single key/gateway, per-role model (Claude decisions / DeepSeek copy)
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_registered(monkeypatch):
+    assert "openrouter" in llm_mod._PROVIDERS
+
+
+def test_openrouter_model_per_role(monkeypatch):
+    # One key, model chosen per role: Claude on the money path, DeepSeek on copy.
+    monkeypatch.setenv("OPENROUTER_MODEL", "anthropic/claude-opus-4.1")
+    monkeypatch.setenv("OPENROUTER_MODEL_DRAFT", "deepseek/deepseek-chat")
+    assert llm_mod._openrouter_model("negotiate") == "anthropic/claude-opus-4.1"
+    assert llm_mod._openrouter_model("classify") == "anthropic/claude-opus-4.1"
+    assert llm_mod._openrouter_model("draft") == "deepseek/deepseek-chat"
+
+
+def test_openrouter_label_is_role_aware(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_MODEL", "anthropic/claude-opus-4.1")
+    monkeypatch.setenv("OPENROUTER_MODEL_DRAFT", "deepseek/deepseek-chat")
+    assert llm_mod._provider_label("openrouter", "negotiate") == "openrouter:anthropic/claude-opus-4.1"
+    assert llm_mod._provider_label("openrouter", "draft") == "openrouter:deepseek/deepseek-chat"
+
+
+def test_openrouter_chain_all_roles_single_key(monkeypatch):
+    # Global provider=openrouter → every role resolves to it (one key), and the
+    # model differs by role via the model override, not the provider.
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.delenv("LLM_PROVIDER_DRAFT", raising=False)
+    for role in ("negotiate", "classify", "draft"):
+        assert _candidate_chain(role) == ["openrouter"]
+
+
+def test_openrouter_missing_key_raises(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY is not set"):
+        llm_mod.get_llm(role="negotiate")

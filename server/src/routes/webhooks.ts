@@ -165,6 +165,27 @@ router.post("/nylas", async (req: Request, res: Response) => {
     return;
   }
 
+  // ── Outbound-echo guard ──────────────────────────────────────────────────
+  // Nylas fires a webhook for messages we SEND, not just ones we receive. The
+  // sent message shares the thread_id (so it correlates) and carries the SAME
+  // externalMessageId we persisted on the outbound Message row. Without this
+  // guard the handler treats our own outreach as a creator reply and drives the
+  // instance AWAITING_REPLY → REPLY_RECEIVED with no human in the loop (the
+  // "phantom reply"). The inbound worker's idempotency check does NOT catch it:
+  // it only skips a row whose processedAt is set, and an outbound row is never
+  // "processed" as inbound. So drop here, at the source: if this exact
+  // externalMessageId is already an OUTBOUND message we own, it's our own echo.
+  const ownEcho = threadMessages.find(
+    (m) => m.externalMessageId === inbound.messageId && m.direction === "OUTBOUND",
+  );
+  if (ownEcho) {
+    console.log(
+      `[webhook/nylas] dropping own outbound echo (msg ${inbound.messageId}, thread ${inbound.threadId})`,
+    );
+    res.status(200).json({ status: "ignored", reason: "outbound echo" });
+    return;
+  }
+
   // Every message in the thread belongs to the same instance; take any.
   const instanceId = threadMessages[0]!.instanceId;
 

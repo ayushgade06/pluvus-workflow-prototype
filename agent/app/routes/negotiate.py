@@ -2,7 +2,7 @@
 POST /negotiate — bounded negotiation decision
 POST /draft    — email copy generation
 
-LLM backend is chosen by the LLM_PROVIDER env var (ollama | openai) via
+LLM backend is chosen by the LLM_PROVIDER env var (anthropic | ollama) via
 app.llm.get_llm — see app/llm.py. No code edits to swap providers.
 
 Negotiation decision engine is chosen by NEGOTIATION_STRATEGY (llm | rules):
@@ -77,7 +77,12 @@ router = APIRouter()
 # (small-model stability). Minor bump — same structure, stronger guidance.
 # v1.2 (MED-N3): output gains `creatorRateMentioned` — the creator's own
 # literally-written ask, validated in code before it may feed the money path.
-_LLM_NEGOTIATE_PROMPT_VERSION = "llm-negotiate-v1.2"
+# v1.3: broadened the ESCALATE criteria to cover non-fee STRUCTURAL demands
+# (exclusivity, usage/whitelisting-rights removal, wholesale scope blow-ups) and
+# hard ULTIMATUMS on a fixed term — the class of demand a stronger model was
+# observed to "solve" by moving the FEE instead of escalating (Opus subset fails
+# F-10/F-15/F-16/F-23, see readme_docs/report/OPUS_SUBSET_RUN_2026-07-13.md).
+_LLM_NEGOTIATE_PROMPT_VERSION = "llm-negotiate-v1.3"
 # HARD-P1: structural rewrite of the rules prompt into a pure extraction module
 # (no copy, no confidential figures, no dead confidence field) → major bump.
 _NEGOTIATE_PROMPT_VERSION = "rules-extract-v2.0"
@@ -1259,8 +1264,34 @@ Choose ONE action (apply the Negotiation discipline rules above):
     * is hostile, insulting, abusive, or makes a threat (e.g. to publicly call out
       or shame the brand). NEVER accept, counter, or sweeten the offer under a
       threat or to placate hostility — hand it to a human.
+    * demands a change to a STRUCTURAL or FIXED term of the deal that only a human
+      can approve — NOT the fee. This is the key test: if the demand is about
+      anything OTHER than the fee number, do not "solve" it by moving the fee.
+      Escalate (do NOT counter on price to compensate) when the creator:
+        - demands exclusivity, an exclusivity clause, or an exclusivity FEE, or
+          conversely refuses/removes any exclusivity the campaign requires;
+        - refuses to grant, or demands the removal of, the campaign's usage /
+          license / reposting / whitelisting rights ("no usage rights", "you can't
+          repost", "no paid-ads license") — you cannot waive a core content right;
+        - demands a MATERIAL scope change beyond the campaign's deliverables — a
+          multiplied or reworked scope (e.g. many more Reels/Stories/a dedicated
+          video, an added paid-ads/whitelisting license, "rework the whole deal").
+          A small tweak the copy can note is fine; a wholesale scope blow-up is a
+          different campaign and belongs to a human.
+      Do not try to enumerate — the rule is: a non-fee STRUCTURAL demand you have
+      no authority to grant is an ESCALATE, never a price counter.
+    * issues a hard ULTIMATUM on a FIXED (non-negotiable) term — a take-it-or-
+      leave-it demand to change the commission %, perk, deliverables, or timeline
+      ("40% commission or this doesn't happen", "I won't do it without X"). Holding
+      and restating the term as fixed is right for a normal push (see Example B),
+      but a flat ultimatum you cannot meet is a dealbreaker for a human, not a
+      price counter — ESCALATE (do NOT move the FEE to buy your way around a fixed
+      term you can't change).
   In all of these, the safe move is ESCALATE with a brief, professional note that
   a colleague will follow up — never negotiate the demand and never accept.
+  General principle: when a demand is NOT about the fee number, do not respond by
+  moving the fee. If you cannot grant the demand and it is not a price you can
+  counter, ESCALATE.
 
 For ACCEPT / COUNTER / PRESENT_OFFER, `rate` MUST be a specific number. For
 REJECT / ESCALATE, set `rate` to null. The `response` is the ready-to-send email
@@ -1373,7 +1404,7 @@ def _llm_negotiate_decision(
     # pushedFixedTerms). Give it a larger token cap than the global default so it
     # can't be truncated mid-string → invalid JSON → wasted retries / a needless
     # fallback. Tunable via LLM_NEGOTIATE_NUM_PREDICT (default 1024).
-    llm = get_llm(temperature=0.3, num_predict=_negotiate_num_predict())
+    llm = get_llm(temperature=0.3, num_predict=_negotiate_num_predict(), role="negotiate")
 
     sender = req.campaignConstraints.senderName or "Pluvus Partnerships"
     brand_description = req.campaignConstraints.brandDescription or "a brand partnership"
@@ -1750,7 +1781,7 @@ def _rules_negotiate(
     # sampler still varies without a seed; that's the gap MED-L3 closes). A money
     # decision must be reproducible and auditable. Email *copy* is generated
     # separately by /draft at a higher temperature, so warmth is unaffected.
-    llm = get_llm(temperature=0)
+    llm = get_llm(temperature=0, role="negotiate")
 
     # HARD-P1: the rules prompt is now a PURE EXTRACTION module — it classifies
     # intent + extracts the creator's own rate/questions/pushed-terms and writes
@@ -2970,7 +3001,7 @@ def _langgraph_draft(req: DraftRequest) -> DraftResponse:
         )
         req = req.model_copy(update={"creatorReply": None})
 
-    llm = get_llm(temperature=0.7)
+    llm = get_llm(temperature=0.7, role="draft")
 
     ctx = req.campaignContext or {}
     sender = req.senderName or ctx.get("brandName") or "Pluvus Partnerships"

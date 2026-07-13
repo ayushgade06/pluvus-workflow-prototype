@@ -59,6 +59,18 @@ async function handleInboundEmail(
     );
     return;
   }
+  // Outbound-echo guard (belt-and-suspenders behind the webhook's own guard):
+  // a message we SENT shares its externalMessageId with the provider's webhook
+  // echo. Processing it as an inbound reply would flip AWAITING_REPLY →
+  // REPLY_RECEIVED with no human reply (the "phantom reply"). The processedAt
+  // check above misses it because an outbound row is never processed as inbound,
+  // so guard on direction explicitly. Never inject an outbound message as a reply.
+  if (existing?.direction === "OUTBOUND") {
+    console.log(
+      `[inbound-email] skip — message ${externalMessageId} is our own outbound echo (job ${job.id})`,
+    );
+    return;
+  }
   // NB: a persisted-but-unprocessed row (existing != null, processedAt == null)
   // falls through — the persist step below is idempotent on externalMessageId
   // (persistInboundMessageOnce), so re-processing after a crash never double-inserts.

@@ -41,8 +41,8 @@ def test_cost_zero_for_local_ollama():
     assert telemetry._estimate_cost("ollama:qwen3:30b", 1000, 1000) == 0.0
 
 
-def test_cost_nonzero_for_openai_prefix():
-    cost = telemetry._estimate_cost("openai:gpt-4o-mini", 1000, 1000)
+def test_cost_nonzero_for_anthropic_prefix():
+    cost = telemetry._estimate_cost("anthropic:claude-opus-4-8", 1000, 1000)
     assert cost is not None and cost > 0
 
 

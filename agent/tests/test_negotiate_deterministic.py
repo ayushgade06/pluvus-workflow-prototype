@@ -94,7 +94,7 @@ def _req():
 def test_end_to_end_decision_reproducible(monkeypatch):
     # Identical extraction output → identical decision across many runs.
     out = '{"intent": "RATE_PROPOSAL", "response": "Let me check.", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     seen = {
         (r.action, None if r.proposedTerms is None else r.proposedTerms.get("rate"))
         for r in (neg_mod._langgraph_negotiate(_req()) for _ in range(20))
@@ -109,9 +109,9 @@ def test_confidence_does_not_change_decision(monkeypatch):
     high = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480, "confidence": 0.99}'
     low = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480, "confidence": 0.10}'
 
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(high))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(high))
     a = neg_mod._langgraph_negotiate(_req())
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(low))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(low))
     b = neg_mod._langgraph_negotiate(_req())
 
     assert (a.action, a.proposedTerms) == (b.action, b.proposedTerms)
@@ -121,7 +121,7 @@ def test_negotiate_call_uses_temperature_zero(monkeypatch):
     # Guard against a regression back to a non-zero (stochastic) decision call.
     captured = {}
 
-    def fake_get_llm(temperature=0):
+    def fake_get_llm(temperature=0, **_kw):
         captured["temperature"] = temperature
         return _FakeLLM('{"intent": "REJECTION", "response": "No thanks."}')
 
@@ -155,7 +155,7 @@ def test_above_floor_current_offer_seeds_prior_offer(monkeypatch):
     # Before M5: prior_offer=None → our_offer=recommended 300 → step avg(300,480)=390.
     # With M5:   prior_offer=400 → step avg(400, 480) = 440. currentOffer is used.
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_with(400))
     assert r.action == "COUNTER"
     assert r.proposedTerms.get("rate") == 440.0
@@ -168,7 +168,7 @@ def test_floor_default_current_offer_is_not_treated_as_prior_offer(monkeypatch):
     # avg(100, 480) = 290. (The point of the test — currentOffer=floor doesn't
     # become a prior offer — still holds; the number just reflects the new default.)
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_with(100))
     assert r.action == "COUNTER"
     assert r.proposedTerms.get("rate") == 290.0
@@ -202,7 +202,7 @@ def test_default_position_opens_at_floor(monkeypatch):
     # No position → default 0.0 → recommended = floor = 100, presented on a
     # RATE_DISCOVERY (asking the rate) turn. Open low, concede up.
     out = '{"intent": "RATE_DISCOVERY", "response": "Here it is.", "creatorRateMentioned": null}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_position(None))
     assert r.action == "PRESENT_OFFER"
     assert r.proposedTerms.get("rate") == 100.0
@@ -211,14 +211,14 @@ def test_default_position_opens_at_floor(monkeypatch):
 def test_lower_position_opens_lower(monkeypatch):
     # position 0.25 → 100 + 400*0.25 = 200.
     out = '{"intent": "RATE_DISCOVERY", "response": "Here it is.", "creatorRateMentioned": null}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_position(0.25))
     assert r.proposedTerms.get("rate") == 200.0
 
 
 def test_out_of_range_position_falls_back_to_midpoint(monkeypatch):
     out = '{"intent": "RATE_DISCOVERY", "response": "Here it is.", "creatorRateMentioned": null}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     # 5.0 clamps to 1.0 → ceiling 500; -1 clamps to 0.0 → floor 100.
     assert neg_mod._langgraph_negotiate(_req_position(5.0)).proposedTerms.get("rate") == 500.0
     assert neg_mod._langgraph_negotiate(_req_position(-1.0)).proposedTerms.get("rate") == 100.0
@@ -232,7 +232,7 @@ def test_history_prior_offer_wins_over_current_offer(monkeypatch):
         )
     ]
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     r = neg_mod._langgraph_negotiate(_req_with(400, history=hist))
     # step from history's 350, not currentOffer's 400: avg(350, 480) = 415.
     assert r.action == "COUNTER"
@@ -252,7 +252,7 @@ def test_final_round_accepts_within_ceiling_ask_instead_of_countering(monkeypatc
     # At round 4 is_final_round is True, so a within-ceiling ask that we'd
     # normally COUNTER is instead ACCEPTED to close the deal (not escalated).
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     req = neg_mod.NegotiateRequest(
         creatorReply="How about $480?",
         currentOffer=neg_mod.NegotiationTerm(rate=400),
@@ -276,7 +276,7 @@ def test_final_round_accepts_within_ceiling_ask_instead_of_countering(monkeypatc
 def test_non_final_round_still_counters(monkeypatch):
     # At round 3 of 5 (not final) the same ask COUNTERs (steps), not accepts.
     out = '{"intent": "RATE_PROPOSAL", "response": "ok", "creatorRateMentioned": 480}'
-    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0: _FakeLLM(out))
+    monkeypatch.setattr(neg_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM(out))
     req = neg_mod.NegotiateRequest(
         creatorReply="How about $480?",
         currentOffer=neg_mod.NegotiationTerm(rate=400),

@@ -141,7 +141,7 @@ def _invoke_with_timeout(llm, ask: str) -> str:
         result = invoke_model_bounded(llm, ask)
     except Exception as exc:
         record_llm_call(
-            model=current_model_label(),
+            model=current_model_label(llm),
             latency_ms=(time.perf_counter() - start) * 1000.0,
             result=None,
             prompt_version=get_active_prompt_version(),
@@ -150,7 +150,7 @@ def _invoke_with_timeout(llm, ask: str) -> str:
         )
         raise
     record_llm_call(
-        model=current_model_label(),
+        model=current_model_label(llm),
         latency_ms=(time.perf_counter() - start) * 1000.0,
         result=result,
         prompt_version=get_active_prompt_version(),

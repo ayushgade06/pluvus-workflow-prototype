@@ -11,10 +11,9 @@ pypdf>=4.0.0
 # AI — LangGraph (provider-agnostic orchestration)
 langgraph>=0.1.0
 
-# AI — local dev (Ollama / Qwen). Used when LLM_PROVIDER=ollama (default).
-langchain-ollama>=0.2.0
+# AI — prod (Anthropic / Claude). Used when LLM_PROVIDER=anthropic (default).
+langchain-anthropic>=0.3.0
 
-# AI — prod (OpenAI). Used when LLM_PROVIDER=openai.
-# Lazy-imported in app/llm.py, so it's only required once you flip to OpenAI.
-# Install when the key arrives:  pip install langchain-openai
-# langchain-openai>=0.1.0
+# AI — local dev (Ollama / Qwen). Used when LLM_PROVIDER=ollama.
+# Lazy-imported in app/llm.py, so it's only required when you run local Qwen.
+langchain-ollama>=0.2.0

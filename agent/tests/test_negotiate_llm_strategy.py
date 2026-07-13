@@ -65,7 +65,7 @@ def _patch_llm(monkeypatch, outputs):
     """
     monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
     monkeypatch.setattr(
-        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None: FakeLLM(outputs)
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None, **_kw: FakeLLM(outputs)
     )
 
 
@@ -325,7 +325,7 @@ def test_llm_strategy_falls_back_to_rules_on_bad_llm_output(monkeypatch):
     monkeypatch.setattr(
         neg_mod,
         "get_llm",
-        lambda temperature=0.3, num_predict=None: FakeLLM(
+        lambda temperature=0.3, num_predict=None, **_kw: FakeLLM(
             ['{"intent": "RATE_PROPOSAL", "response": "Noted.", "creatorRateMentioned": 480}']
         ),
     )
@@ -345,7 +345,7 @@ def test_llm_is_the_default_strategy(monkeypatch):
     monkeypatch.setattr(
         neg_mod,
         "get_llm",
-        lambda temperature=0.3, num_predict=None: FakeLLM(
+        lambda temperature=0.3, num_predict=None, **_kw: FakeLLM(
             ['{"action": "COUNTER", "rate": 420, "response": "How about $420?", "reasoning": "mid"}']
         ),
     )
@@ -361,7 +361,7 @@ def test_rules_strategy_when_forced(monkeypatch):
     monkeypatch.setattr(
         neg_mod,
         "get_llm",
-        lambda temperature=0: FakeLLM(
+        lambda temperature=0, **_kw: FakeLLM(
             ['{"intent": "RATE_PROPOSAL", "response": "Noted.", "creatorRateMentioned": 480}']
         ),
     )

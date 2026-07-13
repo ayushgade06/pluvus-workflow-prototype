@@ -50,7 +50,7 @@ def _patch_llm(monkeypatch, outputs):
     # the real get_llm signature (MED-L2) if the rules path ever threads it.
     monkeypatch.setenv("NEGOTIATION_STRATEGY", "rules")
     monkeypatch.setattr(
-        neg_mod, "get_llm", lambda temperature=0.2, num_predict=None: FakeLLM(outputs)
+        neg_mod, "get_llm", lambda temperature=0.2, num_predict=None, **_kw: FakeLLM(outputs)
     )
 
 

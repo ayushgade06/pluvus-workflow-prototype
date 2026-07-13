@@ -1,7 +1,7 @@
 """
 POST /classify — reply intent classification
 
-LLM backend is chosen by the LLM_PROVIDER env var (ollama | openai) via
+LLM backend is chosen by the LLM_PROVIDER env var (anthropic | ollama) via
 app.llm.get_llm — see app/llm.py. No code edits to swap providers.
 
 Input:  { "message": "I'd love to collaborate." }
@@ -119,7 +119,7 @@ Respond in JSON with this exact shape and nothing else:
 def _langgraph_classify(message: str) -> ClassifyResponse:
     from langgraph.graph import StateGraph, END  # type: ignore[import]
 
-    llm = get_llm(temperature=0)
+    llm = get_llm(temperature=0, role="classify")
 
     def classify_node(state: dict) -> dict:
         prompt = _CLASSIFY_PROMPT.format(message=state["message"])
