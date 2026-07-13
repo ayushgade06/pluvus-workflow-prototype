@@ -4,8 +4,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { resolveAgreedFee, firstNumber, firstString } from "./agreedFee.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
 import { sendOnce } from "./idempotentSend.js";
-import { blockedByGuard } from "./guardEscalation.js";
-import { openMissingBrandDecision } from "./brandDecision.js";
+import { blockedByGuard, blockedByMissingBrand } from "./guardEscalation.js";
 import { renderRewardConfirmationEmail } from "./rewardEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
 
@@ -89,9 +88,11 @@ export async function executeRewardSetup(
   // loud to MANUAL_REVIEW rather than email the creator "your brand".
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    // L4 config-fix: instead of dead-ending in MANUAL_REVIEW, ask the brand for
-    // the missing name by email and re-run this node once it's supplied.
-    return openMissingBrandDecision(ctx, email);
+    // L4 (#14): a genuinely mis-stamped instance with no resolvable brand name is
+    // a config problem for a human to fix — route to MANUAL_REVIEW (clean one-way
+    // handoff) rather than email the creator "your brand". runtime emails the
+    // brand an FYI keyed on missing_brand_name.
+    return blockedByMissingBrand(ctx.node.type);
   }
   // CRITICAL-3: the reward-confirmation email is contract-forming — it states the
   // agreed fee and asks the creator to reply "I Agree". If no genuine agreed rate

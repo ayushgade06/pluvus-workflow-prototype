@@ -9,9 +9,8 @@ import { resolveAgreedFee, firstNumber, firstString } from "./agreedFee.js";
 import { resolvePaymentToken } from "./paymentInfo.js";
 import { paymentFormLink } from "./paymentEmail.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
-import { blockedByGuard } from "./guardEscalation.js";
+import { blockedByGuard, blockedByMissingBrand } from "./guardEscalation.js";
 import { resolveBrandName } from "../campaignContext.js";
-import { openMissingBrandDecision } from "./brandDecision.js";
 
 // ---------------------------------------------------------------------------
 // Content Brief executor (merged post-negotiation node)
@@ -89,12 +88,13 @@ export async function executeContentBrief(
     content,
   };
 
-  // 3. Resolve the brand. L4: resolve from config → campaign; if neither has it,
-  //    ask the brand for the missing name by email and re-run this node once it's
-  //    supplied, instead of dead-ending in MANUAL_REVIEW.
+  // 3. Resolve the brand. L4 (#14): resolve from config → campaign; if neither
+  //    has it, route to MANUAL_REVIEW (clean one-way handoff) for a human to fix
+  //    the config rather than email the creator "your brand". runtime emails the
+  //    brand an FYI keyed on missing_brand_name.
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    return openMissingBrandDecision(ctx, email);
+    return blockedByMissingBrand(ctx.node.type);
   }
 
   // 4. In the merged flow, assemble the finalized offer + mint the payout link so

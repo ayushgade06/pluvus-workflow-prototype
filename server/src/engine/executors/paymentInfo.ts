@@ -9,7 +9,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
-import { openMissingBrandDecision } from "./brandDecision.js";
+import { blockedByMissingBrand } from "./guardEscalation.js";
 import { nextNodeAfter } from "./graphNav.js";
 
 // ---------------------------------------------------------------------------
@@ -86,9 +86,10 @@ export async function executePaymentInfo(
   //    than email the creator "your brand".
   const brandName = resolveBrandName(config, ctx.campaign);
   if (brandName === undefined) {
-    // L4 config-fix: ask the brand for the missing name by email and re-run this
-    // node once it's supplied, instead of dead-ending in MANUAL_REVIEW.
-    return openMissingBrandDecision(ctx, email);
+    // L4 (#14): no resolvable brand name is a config problem for a human — route
+    // to MANUAL_REVIEW (clean one-way handoff) rather than email the creator
+    // "your brand". runtime emails the brand an FYI keyed on missing_brand_name.
+    return blockedByMissingBrand(ctx.node.type);
   }
   const senderName =
     typeof config["senderName"] === "string" ? (config["senderName"] as string) : brandName;
