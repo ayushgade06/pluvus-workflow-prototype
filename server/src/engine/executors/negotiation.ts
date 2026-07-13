@@ -162,74 +162,104 @@ function countTrailingPresentOffers(history: NegotiationHistoryEntryLite[]): num
   return n;
 }
 
-// Open the B9 max-rounds brand decision (§3 B9). Shared by BOTH callers that can
-// reach the ceiling:
+// V1 (#15): a negotiation that fails to reach agreement WITHIN the configured
+// round limit auto-CLOSES rather than paging a human. At the founder's volume a
+// brand can't field thousands of "we couldn't agree" decisions, and #14 makes
+// escalation a clean one-way handoff — there is no brand counter-offer loop to
+// resume into. So both max-rounds sites send the creator a brief, courteous
+// close email and transition to REJECTED (terminal). This is the only failure
+// mode that auto-rejects: judgment/legal/dispute paths still go to MANUAL_REVIEW.
+//
+// Shared by BOTH callers that can reach the ceiling:
 //   1. the hard stop at entry (instance re-enters already at negotiationRound >=
 //      maxRounds), and
 //   2. the counter path's secondary guard (a counter that WOULD push the round to
-//      maxRounds — the round can't actually be sent, so instead of dead-ending in
-//      MANUAL_REVIEW we page the brand for one final move).
-// Both produce the identical actionable email (approve their number / final
-// counter / reject / hand off) and park the run in AWAITING_BRAND_DECISION.
-function openMaxRoundsBrandDecision(
+//      maxRounds — that round can't be sent, so this IS the max-rounds moment).
+//
+// Q2 (locked): send a courteous close email BEFORE rejecting. The send is
+// best-effort — a provider failure must NOT block the transition, so the run
+// still reaches REJECTED. It's idempotent (sendOnce, keyed on the round) so a
+// BullMQ retry of this step can't double-email the creator.
+async function maxRoundsReject(
   ctx: ExecutionContext,
   email: IEmailProvider,
   config: Record<string, unknown>,
   args: {
-    creatorReply: string;
     maxRounds: number;
     round: number;
-    /** The creator's stated ask for the MONEY path (context.creatorRate → the
-     *  recorded deal rate on a brand APPROVE). MED-N3: post-agent callers pass
-     *  the /negotiate LLM's validated extraction; only the pre-agent entry stop
-     *  falls back to the deterministic regex read. */
+    /** The creator's latest stated ask, for the audit payload only (no longer a
+     *  money-path input now that there's no brand APPROVE to record a deal rate).
+     *  MED-N3: post-agent callers pass the /negotiate LLM's validated extraction;
+     *  the pre-agent entry stop falls back to the deterministic regex read. */
     creatorRate: number | undefined;
   },
 ): Promise<NodeResult> {
-  const { instance, node, creator } = ctx;
-  const { creatorReply, maxRounds, round, creatorRate } = args;
-  const { floor, ceiling } = resolveBand(config);
-  const band =
-    floor !== undefined && ceiling !== undefined
-      ? ` (your ceiling was ${ceiling}, floor ${floor})`
-      : "";
-  const rateClause =
-    creatorRate !== undefined ? `Their latest ask is ${creatorRate}${band}.` : "";
-  const question =
-    `Negotiation with ${creator.name} reached the max of ${maxRounds} rounds ` +
-    `without agreement. ${rateClause} Do you want to accept their number, reject, ` +
-    `or hand this off to a human?`;
+  const { maxRounds, round, creatorRate } = args;
 
-  // MED-W4: the COUNTER option is REMOVED from the max-rounds escalation until the
-  // final-offer delivery sub-state exists. A brand COUNTER here parks in
-  // MANUAL_REVIEW pending MANUAL delivery — the counter is never actually sent to
-  // the creator — so offering it told the brand a counter went out when it
-  // didn't. Approve / reject / handoff only; a brand who wants to propose a
-  // different number hands off to a human, who sends it. (brandDecision.ts still
-  // defensively handles a free-text "COUNTER <n>" the same safe way.)
-  return openBrandDecision(ctx, email, {
-    reason: "max_rounds_reached",
-    question,
-    actions: ["approve", "reject", "handoff"],
-    context: {
-      reason: "max_rounds_reached",
-      actions: ["approve", "reject", "handoff"],
-      negotiationNodeId: node.id,
-      ...(creatorRate !== undefined ? { creatorRate } : {}),
-      ...(floor !== undefined ? { floor } : {}),
-      ...(ceiling !== undefined ? { ceiling } : {}),
-      maxRounds,
-      round,
-    },
-    ...(creatorReply ? { quotedReply: creatorReply } : {}),
+  await sendCloseEmail(ctx, email, config);
+
+  return {
+    nextState: "REJECTED",
+    nextNodeId: null,
+    completedAt: new Date(),
     eventType: "NEGOTIATION_TURN",
     eventPayload: {
-      outcome: "ESCALATE",
-      reason: "max_rounds_reached",
+      outcome: "REJECT",
+      reason: "max_rounds_no_agreement",
       round,
       maxRounds,
+      ...(creatorRate !== undefined ? { creatorRate } : {}),
     },
-  });
+  };
+}
+
+// Best-effort courteous close email for the max-rounds auto-reject (#15, Q2).
+// Rendered from a plain template through the provider's own draft() seam, so it
+// works with both the mock and a real provider WITHOUT an LLM call (an offer/
+// counter draft could fail-and-escalate; a fixed close note must not, and must
+// not gate the REJECTED transition). Idempotent + best-effort: a send failure is
+// swallowed so the run still reaches REJECTED.
+async function sendCloseEmail(
+  ctx: ExecutionContext,
+  email: IEmailProvider,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const { instance, creator } = ctx;
+  const senderName =
+    typeof config["senderName"] === "string" ? config["senderName"] : "Pluvus Partnerships";
+  const brandName =
+    typeof config["brandName"] === "string" ? config["brandName"] : senderName;
+  // Deliberately says nothing about budget/rounds/internal bounds — just a warm,
+  // non-committal close. No {{rate}}/{{floor}}/{{ceiling}} tokens, so there is
+  // nothing for the output guard to leak.
+  const template = [
+    `Hi {{creatorName}},`,
+    ``,
+    `Thank you so much for taking the time to talk with us about partnering with ${brandName}.`,
+    ``,
+    `Unfortunately we weren't able to align on terms for this particular campaign, so we're going to close things out for now. We really appreciate your interest, and we'd love to keep you in mind for future opportunities that might be a better fit.`,
+    ``,
+    `Wishing you all the best,`,
+    `${senderName}`,
+  ].join("\n");
+
+  try {
+    const draft = await email.draft(creator, template, config);
+    await sendOnce(
+      email,
+      instance.id,
+      creator,
+      draft,
+      `negotiation:close:${instance.id}:${instance.negotiationRound}`,
+    );
+  } catch (err) {
+    // Best-effort (#15, Q2): never let a close-email failure block the REJECTED
+    // transition — the run must still terminate cleanly.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[negotiation] close email failed for instance ${instance.id} (auto-reject): ${message}`,
+    );
+  }
 }
 
 // Open the B10 over-ceiling / agent-escalate brand decision (§3 B10). The agent
@@ -349,24 +379,23 @@ export async function executeNegotiation(
   // Hard stop — enforce maxRounds before calling the agent.
   // This prevents the agent from even being consulted past the ceiling.
   //
-  // B9 (max_rounds_reached): instead of dead-ending in MANUAL_REVIEW, open a
-  // brand-decision round-trip — the brand gets ONE more move (approve the
-  // creator's number, name a final counter, reject, or hand off) and the run
-  // auto-resumes on their reply. See MANUAL_ESCALATION_RESOLUTION.md §3 B9.
+  // V1 (#15): a negotiation that never reached agreement within maxRounds
+  // auto-CLOSES — a courteous close email to the creator, then REJECTED. No human
+  // is paged (the founder's volume can't field that), and #14 removed the brand
+  // counter-offer loop that used to resume here. See maxRoundsReject.
   //
   // EASY-W1: `maxRounds <= 0` means UNLIMITED — the same semantic the agent uses
   // (_rounds_exhausted / is_final_round in negotiate.py). Without the `> 0` guard
-  // a `maxRounds: 0` config would open a brand decision on round 0 here while the
-  // agent treats 0 as unlimited — the split semantic this fix removes.
+  // a `maxRounds: 0` config would auto-reject on round 0 here while the agent
+  // treats 0 as unlimited — the split semantic this guard removes.
   if (maxRounds > 0 && instance.negotiationRound >= maxRounds) {
-    return openMaxRoundsBrandDecision(ctx, email, config, {
-      creatorReply,
+    return maxRoundsReject(ctx, email, config, {
       maxRounds,
       round: instance.negotiationRound,
       // Pre-agent by design (never consult the model past the round ceiling), so
       // the LLM extraction isn't available here — the deterministic regex read
       // (range-rejecting; digits provably in the reply) is the documented
-      // fallback for this one money-path caller (MED-N3).
+      // fallback for this one caller (MED-N3), used for the audit payload only.
       creatorRate: extractRequestedRate(creatorReply),
     });
   }
@@ -638,21 +667,17 @@ export async function executeNegotiation(
 
       // Secondary guard: incrementing would hit or exceed maxRounds. We can't send
       // another counter that can't be replied to within the allowed window — so
-      // instead of dead-ending in MANUAL_REVIEW, this IS the max-rounds moment (B9):
-      // page the brand for one final move (approve their number / final counter /
-      // reject / hand off) and park the run in AWAITING_BRAND_DECISION. Same
-      // actionable email + resolution loop as the entry hard stop above; the run
-      // auto-resumes on the brand's reply. Previously this was the unreachable-B9
-      // gap — a straight counter→counter never entered the hard stop at >=maxRounds
-      // because this guard bailed to a dashboard-only MANUAL_REVIEW first.
-      // EASY-W1: `maxRounds <= 0` = unlimited (consistent with the entry hard stop).
+      // this IS the max-rounds moment (#15): the negotiation failed to converge
+      // within the round budget, so auto-CLOSE (courteous close email → REJECTED),
+      // same as the entry hard stop above. Previously this paged the brand; #14
+      // removed that loop. EASY-W1: `maxRounds <= 0` = unlimited (consistent with
+      // the entry hard stop).
       if (maxRounds > 0 && newRound >= maxRounds) {
-        return openMaxRoundsBrandDecision(ctx, email, config, {
-          creatorReply,
+        return maxRoundsReject(ctx, email, config, {
           maxRounds,
           // Report the ceiling round we've reached, not a half-advanced counter.
           round: maxRounds,
-          // MED-N3: post-agent, so the money path gets the model's validated
+          // MED-N3: post-agent, so the audit payload records the model's validated
           // extraction of the creator's ask (never the regex).
           creatorRate: creatorRequestedRate,
         });

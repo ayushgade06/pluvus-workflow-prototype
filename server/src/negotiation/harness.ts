@@ -319,15 +319,20 @@ async function scenarioD(instanceId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario E — Max rounds enforced → MANUAL_REVIEW (no further counter)
+// Scenario E — Max rounds enforced → REJECTED + courteous close email (#15)
 // ---------------------------------------------------------------------------
+// V1 (founder #15): a negotiation that fails to reach agreement within the round
+// budget auto-CLOSES rather than paging a human — a brief close email to the
+// creator, then REJECTED (terminal). No counter-offer is sent (the deal is over),
+// but ONE outbound close email IS sent. Previously this dead-ended in
+// MANUAL_REVIEW with no email.
 
 async function scenarioE(instanceId: string): Promise<void> {
-  section("Scenario E: Max rounds enforced → MANUAL_REVIEW");
+  section("Scenario E: Max rounds enforced → REJECTED + close email");
 
-  // maxRounds=3 in seed config. counterUntilRound=99 would counter forever —
-  // but the executor hard-stops at maxRounds before calling the agent.
-  // We need to pre-set negotiationRound to maxRounds to trigger the guard.
+  // counterUntilRound=99 would counter forever — but the executor hard-stops at
+  // maxRounds before calling the agent. We pre-set negotiationRound to maxRounds
+  // to trigger the guard.
   const negotiator = new MockNegotiationProvider({ counterUntilRound: 99 });
   const runtime = makeRuntime(negotiator);
   await driveToNegotiating(instanceId, runtime);
@@ -352,13 +357,18 @@ async function scenarioE(instanceId: string): Promise<void> {
   );
 
   log(`final state:        ${state}`);
-  log(`new outbound msgs:  ${msgsAfter - msgsBefore} (should be 0)`);
+  log(`new outbound msgs:  ${msgsAfter - msgsBefore} (should be 1 — close email)`);
   log(`max-rounds event:   ${negEvent ? "found" : "not found"}`);
 
-  if (state !== "MANUAL_REVIEW") fail(`Expected MANUAL_REVIEW at max rounds, got ${state}`);
-  if (msgsAfter > msgsBefore) fail("No counter-offer email should be sent at max rounds");
-  if (!negEvent) fail("Expected NEGOTIATION_TURN event with max_rounds_reached reason");
-  pass("Max rounds hit → MANUAL_REVIEW, no outbound email, event recorded");
+  if (state !== "REJECTED") fail(`Expected REJECTED at max rounds, got ${state}`);
+  // Exactly the courteous close email — NOT a counter-offer. One new outbound msg.
+  if (msgsAfter - msgsBefore !== 1) {
+    fail(`Expected exactly 1 close email at max rounds, got ${msgsAfter - msgsBefore}`);
+  }
+  if (!negEvent) fail("Expected NEGOTIATION_TURN event with a max_rounds reason");
+  const outcome = (negEvent!.payload as Record<string, unknown>)?.["outcome"];
+  if (outcome !== "REJECT") fail(`Expected outcome REJECT, got ${String(outcome)}`);
+  pass("Max rounds hit → REJECTED, one close email sent, REJECT event recorded");
 }
 
 // ---------------------------------------------------------------------------
