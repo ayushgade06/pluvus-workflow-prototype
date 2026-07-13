@@ -130,6 +130,19 @@ Prisma Studio (`npm run db:studio`). Assert:
 - deferred → `AWAITING_REPLY` with a `dueAt` ~3 days out
 - **negative:** no instance is ever in `AWAITING_BRAND_DECISION` (the state no longer exists)
 
+> **Run status (2026-07-13): the endpoint smoke passed (all 4 traps green live +
+> provider confirmed Ollama), but the full workflow run is BLOCKED on local
+> model/infra flakiness — NOT an escalation bug.** A freshly launched instance
+> stuck at `ENROLLED` because the outreach `/draft` step intermittently 500s /
+> times out on `qwen3:8b` and the worker hit Neon "connection error and is not
+> queryable" drops (seen in `/queues/health` failedReasons). The instance never
+> reached a negotiation state to inject the over-ceiling reply into. This is the
+> known local-model reliability issue (see the project notes on qwen classify/draft
+> latency + the `:8001` behavior), and is exactly why this tier is non-automated.
+> To retry: ensure the agent is healthy on Ollama, bump `AGENT_TIMEOUT_MS` /
+> `LLM_INVOKE_TIMEOUT_SECONDS`, restart the worker, and re-launch. The escalation
+> ROUTING is fully covered deterministically by T1 (server) + T2 (agent) regardless.
+
 ### The 4th layer we do NOT automate
 A *real inbound email through Nylas → webhook → correlate* is a further layer. Per the
 project notes, replies land in spam / don't reliably route, so that stays a manual
