@@ -18,12 +18,10 @@ import type { NegotiationProvider } from "../adapters/negotiation/NegotiationPro
 import type { NegotiationTerm, DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type {
   ClassifyResult,
-  BrandDecisionClassifyResult,
   NegotiateResult,
   EmailDraft,
   PriorNegotiationContext,
 } from "./types.js";
-import { mapReplyIntentToBrandDecision } from "./brandDecisionParse.js";
 
 // ---------------------------------------------------------------------------
 // Default AI-provider mode (C1)
@@ -225,35 +223,6 @@ export class AgentProviderAdapter implements IAgentProvider {
         `[agentProvider] classify failed, degrading to UNKNOWN (MANUAL_REVIEW): ${errMessage(err)}`,
       );
       return { intent: "UNKNOWN", confidence: 0 };
-    }
-  }
-
-  async classifyBrandDecision(body: string): Promise<BrandDecisionClassifyResult> {
-    // The deterministic token scan (brandDecisionParse) has already run and found
-    // no explicit cue; this is the AI fallback (§2.4). We reuse the SAME reply
-    // classifier — and thus the same circuit-breaker/degradation guarantees — and
-    // map its reply intent onto a brand-decision action:
-    //   POSITIVE            → APPROVE  (the brand is affirming / moving forward)
-    //   QUESTION            → AMBIGUOUS (MED-N1) — a brand asking a QUESTION has
-    //                         NOT approved. Mapping QUESTION→APPROVE meant a brand
-    //                         asking "what's their reach?" auto-approved an
-    //                         over-ceiling spend. It now re-asks instead.
-    //   NEGATIVE / OPT_OUT  → REJECT
-    //   UNKNOWN             → AMBIGUOUS (re-ask, never guess a money decision)
-    // A counter AMOUNT can't come from this closed intent set, so a free-text
-    // "counter to 400" with no COUNTER token surfaces as AMBIGUOUS here and is
-    // clarified on the re-ask. When the agent is DOWN, classify() itself degrades
-    // to UNKNOWN/0, which maps to AMBIGUOUS — so a degraded agent yields a re-ask,
-    // not a fabricated approval.
-    try {
-      const result = await this.classifier.classify({ message: body });
-      // Pure intent→action mapping (MED-N1: QUESTION→AMBIGUOUS, not APPROVE).
-      return mapReplyIntentToBrandDecision(result.intent, result.confidence);
-    } catch (err) {
-      console.error(
-        `[agentProvider] classifyBrandDecision failed, degrading to AMBIGUOUS (re-ask): ${errMessage(err)}`,
-      );
-      return { decision: "AMBIGUOUS", confidence: 0 };
     }
   }
 

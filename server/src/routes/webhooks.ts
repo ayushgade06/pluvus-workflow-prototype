@@ -34,8 +34,8 @@ interface InboundMessage {
   threadId: string | undefined;
   subject: string;
   body: string;
-  /** The From: address (CRITICAL-1). Used downstream to verify a brand-decision
-   *  reply originates from the brand, not the creator. Undefined if unparseable. */
+  /** The From: address. Carried for audit/correlation of the inbound reply.
+   *  Undefined if unparseable. */
   senderEmail: string | undefined;
 }
 
@@ -77,8 +77,7 @@ function extractInboundMessage(payload: unknown): InboundMessage | null {
 
 // The From: address in a Nylas message is `from: [{ email, name }]` (or, on some
 // SDK/webhook shapes, a bare object). Pull the first email we can find, lowercased
-// for a case-insensitive compare downstream (CRITICAL-1). Undefined if absent —
-// the brand-decision handler treats a missing sender conservatively.
+// for a case-insensitive compare downstream. Undefined if absent.
 function extractFromEmail(msg: Record<string, unknown>): string | undefined {
   const from = pick<unknown>(msg, "from", "sender");
   const first = Array.isArray(from) ? from[0] : from;

@@ -39,23 +39,13 @@ const OPERATOR_FALLBACK_EMAIL = "affiliatepartner@pluvus.com";
 const REASON_LABELS: Record<string, string> = {
   low_confidence_reply:
     "the AI could not confidently classify the creator's reply",
-  max_rounds_reached:
-    "the negotiation hit the maximum number of rounds without agreement",
-  max_rounds_reached_on_counter:
-    "the negotiation would exceed the maximum rounds on the next counter-offer",
   output_guard_blocked:
     "an outbound draft was blocked by the safety guard before sending",
   escalated: "the negotiation agent escalated this conversation for human review",
   agent_unavailable:
     "the AI agent was unavailable (degraded mode), so this was routed to a human",
-  brand_requested_handoff:
-    "the brand asked us to hand this creator off to a human via the escalation email",
-  brand_reply_ambiguous_after_reask:
-    "we couldn't understand the brand's reply to the escalation email, even after asking again",
-  brand_final_counter_pending_delivery:
-    "the brand named a final counter-offer that needs a human to send to the creator",
-  brand_decision_timeout:
-    "we emailed the brand for a decision but heard nothing back within 72 hours",
+  missing_brand_name:
+    "a creator-facing email had no resolvable brand name to sign with (config needs fixing)",
 };
 
 function reasonLabel(reason: string): string {
@@ -75,30 +65,6 @@ export function resolveBrandRecipient(campaignNotifyEmail: string | null | undef
   const fromEnv = process.env["BRAND_NOTIFY_EMAIL"]?.trim();
   if (fromEnv) return fromEnv;
   return OPERATOR_FALLBACK_EMAIL || null;
-}
-
-// MED-A1: brand DECISION emails (AWAITING_BRAND_DECISION) are a stricter case
-// than the manual-queue FYI above. A decision email asks the brand to make a
-// real-money call by replying, and the CRITICAL-1 sender-identity gate only
-// authorizes a reply that comes from the campaign's notifyEmail. Falling back to
-// the hardcoded platform operator here is worse than useless: the operator isn't
-// the brand, so any reply they send is REJECTED by the identity gate — we'd email
-// a decision request that can never be actioned by its recipient, and worse, we'd
-// invite a non-brand party to approve an over-ceiling spend.
-//
-// So a brand DECISION requires a REAL brand recipient: the campaign's notifyEmail,
-// or the BRAND_NOTIFY_EMAIL env (an ops-configured brand inbox, not a code
-// constant). When neither exists we return null; the caller creates the decision
-// row anyway and leaves it for the dashboard / 72h sweep rather than emailing a
-// dead-end operator address.
-export function resolveBrandDecisionRecipient(
-  campaignNotifyEmail: string | null | undefined,
-): string | null {
-  const fromCampaign = campaignNotifyEmail?.trim();
-  if (fromCampaign) return fromCampaign;
-  const fromEnv = process.env["BRAND_NOTIFY_EMAIL"]?.trim();
-  if (fromEnv) return fromEnv;
-  return null;
 }
 
 // ---------------------------------------------------------------------------

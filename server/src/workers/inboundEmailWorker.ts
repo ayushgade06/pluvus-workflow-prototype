@@ -41,7 +41,10 @@ function resolveIntent(raw?: string): ReplyIntent | undefined {
 async function handleInboundEmail(
   job: Job<InboundEmailJobData>,
 ): Promise<void> {
-  const { instanceId, externalMessageId, threadId, subject, body, mockIntent, senderEmail } =
+  // senderEmail is carried on the job for audit/correlation but no longer consumed
+  // here: it was only used to verify a brand-decision reply's sender identity, and
+  // escalations are now terminal MANUAL_REVIEW (#14) with no reply handling.
+  const { instanceId, externalMessageId, threadId, subject, body, mockIntent } =
     job.data;
 
   // ── Idempotency check ───────────────────────────────────────────────────
@@ -175,62 +178,9 @@ async function handleInboundEmail(
       return;
     }
 
-    // ── Brand-decision reply branch ────────────────────────────────────────
-    // A reply that arrives while the instance is AWAITING_BRAND_DECISION is the
-    // BRAND answering a business escalation (approve / reject / counter / handoff)
-    // — NOT the creator, and NOT a negotiation turn. Route it to the brand-
-    // decision reply handler, which persists the message and steps the generic
-    // brand-decision loop (parse pipeline → resolution map). This bypasses
-    // injectReply's forced REPLY_RECEIVED transition, which is invalid here.
-    if (instance.currentState === "AWAITING_BRAND_DECISION") {
-      try {
-        await runtime.handleBrandDecisionReply(instanceId, {
-          subject,
-          body,
-          threadId,
-          externalMessageId,
-          // CRITICAL-1: the From: address is threaded to the brand-decision handler
-          // so it can verify the reply came from the brand, not the creator.
-          ...(senderEmail !== undefined ? { senderEmail } : {}),
-          worker: "inbound-email",
-          queueJobId: job.id,
-        });
-      } catch (err) {
-        if (err instanceof StaleInstanceError) {
-          console.log(
-            `[inbound-email] OCC conflict on handleBrandDecisionReply — ${err.message} (job ${job.id})`,
-          );
-          processed = true; // handled by the winning worker — don't retry-loop
-          return;
-        }
-        throw err;
-      }
-      processed = true;
-
-      // The brand reply may have advanced the instance to a state that needs a
-      // node-execution job to continue — this happens here (inbound worker), not
-      // via a node-execution job, so the node-execution worker's auto-chain never
-      // sees it. Enqueue the next step so the run resumes:
-      //   ACCEPTED / REWARD_CONFIRMED / PAYMENT_RECEIVED → L4 config-fix wrote the
-      //     brand name back and transitioned to the blocked node's run-from state;
-      //     re-enqueue so the SAME node re-runs, now with a resolvable name.
-      //   NEGOTIATING → forward-compat for a future final-offer resolution (no
-      //     brand-decision outcome lands here in this pass).
-      const afterBrand = await findInstanceById(instanceId);
-      const resumeState = afterBrand?.currentState;
-      const RESUME_STATES = ["NEGOTIATING", "ACCEPTED", "REWARD_CONFIRMED", "PAYMENT_RECEIVED"] as const;
-      if (resumeState && (RESUME_STATES as readonly string[]).includes(resumeState)) {
-        await enqueueNodeExecution({
-          instanceId,
-          expectedState: resumeState,
-          triggerRef: `auto-resume-${instanceId}-brand-msg-${externalMessageId}`,
-        });
-        console.log(
-          `[inbound-email] auto-enqueued resume step for ${instanceId} (brand decision → ${resumeState}, reply ${externalMessageId})`,
-        );
-      }
-      return;
-    }
+    // (An escalated instance is now terminal MANUAL_REVIEW (#14) — a reply to it
+    // is dropped by the isTerminal guard at the top of this handler, so there is
+    // no brand-decision reply branch here anymore.)
 
     // ── Payment Info reply branch ──────────────────────────────────────────
     // A reply that arrives while the instance is in PAYMENT_PENDING is an email

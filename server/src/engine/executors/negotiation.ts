@@ -49,23 +49,22 @@ function draftUnavailable(round: number, purpose: string): NodeResult {
   };
 }
 
-// The creator's most recent inbound message, EXCLUDING any inbound rows that are
-// actually brand replies to an escalation email (A1/A2 low_confidence_reply: the
-// brand answered "approve", which is persisted INBOUND on the same instance). If
-// we didn't skip those, resuming negotiation after an A1/A2 approval would make
-// the agent reason about the brand's word ("approve") as if the creator wrote it.
-//
-// Brand-decision replies are tagged on the INBOUND_REPLY_RECEIVED event with
-// `brandDecisionReply: true` + the message's externalMessageId; we collect those
-// ids and drop the matching messages. (Normal creator replies have no such tag.)
+// The creator's most recent inbound message, EXCLUDING any inbound rows tagged as
+// brand replies. LEGACY: the removed brand-decision loop (#14) used to persist a
+// brand's escalation reply INBOUND on the instance, tagged on the
+// INBOUND_REPLY_RECEIVED event with `brandDecisionReply: true`; those had to be
+// dropped so the agent didn't read the brand's "approve" as the creator's words.
+// No new such rows are written now (escalation is a clean terminal MANUAL_REVIEW),
+// so `brandReplyMsgIds` is empty for any fresh instance — the filter is retained
+// only to keep any historical rows out of the transcript. (Normal creator replies
+// have no such tag.)
 //
 // Returns the full Message row (MED-W2 needs its id to key the present-offer
 // send per-reply, not per-round).
 // HARD-N2: the executor needs not just the LATEST creator message but the whole
-// set (to thread the conversation into /draft), plus the brand-reply id set (to
-// exclude A1/A2 brand approvals from the creator transcript). This loads all
-// three in one place so the latest-reply read and the draft-history builder
-// agree on exactly which inbound rows count as "the creator".
+// set (to thread the conversation into /draft), plus the brand-reply id set. This
+// loads all three in one place so the latest-reply read and the draft-history
+// builder agree on exactly which inbound rows count as "the creator".
 async function loadCreatorInbounds(instanceId: string): Promise<{
   messages: Message[];
   brandReplyMsgIds: Set<string>;

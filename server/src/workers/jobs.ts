@@ -39,12 +39,10 @@ export interface InboundEmailJobData {
   subject: string;
   body: string;
   /**
-   * The From: address of the inbound message (CRITICAL-1). Carried from the
-   * webhook so the brand-decision handler can verify the reply originated from
-   * the brand (campaign notifyEmail), not the creator. Optional: the mocked
-   * injection path (queues route / harness) omits it, and a real webhook may
-   * occasionally lack a parseable from — the handler treats a missing/mismatched
-   * sender conservatively (does not auto-resolve on it).
+   * The From: address of the inbound message. Carried from the webhook for
+   * audit/correlation of the reply. Optional: the mocked injection path (queues
+   * route / harness) omits it, and a real webhook may occasionally lack a
+   * parseable from.
    */
   senderEmail?: string;
   /**

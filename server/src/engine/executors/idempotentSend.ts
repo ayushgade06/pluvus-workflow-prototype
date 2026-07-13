@@ -81,7 +81,7 @@ export async function sendOnce(
   // Optional explicit recipient (brand outbound — CRITICAL-2). When set, the
   // email is addressed to the brand rather than the creator; the reserved
   // Message row still belongs to the instance so the brand's reply correlates by
-  // threadId. A brand-decision reply-to is also carried here.
+  // threadId. An optional Reply-To on the recipient is carried through.
   recipient?: EmailRecipient,
 ): Promise<SentResult> {
   // Step 1 — reserve.

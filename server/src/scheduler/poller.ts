@@ -1,33 +1,22 @@
 import { listDueInstances } from "../db/instances.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { logTrace } from "../observability/logger.js";
-import { sweepExpiredBrandDecisions } from "./brandDecisionSweep.js";
 import { reconcileStuckInstances } from "./reconciliation.js";
 import { logWorkerMetrics } from "../workers/workerMetrics.js";
 
 // ---------------------------------------------------------------------------
 // Due-instance poller
 // ---------------------------------------------------------------------------
-// Called every POLL_INTERVAL_MS. Two independent responsibilities on the same
-// cadence:
-//   1. Due-instance follow-ups: instances whose dueAt has passed and whose state
-//      is AWAITING_REPLY or FOLLOWED_UP → enqueue a node-execution job for each.
-//   2. Brand-decision silence timeout: PENDING BrandDecisions past their
-//      expiresAt (72h) → MANUAL_REVIEW + operator ping (§2.6). Runs regardless of
-//      whether any instance is due, and its failures never affect (1).
-// Uses deterministic jobIds so duplicate polls never double-enqueue the same
-// trigger; the brand-decision sweep is idempotent via OCC.
+// Called every POLL_INTERVAL_MS. Enqueues a node-execution job for each
+// due-instance follow-up: instances whose dueAt has passed and whose state is
+// AWAITING_REPLY or FOLLOWED_UP. Uses deterministic jobIds so duplicate polls
+// never double-enqueue the same trigger.
 
 const POLL_INTERVAL_MS = 30_000;
 
 let _timer: ReturnType<typeof setInterval> | null = null;
 
 async function poll(): Promise<void> {
-  // Run the brand-decision timeout sweep on the same cadence. Isolated in its
-  // own try/catch inside the sweep so it can neither throw into nor be starved
-  // by the due-instance path below.
-  await sweepExpiredBrandDecisions();
-
   // HARD-R1: reconciliation sweep — re-enqueue instances stranded in a transient
   // non-terminal state (crash between OCC commit and enqueue). Same cadence; its
   // own internal try/catch so a failure never affects the due-instance path.

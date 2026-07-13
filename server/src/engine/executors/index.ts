@@ -8,5 +8,4 @@ export { executeRewardReply } from "./rewardReply.js";
 export { executePaymentInfo, executePaymentSubmission } from "./paymentInfo.js";
 export { executePaymentReply } from "./paymentReply.js";
 export { executeContentBrief, executeContentBriefSubmission } from "./contentBrief.js";
-export { executeBrandDecision, openBrandDecision, openMissingBrandDecision } from "./brandDecision.js";
 export { executeEnd } from "./end.js";

@@ -62,8 +62,7 @@ export class NylasEmailProvider implements IEmailProvider {
     }));
 
     // Address the explicit recipient (brand outbound) when supplied, otherwise
-    // the creator whose thread we're on. A brand-decision email also sets a
-    // token-scoped Reply-To so the reply is attributable to exactly one decision.
+    // the creator whose thread we're on. An optional Reply-To is honored when set.
     const to = recipient
       ? [{ email: recipient.email, name: recipient.name }]
       : [{ email: creator.email, name: creator.name }];

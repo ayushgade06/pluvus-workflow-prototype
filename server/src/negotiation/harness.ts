@@ -35,7 +35,6 @@ import type { NegotiationProvider } from "../adapters/negotiation/NegotiationPro
 import type { IAgentProvider, IEmailProvider } from "../engine/providers.js";
 import type {
   ClassifyResult,
-  BrandDecisionClassifyResult,
   NegotiateResult,
   EmailDraft,
   PriorNegotiationContext,
@@ -83,20 +82,6 @@ class HarnessAgentProvider implements IAgentProvider {
   async classify(body: string): Promise<ClassifyResult> {
     const r = await this.classifier.classify({ message: body });
     return { intent: r.intent as ClassifyResult["intent"], confidence: r.confidence };
-  }
-
-  async classifyBrandDecision(body: string): Promise<BrandDecisionClassifyResult> {
-    const r = await this.classifier.classify({ message: body });
-    switch (r.intent) {
-      case "POSITIVE":
-      case "QUESTION":
-        return { decision: "APPROVE", confidence: r.confidence };
-      case "NEGATIVE":
-      case "OPT_OUT":
-        return { decision: "REJECT", confidence: r.confidence };
-      default:
-        return { decision: "AMBIGUOUS", confidence: 0 };
-    }
   }
 
   async negotiate(

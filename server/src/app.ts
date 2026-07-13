@@ -9,7 +9,6 @@ import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
 import paymentRouter from "./routes/payment.js";
-import brandDecisionRouter from "./routes/brandDecision.js";
 import uploadsRouter from "./routes/uploads.js";
 
 // ---------------------------------------------------------------------------
@@ -62,8 +61,6 @@ export function createApp(): Express {
   app.use("/creators", creatorsRouter);
   // Phase 15 — Payment Info: hosted payout-information page (server-rendered)
   app.use("/payment", paymentRouter);
-  // Manual Escalation Resolution — brand-decision one-click magic links
-  app.use("/brand-decision", brandDecisionRouter);
   // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)
   app.use("/uploads", uploadsRouter);
 

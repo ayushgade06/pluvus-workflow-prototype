@@ -13,7 +13,6 @@ import {
 import type { Prisma as PrismaTypes } from "@prisma/client";
 import { findCampaignById } from "../db/campaigns.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
-import { BRAND_DECISION_LINK_SENDER } from "./brandDecisionParse.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
 import { logTransition, type TransitionSource } from "../observability/logger.js";
@@ -31,10 +30,9 @@ import {
   executePaymentReply,
   executeContentBrief,
   executeContentBriefSubmission,
-  executeBrandDecision,
   executeEnd,
 } from "./executors/index.js";
-import { markPaymentReceived, expirePendingBrandDecision } from "../db/index.js";
+import { markPaymentReceived } from "../db/index.js";
 import type { PayoutMethod } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -45,22 +43,6 @@ export class StaleInstanceError extends Error {
   constructor(instanceId: string, observedState: string) {
     super(`Stale instance: ${instanceId} state changed away from ${observedState}`);
     this.name = "StaleInstanceError";
-  }
-}
-
-// Thrown when a brand-decision magic link is resolved but the instance is no
-// longer AWAITING_BRAND_DECISION (already decided, or clicked/prefetched twice).
-// The route renders this as an idempotent "already decided" page rather than an
-// error — a repeated click is expected, not a failure.
-export class WrongBrandDecisionStateError extends Error {
-  constructor(
-    readonly instanceId: string,
-    readonly observedState: string,
-  ) {
-    super(
-      `Brand decision for ${instanceId} is no longer open (state ${observedState})`,
-    );
-    this.name = "WrongBrandDecisionStateError";
   }
 }
 
@@ -553,262 +535,6 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
-  // handleBrandDecisionReply
-  // -------------------------------------------------------------------------
-  // An inbound reply arrived while the instance is AWAITING_BRAND_DECISION (a
-  // business escalation parked waiting on the brand). This does NOT go through
-  // the negotiation/first-reply classifier: it persists the inbound message and
-  // steps the instance, whose AWAITING_BRAND_DECISION dispatch runs
-  // executeBrandDecision (parse pipeline → resolution map). Modeled on
-  // handleRewardReply — kept separate from injectReply (which forces
-  // REPLY_RECEIVED, invalid from AWAITING_BRAND_DECISION).
-  //
-  // The reply here is the BRAND's, not the creator's; both arrive on the same
-  // inbound-email path and are disambiguated by the instance state.
-
-  async handleBrandDecisionReply(
-    instanceId: string,
-    opts: {
-      subject: string;
-      body: string;
-      threadId?: string;
-      externalMessageId?: string;
-      /** The From: address of the reply (CRITICAL-1). Persisted on the Message row
-       *  so executeBrandDecision can verify the reply came from the brand. */
-      senderEmail?: string;
-      source?: TransitionSource;
-      worker?: string | undefined;
-      queueJobId?: string | undefined;
-    },
-  ): Promise<ExecutionContext> {
-    const instance = await findInstanceById(instanceId);
-    if (!instance) {
-      throw new Error(`Instance not found: ${instanceId}`);
-    }
-    if (instance.currentState !== "AWAITING_BRAND_DECISION") {
-      throw new Error(
-        `handleBrandDecisionReply expects AWAITING_BRAND_DECISION state, got ${instance.currentState}`,
-      );
-    }
-
-    const now = new Date();
-    const externalMessageId =
-      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
-
-    // Persist the inbound reply so executeBrandDecision can read it (same
-    // contract as handleRewardReply → executeRewardReply). The sender address is
-    // persisted for the identity check (CRITICAL-1). Idempotent on
-    // externalMessageId (CRITICAL-6).
-    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
-      subject: opts.subject,
-      body: opts.body,
-      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
-      ...(opts.senderEmail !== undefined ? { senderEmail: opts.senderEmail } : {}),
-      receivedAt: now,
-    });
-
-    await appendEvent({
-      instance: { connect: { id: instanceId } },
-      type: "INBOUND_REPLY_RECEIVED",
-      nodeId: instance.currentNodeId ?? null,
-      payload: { subject: opts.subject, externalMessageId, brandDecisionReply: true },
-      occurredAt: now,
-    });
-
-    // Step the instance — dispatch sees AWAITING_BRAND_DECISION and runs
-    // executeBrandDecision, reusing the standard OCC + event-writing path.
-    return this.stepInstance(instanceId, {
-      source: opts.source ?? "inbound-email",
-      worker: opts.worker,
-      queueJobId: opts.queueJobId,
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // resolveBrandDecisionLink
-  // -------------------------------------------------------------------------
-  // A brand clicked a one-click magic-link action (approve / reject / counter /
-  // handoff) on the escalation email. Rather than duplicate the resolution map,
-  // we synthesize a CANONICAL inbound reply whose body is the exact token the
-  // deterministic scanner recognizes (APPROVE / REJECT / COUNTER <n> / HANDOFF)
-  // and route it through the very same executeBrandDecision pipeline. A click
-  // therefore resolves with ZERO parsing risk — the token scan matches
-  // immediately, no AI hop — while sharing one code path with the email-reply
-  // channel (§2.5).
-  //
-  // Idempotency: a link that is clicked twice (or prefetched by an email client)
-  // finds the instance no longer AWAITING_BRAND_DECISION on the second hit and
-  // throws WrongBrandDecisionStateError, which the route renders as an
-  // "already decided" page. The OCC in stepInstance is the concurrency backstop.
-
-  async resolveBrandDecisionLink(
-    instanceId: string,
-    action: "approve" | "reject" | "counter" | "handoff",
-    amount: number | undefined,
-    opts: {
-      worker?: string | undefined;
-      queueJobId?: string | undefined;
-    } = {},
-  ): Promise<ExecutionContext> {
-    const instance = await findInstanceById(instanceId);
-    if (!instance) {
-      throw new Error(`Instance not found: ${instanceId}`);
-    }
-    if (instance.currentState !== "AWAITING_BRAND_DECISION") {
-      throw new WrongBrandDecisionStateError(instanceId, instance.currentState);
-    }
-
-    // Canonical, guaranteed-parseable body for the deterministic scanner.
-    const canonical =
-      action === "counter"
-        ? `COUNTER ${amount ?? ""}`.trim()
-        : action.toUpperCase();
-
-    const now = new Date();
-    const externalMessageId = `brand-link-${instanceId}-${action}-${Date.now()}`;
-
-    await createMessage({
-      instance: { connect: { id: instanceId } },
-      direction: "INBOUND",
-      subject: "Brand decision (one-click)",
-      body: canonical,
-      threadId: `mock-thread-${instance.creatorId}`,
-      externalMessageId,
-      // CRITICAL-1: tag the synthetic magic-link reply with the trusted sentinel.
-      // The route already verified the unguessable token against the DB before
-      // reaching here (findBrandDecisionByToken), so the token IS the capability —
-      // executeBrandDecision's identity gate trusts this channel without a
-      // From-address match.
-      senderEmail: BRAND_DECISION_LINK_SENDER,
-      receivedAt: now,
-    });
-
-    await appendEvent({
-      instance: { connect: { id: instanceId } },
-      type: "INBOUND_REPLY_RECEIVED",
-      nodeId: instance.currentNodeId ?? null,
-      payload: { externalMessageId, brandDecisionReply: true, viaMagicLink: true, action },
-      occurredAt: now,
-    });
-
-    // Step the instance — dispatch runs executeBrandDecision on the synthetic
-    // canonical reply, reusing the standard OCC + event-writing path.
-    return this.stepInstance(instanceId, {
-      source: "brand-decision-link",
-      worker: opts.worker,
-      queueJobId: opts.queueJobId,
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // expireBrandDecision
-  // -------------------------------------------------------------------------
-  // The 72h silence timeout fired: a BrandDecision is still PENDING past its
-  // expiresAt (spec §2.6 / decision 3). Move the instance
-  // AWAITING_BRAND_DECISION → MANUAL_REVIEW, mark the row EXPIRED, and ping the
-  // operator so a silent brand never strands a creator forever.
-  //
-  // This is NOT a node execution — there's no decision to run — so it does its
-  // own OCC transition + audit bookkeeping (mirroring stepInstance's MANUAL_REVIEW
-  // path) rather than going through dispatch. Idempotent under concurrent sweeps:
-  // the OCC update returns null if another sweep (or a late brand reply) already
-  // moved the instance, in which case we no-op.
-  //
-  // Returns true when this call performed the expiry, false on a no-op (already
-  // moved, or the row is no longer PENDING).
-
-  async expireBrandDecision(
-    instanceId: string,
-    decisionId: string,
-  ): Promise<boolean> {
-    const instance = await findInstanceById(instanceId);
-    if (!instance) return false;
-
-    const now = new Date();
-
-    // EASY-W2: if the run already left AWAITING_BRAND_DECISION (a late reply, a
-    // prior sweep, or a PARTIAL failure where a previous expiry committed the
-    // transition but never closed the row), the instance is done but the row may
-    // still be PENDING — which the 72h sweep would re-select forever. Reconcile
-    // the orphan row to EXPIRED (idempotent; a no-op if already resolved) so the
-    // sweep converges, then no-op the transition (nothing left to move).
-    if (instance.currentState !== "AWAITING_BRAND_DECISION") {
-      await expirePendingBrandDecision(decisionId, now);
-      return false;
-    }
-
-    // OCC transition AWAITING_BRAND_DECISION → MANUAL_REVIEW.
-    assertTransition(instance.currentState, "MANUAL_REVIEW");
-    const updated = await updateInstanceStateConditional(
-      instanceId,
-      "AWAITING_BRAND_DECISION",
-      {
-        currentState: "MANUAL_REVIEW",
-        currentNodeId: instance.currentNodeId,
-        completedAt: now,
-      },
-    );
-    if (!updated) {
-      // Another sweep or a late reply won the OCC race and advanced it. Still
-      // reconcile the row so it doesn't linger PENDING for the next sweep.
-      await expirePendingBrandDecision(decisionId, now);
-      return false;
-    }
-
-    // Mark the decision row EXPIRED. Uses the status=PENDING-guarded update
-    // (idempotent) so a retry/overlap can't clobber a row a concurrent resolution
-    // just wrote. Best-effort — the transition already stands — but a failure here
-    // is now SELF-HEALING: the row stays PENDING and the very next sweep hits the
-    // orphan-reconcile branch above and closes it (rather than re-processing
-    // forever, which was the EASY-W2 bug).
-    try {
-      await expirePendingBrandDecision(decisionId, now);
-    } catch (err) {
-      console.error(
-        `[brand-decision] failed to mark decision ${decisionId} EXPIRED (transition already applied; next sweep will reconcile): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-
-    // Audit: the domain event + the state transition, attributed to the scheduler.
-    await appendEvent({
-      instance: { connect: { id: instanceId } },
-      type: "MANUAL_REVIEW_FLAGGED",
-      nodeId: instance.currentNodeId ?? null,
-      payload: { reason: "brand_decision_timeout", brandDecisionId: decisionId, expired: true },
-      occurredAt: now,
-    });
-    await appendEvent({
-      instance: { connect: { id: instanceId } },
-      type: "STATE_TRANSITION",
-      nodeId: instance.currentNodeId ?? null,
-      payload: {
-        from: "AWAITING_BRAND_DECISION",
-        to: "MANUAL_REVIEW",
-        source: "scheduler",
-      },
-      occurredAt: now,
-    });
-    logTransition({
-      instanceId,
-      creatorId: instance.creatorId,
-      fromState: "AWAITING_BRAND_DECISION",
-      toState: "MANUAL_REVIEW",
-      source: "scheduler",
-      nodeId: instance.currentNodeId ?? null,
-      meta: { reason: "brand_decision_timeout", brandDecisionId: decisionId },
-    });
-
-    // Operator ping — reuses the idempotent brand/operator notifier (keyed on
-    // instanceId + reason, so a re-sweep can't double-email). Best-effort: never
-    // throws, so it can't undo the transition above.
-    await notifyBrandOfEscalation(this.email, instanceId, "brand_decision_timeout");
-
-    return true;
-  }
-
-  // -------------------------------------------------------------------------
   // handlePaymentSubmission
   // -------------------------------------------------------------------------
   // The creator submitted the hosted payout form while the instance is in
@@ -985,17 +711,6 @@ export class WorkflowRuntime {
     phase: "submission" | "reply" = "submission",
   ) {
     const { node } = ctx;
-
-    // Brand-decision reply phase is dispatched on STATE, not node.type: a
-    // business escalation parks the run in AWAITING_BRAND_DECISION from many
-    // different nodes (reply detection, negotiation, …), so there is no single
-    // BRAND_DECISION node to switch on. When a reply arrives while parked, run
-    // the generic brand-decision reply handler regardless of which node the
-    // instance last sat on. (The OUTBOUND side is not dispatched here — the
-    // escalating executor calls openBrandDecision directly.)
-    if (ctx.instance.currentState === "AWAITING_BRAND_DECISION") {
-      return executeBrandDecision(ctx, this.email, this.agent);
-    }
 
     switch (node.type) {
       case "IMPORT_CREATOR_LIST":

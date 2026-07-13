@@ -2,7 +2,6 @@ import type { Creator, ReplyIntent } from "@prisma/client";
 import type {
   EmailDraft,
   ClassifyResult,
-  BrandDecisionClassifyResult,
   NegotiateResult,
   NegotiateOutcome,
   PriorNegotiationContext,
@@ -25,8 +24,8 @@ import { resolveBand } from "./band.js";
 export interface EmailRecipient {
   email: string;
   name: string;
-  /** Optional Reply-To. Brand-decision emails set this to a token-scoped address
-   *  so a reply is attributable to exactly one decision (see brandDecision). */
+  /** Optional Reply-To. When set, the message is sent with an explicit Reply-To
+   *  header so a reply is directed to a specific address rather than the sender. */
   replyTo?: string;
 }
 
@@ -137,14 +136,6 @@ export interface IAgentProvider {
    */
   readonly generatesDraftCopy?: boolean;
   classify(body: string, intent?: string): Promise<ClassifyResult>;
-  /**
-   * AI fallback for parsing a brand's reply to an escalation email (§2.4), used
-   * only when the deterministic token scan (brandDecisionParse) finds no cue.
-   * Returns the parsed action + confidence (+ counter value when COUNTER). The
-   * real adapter degrades to AMBIGUOUS/0 when the agent is down — a money
-   * decision is never guessed on a degraded agent; the caller re-asks instead.
-   */
-  classifyBrandDecision(body: string): Promise<BrandDecisionClassifyResult>;
   negotiate(
     round: number,
     config: Record<string, unknown>,
@@ -194,10 +185,6 @@ export interface MockAgentOptions {
   replyIntent?: ReplyIntent;
   negotiationOutcome?: NegotiateOutcome;
   negotiationCounterUntilRound?: number;
-  /** Drives MockAgentProvider.classifyBrandDecision for harnesses/tests. When
-   *  absent the mock returns APPROVE (mirrors replyIntent defaulting to
-   *  POSITIVE). Set decision: "AMBIGUOUS" to exercise the re-ask path. */
-  brandDecision?: BrandDecisionClassifyResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,14 +199,12 @@ export class MockAgentProvider implements IAgentProvider {
   private readonly replyIntent: ReplyIntent;
   private readonly negotiationOutcome: NegotiateOutcome;
   private readonly negotiationCounterUntilRound: number;
-  private readonly brandDecision: BrandDecisionClassifyResult;
   private readonly _negotiationProvider: MockNegotiationProvider;
 
   constructor(opts: MockAgentOptions = {}) {
     this.replyIntent = opts.replyIntent ?? "POSITIVE";
     this.negotiationOutcome = opts.negotiationOutcome ?? "accept";
     this.negotiationCounterUntilRound = opts.negotiationCounterUntilRound ?? 0;
-    this.brandDecision = opts.brandDecision ?? { decision: "APPROVE", confidence: 0.95 };
     this._negotiationProvider = new MockNegotiationProvider({
       counterUntilRound: this.negotiationCounterUntilRound,
     });
@@ -230,10 +215,6 @@ export class MockAgentProvider implements IAgentProvider {
       intent: this.replyIntent,
       confidence: 0.95,
     };
-  }
-
-  async classifyBrandDecision(_body: string): Promise<BrandDecisionClassifyResult> {
-    return this.brandDecision;
   }
 
   async negotiate(

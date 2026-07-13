@@ -51,13 +51,12 @@ export async function deleteCampaign(id: string): Promise<void> {
     if (instanceIds.length > 0) {
       // Delete ALL rows that reference an instance before the instances
       // themselves, or the executionInstance.deleteMany hits a foreign-key
-      // violation. Besides Event/Message, later phases added BrandNotification,
-      // BrandDecision, and PaymentInfo — each with an instanceId FK — so they must
-      // be cleaned up here too (omitting them was what broke campaign deletion).
+      // violation. Besides Event/Message, later phases added BrandNotification
+      // and PaymentInfo — each with an instanceId FK — so they must be cleaned up
+      // here too (omitting them was what broke campaign deletion).
       await prisma.event.deleteMany({ where: { instanceId: { in: instanceIds } } });
       await prisma.message.deleteMany({ where: { instanceId: { in: instanceIds } } });
       await prisma.brandNotification.deleteMany({ where: { instanceId: { in: instanceIds } } });
-      await prisma.brandDecision.deleteMany({ where: { instanceId: { in: instanceIds } } });
       await prisma.paymentInfo.deleteMany({ where: { instanceId: { in: instanceIds } } });
       await prisma.executionInstance.deleteMany({ where: { id: { in: instanceIds } } });
     }

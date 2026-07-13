@@ -140,8 +140,8 @@ export async function listDueInstances(
 // OCC commit and the follow-on enqueue can strand invisibly. These are the states
 // the reconciliation sweep re-enqueues. Deliberately EXCLUDES the legitimate
 // WAITING states (AWAITING_REPLY/FOLLOWED_UP — covered by the due poller;
-// REWARD_PENDING/PAYMENT_PENDING/AWAITING_BRAND_DECISION — parked on an external
-// reply/form/brand): re-enqueuing those would spam, not recover.
+// REWARD_PENDING/PAYMENT_PENDING — parked on an external reply/form):
+// re-enqueuing those would spam, not recover.
 const RECONCILE_STATES: InstanceState[] = [
   "ENROLLED",
   "OUTREACH_SENT",

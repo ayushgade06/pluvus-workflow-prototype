@@ -84,13 +84,13 @@ test("the reward node's own band is NOT used as a fee fallback either", () => {
   assert.equal(resolveAgreedFee([], {}, { minBudget: 150, maxBudget: 600 }), undefined);
 });
 
-test("a brand-APPROVE turn (outcome ACCEPT + rate) IS recovered as the agreed fee", () => {
-  // CRITICAL-3: the brand-decision APPROVE now emits outcome:ACCEPT + rate, so the
-  // brand-approved number flows through to the finalized-terms resolver exactly
-  // like a normal negotiation ACCEPT.
+test("a terminal ACCEPT turn (outcome ACCEPT + rate) IS recovered as the agreed fee", () => {
+  // CRITICAL-3: the final ACCEPT turn carries outcome:ACCEPT + the agreed rate, so
+  // the closing number flows through to the finalized-terms resolver even when an
+  // earlier counter proposed a different figure.
   const events = [
     turn({ outcome: "counter", round: 1, rate: 400 }),
-    turn({ outcome: "ACCEPT", rate: 425, approvedRate: 425, decision: "APPROVE" }),
+    turn({ outcome: "ACCEPT", rate: 425 }),
   ];
   assert.equal(resolveAgreedFee(events, { minBudget: 200, maxBudget: 500 }), 425);
 });
