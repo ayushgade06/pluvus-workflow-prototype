@@ -215,7 +215,13 @@ export class AgentProviderAdapter implements IAgentProvider {
   async classify(body: string): Promise<ClassifyResult> {
     try {
       const result = await this.classifier.classify({ message: body });
-      return { intent: result.intent as ClassifyResult["intent"], confidence: result.confidence };
+      return {
+        intent: result.intent as ClassifyResult["intent"],
+        confidence: result.confidence,
+        // Phase E (#5): carry the always-escalate topic reason through so reply
+        // detection can route to MANUAL_REVIEW with the specific reason.
+        ...(result.escalationReason ? { escalationReason: result.escalationReason } : {}),
+      };
     } catch (err) {
       // Degrade to UNKNOWN/0 — the low-confidence gate routes this to
       // MANUAL_REVIEW rather than stranding the instance at REPLY_RECEIVED.

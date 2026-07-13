@@ -45,11 +45,16 @@ function makeDeps() {
   const agent = {
     classify: async (_body: string, _intent?: string) => {
       calls.classify++;
-      return { intent: returnIntent as ReplyIntent, confidence: returnConfidence };
+      return {
+        intent: returnIntent as ReplyIntent,
+        confidence: returnConfidence,
+        ...(returnEscalationReason ? { escalationReason: returnEscalationReason } : {}),
+      };
     },
   } as never;
   let returnIntent = "NEGATIVE";
   let returnConfidence = 1;
+  let returnEscalationReason: string | undefined;
   const deps: ReplyDetectionDeps = {
     listMessagesByInstance: async () =>
       [{ id: "m1", instanceId: "i1", direction: "INBOUND", body: "I charge 480 dollars" } as unknown as Message],
@@ -66,6 +71,9 @@ function makeDeps() {
     },
     setConfidence: (c: number) => {
       returnConfidence = c;
+    },
+    setEscalationReason: (r: string | undefined) => {
+      returnEscalationReason = r;
     },
   };
 }
@@ -125,4 +133,31 @@ test("A1/A2: low-confidence classification (below threshold) also routes to MANU
 
   assert.equal(result.nextState, "MANUAL_REVIEW");
   assert.equal((result.eventPayload as Record<string, unknown>)["reason"], "low_confidence_reply");
+});
+
+test("Phase E: an always-escalate topic routes to MANUAL_REVIEW with the topic reason, regardless of a high-confidence intent", async () => {
+  const { calls, deps, agent, setIntent, setConfidence, setEscalationReason } = makeDeps();
+  // A confident POSITIVE that WOULD normally advance to NEGOTIATING — but the
+  // agent's topic gate flagged a legal/contract topic, so it must escalate.
+  setIntent("POSITIVE");
+  setConfidence(0.98);
+  setEscalationReason("legal_or_contract");
+  const result = await executeReplyDetection(ctx(0), fakeEmail, agent, deps);
+
+  assert.equal(calls.classify, 1, "the reply is classified first");
+  assert.equal(result.nextState, "MANUAL_REVIEW", "topic escalation overrides the engaged POSITIVE routing");
+  assert.equal(result.eventType, "MANUAL_REVIEW_FLAGGED");
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["reason"], "legal_or_contract");
+  assert.equal(payload["alwaysEscalateTopic"], true);
+});
+
+test("Phase E: no escalationReason → normal routing (a confident POSITIVE still negotiates)", async () => {
+  const { deps, agent, setIntent, setConfidence, setEscalationReason } = makeDeps();
+  setIntent("POSITIVE");
+  setConfidence(0.98);
+  setEscalationReason(undefined);
+  const result = await executeReplyDetection(ctx(0), fakeEmail, agent, deps);
+
+  assert.equal(result.nextState, "NEGOTIATING", "no topic → unchanged behavior");
 });

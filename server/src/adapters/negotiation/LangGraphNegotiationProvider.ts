@@ -68,6 +68,12 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
     if (typeof data["creatorRequestedRate"] === "number" && Number.isFinite(data["creatorRequestedRate"])) {
       response.creatorRequestedRate = data["creatorRequestedRate"];
     }
+    // Phase E (#5): carry the always-escalate topic reason across the seam (this
+    // adapter reconstructs the response field-by-field, so an uncopied field is
+    // silently dropped before the executor's escalate path ever sees it).
+    if (typeof data["escalationReason"] === "string" && data["escalationReason"]) {
+      response.escalationReason = data["escalationReason"];
+    }
     return response;
   }
 

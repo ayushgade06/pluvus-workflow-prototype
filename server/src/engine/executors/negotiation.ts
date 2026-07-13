@@ -266,17 +266,22 @@ async function sendCloseEmail(
 // surfaced in the Manual Queue for a human to take over out-of-band. No magic
 // links, no brand-decision round-trip, no auto-resume.
 //
-// The `escalated` reason code is preserved so the existing REASON_LABELS +
-// Manual Queue render this correctly. `creatorRate` is recorded on the audit
-// payload only (there is no brand APPROVE to turn it into a deal rate anymore).
+// The reason defaults to `escalated` (preserved so the existing REASON_LABELS +
+// Manual Queue render it), but a Phase E always-escalate topic (legal/dispute/
+// pricing-exception/undefined-terms/usage-rights) overrides it with the specific
+// topic reason so the Manual Queue shows WHY. `creatorRate` is recorded on the
+// audit payload only (there is no brand APPROVE to turn it into a deal rate).
 function escalateOverCeiling(args: {
   round: number;
   message: string;
   /** MED-N3: the /negotiate LLM's validated extraction of the creator's ask,
    *  for the audit payload / Manual Queue context only. */
   creatorRate: number | undefined;
+  /** Phase E (#5): the always-escalate topic reason, when this escalate was
+   *  driven by a topic rather than an over-ceiling ask. Overrides "escalated". */
+  escalationReason?: string | undefined;
 }): NodeResult {
-  const { round, message, creatorRate } = args;
+  const { round, message, creatorRate, escalationReason } = args;
   return {
     nextState: "MANUAL_REVIEW",
     nextNodeId: null,
@@ -284,9 +289,10 @@ function escalateOverCeiling(args: {
     eventType: "NEGOTIATION_TURN",
     eventPayload: {
       outcome: "ESCALATE",
-      reason: "escalated",
+      reason: escalationReason ?? "escalated",
       round,
       message,
+      ...(escalationReason ? { alwaysEscalateTopic: true } : {}),
       ...(creatorRate !== undefined ? { creatorRate } : {}),
     },
   };
@@ -388,7 +394,7 @@ export async function executeNegotiation(
   // feeds the MONEY path (context.creatorRate on a brand decision, which a brand
   // APPROVE records as the deal rate). The regex remains a fallback for copy
   // acknowledgment and guard allowlisting only.
-  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate } =
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason } =
     await agent.negotiate(instance.negotiationRound, config, creatorReply, priorContext);
 
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
@@ -610,17 +616,18 @@ export async function executeNegotiation(
     }
 
     case "escalate": {
-      // V1 (#14): the agent escalated because the creator's ask is above the
-      // internal ceiling (or the rate was unreadable). Escalation is a clean
-      // one-way handoff — route to MANUAL_REVIEW (terminal). runtime emails the
-      // brand an FYI and the conversation surfaces in the Manual Queue; a human
-      // takes over out-of-band. No brand-decision round-trip, no auto-resume.
-      // MED-N3: the creator's ask recorded for Manual Queue context is the
-      // model's validated extraction, never the regex.
+      // V1 (#14): the agent escalated — either because the creator's ask is above
+      // the internal ceiling / unreadable (reason "escalated"), OR because a
+      // Phase E always-escalate topic fired (reason = the topic, threaded here).
+      // Either way escalation is a clean one-way handoff — route to MANUAL_REVIEW
+      // (terminal). runtime emails the brand an FYI and the conversation surfaces
+      // in the Manual Queue; a human takes over out-of-band. MED-N3: the creator's
+      // ask recorded for Manual Queue context is the model's validated extraction.
       return escalateOverCeiling({
         round: instance.negotiationRound,
         message,
         creatorRate: creatorRequestedRate,
+        escalationReason,
       });
     }
 

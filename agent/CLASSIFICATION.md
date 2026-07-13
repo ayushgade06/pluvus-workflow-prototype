@@ -48,18 +48,36 @@ and routes the instance accordingly.
 │    1. sanitize_creator_text()      (normalize + bound)                 │
 │    2. looks_like_opt_out()  → force OPT_OUT      (compliance)          │
 │    3. looks_like_injection()→ force UNKNOWN      (security)            │
+│    3.4 detect_escalation_topic() → UNKNOWN + escalationReason          │
+│        (Phase E — always-escalate topics, regardless of confidence)   │
 │    4. mentions_rate()       → force POSITIVE     (don't kill a deal)   │
 │    5. looks_like_question() → force QUESTION     (engaged-but-asking)  │
 │    6. _langgraph_classify() → LLM + schema validation                 │
 │       └─ low-confidence (<0.50) → force UNKNOWN                        │
 └──────────────────────────────────────────────────────────────────────┘
                   │
-                  ▼  { intent, confidence, reasoning }
+                  ▼  { intent, confidence, reasoning, escalationReason }
         back to executeReplyDetection() → state transition
 ```
 
 The deterministic gates (steps 2–5) run **in code, before the model**. They are
 the real guarantee; the LLM is only consulted for the genuinely ambiguous middle.
+
+**Phase E always-escalate topic gate (`app/topic_gate.py`, step 3.4).** Certain
+topics must ALWAYS go to a human regardless of the model's confidence — the agent
+may acknowledge but must not decide or commit (founder #4/#5/#9/#11): legal /
+contract changes, disputes / hostile tone / payment complaints, pricing
+exceptions (custom fee structures, bonuses, guarantees), undefined commercial
+terms, and commitment-bearing commercial asks (usage rights, exclusivity,
+licensing). A deterministic keyword scan (`detect_escalation_topic`) forces
+`intent=UNKNOWN, confidence=0.0` and sets `escalationReason` to the topic code,
+which the server records as the Manual Queue reason. It runs BEFORE the "engaged"
+rate/question gates, so a reply that both names a rate AND demands, e.g.,
+perpetual usage rights still escalates. **Q3 per-topic split:** benign payment
+*timing* asks ("when do I get paid?") are policy `defer` in `TOPIC_POLICY` — they
+do NOT escalate and flow to the normal path, where the copy answers/defers them.
+The same gate runs in `/negotiate` (`_langgraph_negotiate`) for mid-negotiation
+replies that skip `/classify`, forcing `action=ESCALATE` + `escalationReason`.
 
 ---
 

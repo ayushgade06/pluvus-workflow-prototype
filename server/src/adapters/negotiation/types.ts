@@ -80,6 +80,10 @@ export interface NegotiationResponse {
    *  substring-validated agent-side (digits must appear in the reply; ranges
    *  rejected). Feeds the engine's money path; absent when none was named. */
   creatorRequestedRate?: number;
+  /** Phase E (#5): when an ESCALATE was driven by an always-escalate topic, the
+   *  topic reason code (e.g. legal_or_contract). Threaded to the executor so the
+   *  MANUAL_REVIEW carries the specific reason. Absent for a normal escalate. */
+  escalationReason?: string;
 }
 
 // ---------------------------------------------------------------------------

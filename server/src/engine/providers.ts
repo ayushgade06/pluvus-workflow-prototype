@@ -359,6 +359,7 @@ export function mapNegotiationResponse(
     creatorQuestions?: string[];
     pushedFixedTerms?: string[];
     creatorRequestedRate?: number;
+    escalationReason?: string;
   },
   round: number,
 ): NegotiateResult {
@@ -413,6 +414,9 @@ export function mapNegotiationResponse(
         outcome: "escalate",
         message: resp.reasoning ?? "Escalated for human review.",
         ...comprehension,
+        // Phase E (#5): carry the always-escalate topic reason so the executor
+        // records the specific reason on MANUAL_REVIEW.
+        ...(resp.escalationReason ? { escalationReason: resp.escalationReason } : {}),
       };
     default:
       // Defensive: an unknown action escalates to a human rather than guessing.

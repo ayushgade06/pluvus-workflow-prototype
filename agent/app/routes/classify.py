@@ -26,6 +26,7 @@ from app.injection import (
 )
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
+from app.topic_gate import detect_escalation_topic
 from app.structured import StructuredOutputError, invoke_structured
 from app.telemetry import set_active_prompt_version
 
@@ -54,6 +55,11 @@ class ClassifyResponse(BaseModel):
     intent: ReplyIntent
     confidence: float
     reasoning: str | None = None
+    # Phase E (#5): an always-escalate topic reason code (see app.topic_gate /
+    # TOPIC_POLICY). When set, the reply must route to MANUAL_REVIEW REGARDLESS of
+    # intent/confidence, and the server uses this as the escalation reason for the
+    # Manual Queue. None on the normal path.
+    escalationReason: str | None = None
 
 
 class _ClassifyLLMOutput(BaseModel):
@@ -211,6 +217,25 @@ def classify_message(message: str) -> ClassifyResponse:
             intent="UNKNOWN",
             confidence=0.0,
             reasoning="possible prompt-injection detected; routed to manual review",
+        )
+
+    # 3.4 — always-escalate topic gate (Phase E / #5). Certain topics ALWAYS go to
+    # a human regardless of confidence: legal/contract, disputes/hostile tone,
+    # pricing exceptions, undefined commercial terms, and commitment-bearing
+    # commercial asks (usage rights / exclusivity / licensing). This runs BEFORE
+    # the "engaged" rate/question gates below so a reply that both names a rate AND
+    # demands, e.g., perpetual usage rights still escalates rather than being
+    # auto-routed to negotiation. Deterministic → not model-suppressible. Q3: a
+    # benign payment-timing ask is NOT caught here (policy "defer") so it flows
+    # normally and the honest-defer copy handles it. The escalationReason threads
+    # to the server as the Manual Queue reason.
+    topic = detect_escalation_topic(gated)
+    if topic is not None:
+        return ClassifyResponse(
+            intent="UNKNOWN",
+            confidence=0.0,
+            reasoning=f"always-escalate topic ({topic}); routed to a human regardless of confidence",
+            escalationReason=topic,
         )
 
     # 3.5 — rate statement → FORCE POSITIVE. A creator stating a price ("I charge

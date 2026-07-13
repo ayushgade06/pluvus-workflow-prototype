@@ -48,6 +48,12 @@ const REASON_LABELS: Record<string, string> = {
   agent_unavailable: "AI agent unavailable (degraded mode)",
   max_rounds_no_agreement: "Negotiation closed — no agreement within the round limit",
   missing_brand_name: "Waiting on the brand name to use in emails",
+  // Phase E (#5): always-escalate topics (routed regardless of confidence).
+  legal_or_contract: "Legal / contract change — needs a human",
+  dispute_or_hostile: "Dispute, payment complaint, or hostile message",
+  pricing_exception: "Custom fee structure / bonus / guarantee ask",
+  undefined_terms: "Undefined campaign term — needs a human to clarify",
+  usage_rights_or_licensing: "Usage rights / exclusivity / licensing ask",
 };
 
 function reasonLabel(reason: string): string {
@@ -67,7 +73,14 @@ function deriveEscalation(events: Event[]): { reason: string; escalatedAt: strin
     const e = events[i]!;
     const p = asRecord(e.payload);
     if (e.type === "MANUAL_REVIEW_FLAGGED") {
-      return { reason: "low_confidence_reply", escalatedAt: e.occurredAt.toISOString() };
+      // An explicit payload.reason wins (Phase E always-escalate topics, L4
+      // missing_brand_name, etc.); only a reason-less flag defaults to the
+      // original reply-detection case (low_confidence_reply). Mirrors
+      // runtime.escalationReason so the dashboard + brand FYI agree.
+      return {
+        reason: payloadString(p, "reason") ?? "low_confidence_reply",
+        escalatedAt: e.occurredAt.toISOString(),
+      };
     }
     if (e.type === "NEGOTIATION_TURN") {
       const outcome = payloadString(p, "outcome");

@@ -48,6 +48,12 @@ export class LangGraphClassificationProvider implements ClassificationProvider {
     if (typeof data["reasoning"] === "string") {
       response.reasoning = data["reasoning"];
     }
+    // Phase E (#5): carry the always-escalate topic reason across the seam. This
+    // adapter reconstructs the response field-by-field, so an uncopied field is
+    // silently dropped before the executor ever sees it.
+    if (typeof data["escalationReason"] === "string" && data["escalationReason"]) {
+      response.escalationReason = data["escalationReason"];
+    }
     return response;
   }
 }

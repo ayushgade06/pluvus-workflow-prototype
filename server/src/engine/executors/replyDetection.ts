@@ -129,7 +129,32 @@ export async function executeReplyDetection(
   // signature and falls back to the raw body if it would over-cut. The raw body
   // remains persisted on the Message row for audit. (replyText is computed
   // above, before the opt-out gate + short-circuit.)
-  let { intent, confidence } = await agent.classify(replyText);
+  let { intent, confidence, escalationReason } = await agent.classify(replyText);
+
+  // Phase E (#5): an always-escalate topic (legal/contract, dispute/hostile,
+  // pricing exception, undefined commercial terms, usage rights/exclusivity/
+  // licensing) routes to MANUAL_REVIEW REGARDLESS of intent/confidence — the
+  // agent may acknowledge but must never decide/commit on these. The reason code
+  // is the agent's topic gate output (deterministic; not model-suppressible). We
+  // persist the classified intent for audit, then hand off to a human with the
+  // specific topic reason for the Manual Queue. This wins over the "engaged"
+  // POSITIVE/QUESTION routing below.
+  if (escalationReason) {
+    await deps.updateMessageClassification(latestInbound.id, intent, confidence);
+    return {
+      nextState: "MANUAL_REVIEW",
+      nextNodeId: null,
+      completedAt: new Date(),
+      eventType: "MANUAL_REVIEW_FLAGGED",
+      eventPayload: {
+        intent,
+        confidence,
+        messageId: latestInbound.id,
+        reason: escalationReason,
+        alwaysEscalateTopic: true,
+      },
+    };
+  }
 
   // Enforce low-confidence threshold: if the classifier is not confident
   // enough, override to UNKNOWN so the reply routes to MANUAL_REVIEW.

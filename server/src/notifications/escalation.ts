@@ -46,6 +46,18 @@ const REASON_LABELS: Record<string, string> = {
     "the AI agent was unavailable (degraded mode), so this was routed to a human",
   missing_brand_name:
     "a creator-facing email had no resolvable brand name to sign with (config needs fixing)",
+  // Phase E (#5): always-escalate topics — a human must handle these regardless
+  // of the AI's confidence (the agent may acknowledge but must not commit).
+  legal_or_contract:
+    "the creator raised a legal or contract change that needs a human to handle",
+  dispute_or_hostile:
+    "the creator raised a dispute, payment complaint, or hostile message",
+  pricing_exception:
+    "the creator asked for a custom fee structure, bonus, or guarantee outside the standard deal",
+  undefined_terms:
+    "the creator asked about a campaign term that isn't defined and needs a human to clarify",
+  usage_rights_or_licensing:
+    "the creator raised usage rights, exclusivity, or licensing — a commitment only a human can make",
 };
 
 function reasonLabel(reason: string): string {

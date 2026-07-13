@@ -54,6 +54,7 @@ from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.structured import invoke_structured, StructuredOutputError
 from app.telemetry import set_active_prompt_version
+from app.topic_gate import detect_escalation_topic
 
 logger = logging.getLogger("agent.negotiate")
 
@@ -211,6 +212,12 @@ class NegotiateResponse(BaseModel):
     proposedTerms: dict[str, Any] | None = None
     responseDraft: str | None = None
     reasoning: str | None = None
+    # Phase E (#5): when an ESCALATE is driven by an always-escalate topic
+    # (legal/dispute/pricing-exception/undefined-terms/usage-rights), this carries
+    # the topic reason code (see app.topic_gate) so the server uses it as the
+    # Manual Queue escalation reason instead of the generic "escalated". None for
+    # a normal over-ceiling / unreadable-rate escalate.
+    escalationReason: str | None = None
     # Comprehension threaded to the executor → /draft (spec §5.3). Both negotiate
     # paths copy these off their internal _Negotiate*LLMOutput. Default [] keeps
     # the wire response backward-compatible; rules mode may leave them empty.
@@ -1731,6 +1738,29 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
         return NegotiateResponse(
             action="ESCALATE",
             reasoning="possible prompt-injection detected in creator reply; routed to human review",
+        )
+
+    # ── Always-escalate topic gate (Phase E / #5) ─────────────────────────
+    # A round >= 1 reply skips /classify and lands here, so /negotiate must run
+    # its own topic gate: certain categories (legal/contract, dispute/hostile,
+    # pricing exceptions, undefined commercial terms, usage rights/exclusivity/
+    # licensing) ALWAYS go to a human regardless of the model's judgment. The
+    # agent must not decide or commit on these mid-negotiation. Deterministic →
+    # not model-suppressible; escalate BEFORE any model call. Q3: a benign
+    # payment-timing ask is policy "defer" (not caught here) so the negotiation
+    # continues and the copy answers/defers honestly. The topic reason threads to
+    # the server as the Manual Queue escalation reason.
+    _topic = detect_escalation_topic(normalize_untrusted_text(req.creatorReply))
+    if _topic is not None:
+        logger.info(
+            "negotiate: always-escalate topic (%s) in creator reply (round=%s); escalating without a model call",
+            _topic,
+            req.round,
+        )
+        return NegotiateResponse(
+            action="ESCALATE",
+            reasoning=f"always-escalate topic ({_topic}); routed to a human regardless of confidence",
+            escalationReason=_topic,
         )
 
     floor_rate = req.campaignConstraints.termFloor.rate or 0

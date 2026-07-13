@@ -63,6 +63,12 @@ export interface EmailDraft {
 export interface ClassifyResult {
   intent: ReplyIntent;
   confidence: number;
+  /**
+   * Phase E (#5): an always-escalate topic reason code from the agent's topic
+   * gate. When present, reply detection routes to MANUAL_REVIEW regardless of
+   * intent/confidence, recording this as the escalation reason.
+   */
+  escalationReason?: string;
 }
 
 // NegotiateResult — returned by MockAgentProvider.negotiate()
@@ -100,6 +106,13 @@ export interface NegotiateResult {
    * creator named no single figure.
    */
   creatorRequestedRate?: number;
+  /**
+   * Phase E (#5): when outcome is "escalate" and it was driven by an
+   * always-escalate topic, the topic reason code (e.g. legal_or_contract). The
+   * executor uses it as the MANUAL_REVIEW reason instead of the generic
+   * "escalated". Undefined for a normal over-ceiling / unreadable-rate escalate.
+   */
+  escalationReason?: string;
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and
