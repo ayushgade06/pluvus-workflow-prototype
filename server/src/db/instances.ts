@@ -1,52 +1,87 @@
-import type { ExecutionInstance, InstanceState, Prisma } from "@prisma/client";
-import { prisma } from "./client.js";
-import { Prisma as PrismaLib } from "@prisma/client";
+import { and, asc, count, eq, inArray, lt, lte } from "drizzle-orm";
+import { db, type Db } from "./drizzle.js";
+import {
+  executionInstances,
+  type ExecutionInstance,
+  type ExecutionInstanceInsert,
+  type InstanceState,
+} from "./schema.js";
+
+/** The mutable state/scheduling fields a workflow step may patch. */
+export type InstancePatch = Partial<
+  Pick<
+    ExecutionInstanceInsert,
+    | "currentState"
+    | "currentNodeId"
+    | "followUpCount"
+    | "negotiationRound"
+    | "dueAt"
+    | "completedAt"
+  >
+>;
 
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
 
 export async function findInstanceById(id: string): Promise<ExecutionInstance | null> {
-  return prisma.executionInstance.findUnique({ where: { id } });
+  const rows = await db
+    .select()
+    .from(executionInstances)
+    .where(eq(executionInstances.id, id))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function findInstanceByCreatorAndVersion(
   creatorId: string,
   workflowVersionId: string,
 ): Promise<ExecutionInstance | null> {
-  return prisma.executionInstance.findUnique({
-    where: { workflowVersionId_creatorId: { workflowVersionId, creatorId } },
-  });
+  const rows = await db
+    .select()
+    .from(executionInstances)
+    .where(
+      and(
+        eq(executionInstances.workflowVersionId, workflowVersionId),
+        eq(executionInstances.creatorId, creatorId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function listInstancesByVersion(
   workflowVersionId: string,
 ): Promise<ExecutionInstance[]> {
-  return prisma.executionInstance.findMany({
-    where: { workflowVersionId },
-    orderBy: { enrolledAt: "asc" },
-  });
+  return db
+    .select()
+    .from(executionInstances)
+    .where(eq(executionInstances.workflowVersionId, workflowVersionId))
+    .orderBy(asc(executionInstances.enrolledAt));
 }
 
 export async function listInstancesByState(
   state: InstanceState,
 ): Promise<ExecutionInstance[]> {
-  return prisma.executionInstance.findMany({
-    where: { currentState: state },
-    orderBy: { updatedAt: "asc" },
-  });
+  return db
+    .select()
+    .from(executionInstances)
+    .where(eq(executionInstances.currentState, state))
+    .orderBy(asc(executionInstances.updatedAt));
 }
 
 /** Returns per-node creator counts for the pipeline visualization. */
 export async function countInstancesByNode(
   workflowVersionId: string,
 ): Promise<Array<{ currentNodeId: string | null; _count: number }>> {
-  const rows = await prisma.executionInstance.groupBy({
-    by: ["currentNodeId"],
-    where: { workflowVersionId },
-    _count: true,
-  });
-  return rows.map((r) => ({ currentNodeId: r.currentNodeId, _count: r._count }));
+  return db
+    .select({
+      currentNodeId: executionInstances.currentNodeId,
+      _count: count(),
+    })
+    .from(executionInstances)
+    .where(eq(executionInstances.workflowVersionId, workflowVersionId))
+    .groupBy(executionInstances.currentNodeId);
 }
 
 // ---------------------------------------------------------------------------
@@ -54,62 +89,57 @@ export async function countInstancesByNode(
 // ---------------------------------------------------------------------------
 
 export async function createInstance(
-  data: Prisma.ExecutionInstanceCreateInput,
+  data: ExecutionInstanceInsert,
 ): Promise<ExecutionInstance> {
-  return prisma.executionInstance.create({ data });
+  const rows = await db.insert(executionInstances).values(data).returning();
+  return rows[0]!;
 }
 
 export async function updateInstanceState(
   id: string,
-  patch: Pick<
-    Prisma.ExecutionInstanceUpdateInput,
-    | "currentState"
-    | "currentNodeId"
-    | "followUpCount"
-    | "negotiationRound"
-    | "dueAt"
-    | "completedAt"
-  >,
+  patch: InstancePatch,
 ): Promise<ExecutionInstance> {
-  return prisma.executionInstance.update({ where: { id }, data: patch });
+  const rows = await db
+    .update(executionInstances)
+    .set(patch)
+    .where(eq(executionInstances.id, id))
+    .returning();
+  const updated = rows[0];
+  if (!updated) {
+    // Prisma threw P2025 here; callers treat a missing instance as fatal.
+    throw new Error(`ExecutionInstance ${id} not found`);
+  }
+  return updated;
 }
 
 /**
  * Optimistic concurrency control variant of updateInstanceState.
  *
- * Adds `currentState = expectedCurrentState` to the WHERE clause.
- * If the instance has already moved to a different state (concurrent worker),
- * Prisma throws P2025 (record not found) which the caller maps to null.
+ * Adds `currentState = expectedCurrentState` to the WHERE clause. If the
+ * instance has already moved to a different state (concurrent worker), the
+ * UPDATE matches 0 rows and this returns null — it never throws for the
+ * lose-the-race case. Callers branch on the null.
  *
- * Returns the updated instance, or null if the state no longer matches.
+ * `client` is injectable so the OCC race test can run against an embedded
+ * Postgres (PGlite) with the real migration DDL applied.
  */
 export async function updateInstanceStateConditional(
   id: string,
   expectedCurrentState: InstanceState,
-  patch: Pick<
-    Prisma.ExecutionInstanceUpdateInput,
-    | "currentState"
-    | "currentNodeId"
-    | "followUpCount"
-    | "negotiationRound"
-    | "dueAt"
-    | "completedAt"
-  >,
+  patch: InstancePatch,
+  client: Db = db,
 ): Promise<ExecutionInstance | null> {
-  try {
-    return await prisma.executionInstance.update({
-      where: { id, currentState: expectedCurrentState },
-      data: patch,
-    });
-  } catch (err) {
-    if (
-      err instanceof PrismaLib.PrismaClientKnownRequestError &&
-      err.code === "P2025"
-    ) {
-      return null; // state changed underneath us — OCC conflict
-    }
-    throw err;
-  }
+  const rows = await client
+    .update(executionInstances)
+    .set(patch)
+    .where(
+      and(
+        eq(executionInstances.id, id),
+        eq(executionInstances.currentState, expectedCurrentState),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
 }
 
 // HARD-R1: cap how many instances a single poll pulls, so a large backlog is
@@ -126,14 +156,17 @@ const POLL_BATCH_LIMIT = 200;
 export async function listDueInstances(
   now: Date = new Date(),
 ): Promise<ExecutionInstance[]> {
-  return prisma.executionInstance.findMany({
-    where: {
-      dueAt: { lte: now },
-      currentState: { in: ["AWAITING_REPLY", "FOLLOWED_UP"] },
-    },
-    orderBy: { dueAt: "asc" },
-    take: POLL_BATCH_LIMIT,
-  });
+  return db
+    .select()
+    .from(executionInstances)
+    .where(
+      and(
+        lte(executionInstances.dueAt, now),
+        inArray(executionInstances.currentState, ["AWAITING_REPLY", "FOLLOWED_UP"]),
+      ),
+    )
+    .orderBy(asc(executionInstances.dueAt))
+    .limit(POLL_BATCH_LIMIT);
 }
 
 // HARD-R1: the TRANSIENT non-terminal states — ones a crash/Redis blip between an
@@ -162,12 +195,15 @@ const RECONCILE_STATES: InstanceState[] = [
 export async function listStuckInstances(
   staleBefore: Date,
 ): Promise<ExecutionInstance[]> {
-  return prisma.executionInstance.findMany({
-    where: {
-      currentState: { in: RECONCILE_STATES },
-      updatedAt: { lt: staleBefore },
-    },
-    orderBy: { updatedAt: "asc" },
-    take: POLL_BATCH_LIMIT,
-  });
+  return db
+    .select()
+    .from(executionInstances)
+    .where(
+      and(
+        inArray(executionInstances.currentState, RECONCILE_STATES),
+        lt(executionInstances.updatedAt, staleBefore),
+      ),
+    )
+    .orderBy(asc(executionInstances.updatedAt))
+    .limit(POLL_BATCH_LIMIT);
 }
