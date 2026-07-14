@@ -6,7 +6,7 @@ import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { findInstanceById, findMessageByExternalId, markMessageProcessed } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
-import type { ReplyIntent } from "../db/schema.js";
+import { replyIntentEnum, type ReplyIntent } from "../db/schema.js";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
 
 // ---------------------------------------------------------------------------
@@ -25,10 +25,19 @@ import { acquireLock, releaseLock } from "../scheduler/lock.js";
 // mockIntent is absent (real Nylas webhook path), the agentProvider routes
 // through the ClassificationProvider abstraction.
 
-const VALID_INTENTS: ReplyIntent[] = ["POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN"];
+// H2: DERIVE the allowlist from the single source of truth (the Drizzle enum)
+// instead of hand-maintaining a parallel list. A hardcoded copy here drifted from
+// the enum — it omitted DEFERRED — so a harness/manual-queue injection of
+// mockIntent:"DEFERRED" silently resolved to undefined (→ real-classify path)
+// instead of the deferred route. This is the same drift class that once degraded
+// every real DEFERRED reply to MANUAL_REVIEW (fixed in 65897d1). Deriving here
+// makes it structurally impossible: a new enum member is accepted automatically.
+// Exported so the H2 drift-guard test can assert it equals the enum (see
+// adapters/classification/LangGraphClassificationProvider.intents.test.ts).
+export const VALID_INTENTS: readonly ReplyIntent[] = replyIntentEnum.enumValues;
 
 function resolveIntent(raw?: string): ReplyIntent | undefined {
-  if (raw && (VALID_INTENTS as string[]).includes(raw)) {
+  if (raw && (VALID_INTENTS as readonly string[]).includes(raw)) {
     return raw as ReplyIntent;
   }
   return undefined;

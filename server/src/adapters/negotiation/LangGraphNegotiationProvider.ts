@@ -40,7 +40,20 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
 
     const response: NegotiationResponse = { action: data["action"] };
     if (data["proposedTerms"] && typeof data["proposedTerms"] === "object") {
-      response.proposedTerms = data["proposedTerms"] as NonNullable<NegotiationResponse["proposedTerms"]>;
+      const terms = data["proposedTerms"] as NonNullable<NegotiationResponse["proposedTerms"]>;
+      // H7: `rate` is a money value crossing an HTTP seam — validate it is a
+      // FINITE number before it can reach the executor's money path. A string
+      // ("480"), NaN, or Infinity from a misbehaving agent would otherwise pass
+      // through untyped (`as`-cast) and downstream `typeof rate === "number"`
+      // checks in mapNegotiationResponse treat NaN/Infinity as valid numbers.
+      // Drop a non-finite/non-number rate so the turn is treated as "no rate
+      // proposed" rather than acting on garbage. Non-rate fields are preserved.
+      if ("rate" in terms && !(typeof terms.rate === "number" && Number.isFinite(terms.rate))) {
+        const { rate: _dropped, ...rest } = terms;
+        response.proposedTerms = rest;
+      } else {
+        response.proposedTerms = terms;
+      }
     }
     if (typeof data["responseDraft"] === "string") {
       response.responseDraft = data["responseDraft"];

@@ -108,6 +108,64 @@ test("negotiate() drops a non-string-array creatorQuestions rather than passing 
   }
 });
 
+// ---------------------------------------------------------------------------
+// H7 — proposedTerms.rate is a MONEY value crossing the seam. A non-finite or
+// non-number rate must be DROPPED (treated as "no rate proposed") rather than
+// cast through to the executor's money path.
+// ---------------------------------------------------------------------------
+
+test("H7: a string proposedTerms.rate is dropped (not passed as money)", async () => {
+  const restore = stubFetch({
+    action: "COUNTER",
+    proposedTerms: { rate: "480", deliverables: ["3 Reels"] }, // rate is a string
+  });
+  try {
+    const provider = new LangGraphNegotiationProvider("http://agent.test");
+    const resp = await provider.negotiate(baseReq);
+    assert.equal(resp.proposedTerms?.rate, undefined, "the string rate is dropped");
+    // Non-rate fields survive — we drop only the bad rate, not the whole object.
+    assert.deepEqual(resp.proposedTerms?.deliverables, ["3 Reels"]);
+  } finally {
+    restore();
+  }
+});
+
+test("H7: a NaN / Infinity proposedTerms.rate is dropped", async () => {
+  // JSON has no NaN/Infinity literal, so JSON.stringify can't carry these. The
+  // client reads the body via res.json(), so stub a Response whose json() returns
+  // the actual non-finite number directly — exactly the shape a body with a
+  // non-finite rate would deserialize to.
+  for (const value of [NaN, Infinity, -Infinity]) {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ action: "COUNTER", proposedTerms: { rate: value } }),
+        text: async () => "",
+      }) as unknown as Response) as typeof fetch;
+    try {
+      const provider = new LangGraphNegotiationProvider("http://agent.test");
+      const resp = await provider.negotiate(baseReq);
+      assert.equal(resp.proposedTerms?.rate, undefined, `${value} rate must be dropped`);
+    } finally {
+      globalThis.fetch = original;
+      resetAgentBreaker();
+    }
+  }
+});
+
+test("H7: a valid finite proposedTerms.rate is preserved unchanged", async () => {
+  const restore = stubFetch({ action: "COUNTER", proposedTerms: { rate: 420 } });
+  try {
+    const provider = new LangGraphNegotiationProvider("http://agent.test");
+    const resp = await provider.negotiate(baseReq);
+    assert.equal(resp.proposedTerms?.rate, 420, "a good rate is untouched");
+  } finally {
+    restore();
+  }
+});
+
 test("draft() returns subject+body and threads the full request through", async () => {
   let capturedBody: unknown;
   const original = globalThis.fetch;

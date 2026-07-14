@@ -1,6 +1,7 @@
 import type { ClassificationProvider } from "./ClassificationProvider.js";
 import type { ClassificationRequest, ClassificationResponse, ReplyIntentValue } from "./types.js";
 import { agentBaseUrl, agentPostJson, classifyTimeoutMs } from "../agentServiceClient.js";
+import { replyIntentEnum } from "../../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph classification provider
@@ -10,15 +11,18 @@ import { agentBaseUrl, agentPostJson, classifyTimeoutMs } from "../agentServiceC
 //
 // Base URL, auth header (FIX-12), and timeout are handled by agentPostJson.
 
-// Must stay in sync with ReplyIntentValue (types.ts) / the Prisma ReplyIntent
-// enum / the agent's classify intents. A missing member here rejects an
-// otherwise-valid agent response as "malformed" and degrades it to UNKNOWN →
-// MANUAL_REVIEW. That is exactly what silently swallowed Phase D's DEFERRED:
-// the agent returned DEFERRED@0.95 but this allowlist (which predated Phase D)
-// didn't list it, so every "I'll think about it" reply was mis-routed to a human.
-const VALID_INTENTS = new Set<ReplyIntentValue>([
-  "POSITIVE", "NEGATIVE", "QUESTION", "OPT_OUT", "UNKNOWN", "DEFERRED",
-]);
+// H2: DERIVED from the single source of truth — the Drizzle ReplyIntent enum —
+// rather than hand-maintained. A missing member here rejects an otherwise-valid
+// agent response as "malformed" and degrades it to UNKNOWN → MANUAL_REVIEW. That
+// is exactly what silently swallowed Phase D's DEFERRED: the agent returned
+// DEFERRED@0.95 but the old hardcoded allowlist (which predated Phase D) didn't
+// list it, so every "I'll think about it" reply was mis-routed to a human.
+// Deriving from replyIntentEnum makes that drift structurally impossible: a new
+// enum member is accepted automatically. Exported so the drift-guard test can
+// assert it equals the enum (see LangGraphClassificationProvider.intents.test.ts).
+export const VALID_INTENTS: ReadonlySet<ReplyIntentValue> = new Set<ReplyIntentValue>(
+  replyIntentEnum.enumValues as readonly ReplyIntentValue[],
+);
 
 function isValidIntent(value: unknown): value is ReplyIntentValue {
   return typeof value === "string" && VALID_INTENTS.has(value as ReplyIntentValue);

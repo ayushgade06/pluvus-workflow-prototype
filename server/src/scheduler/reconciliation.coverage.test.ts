@@ -1,0 +1,113 @@
+/**
+ * H8 — stranded-instance sweep COVERAGE (the review flagged this as unverified).
+ *
+ * The existing reconciliation.test.ts proves the sweep re-enqueues whatever the
+ * (injected) listStuckInstances hands it. What it does NOT prove is that the real
+ * selection set — RECONCILE_STATES, the WHERE clause of listStuckInstances —
+ * actually INCLUDES the two states a crash-between-commit-and-enqueue is most
+ * likely to strand mid-deal: NEGOTIATING and REPLY_RECEIVED. If either silently
+ * dropped out of that list, a stranded negotiation would sit invisible forever
+ * and no behavioral test would catch it. This file locks the selection set.
+ *
+ * Two layers:
+ *   1. Assert RECONCILE_STATES itself — NEGOTIATING + REPLY_RECEIVED are in it,
+ *      the WAITING states and every TERMINAL state are NOT.
+ *   2. Drive reconcileStuckInstances end-to-end (injected seam, no DB/Redis) for
+ *      both states and assert each is re-enqueued keyed on its own state.
+ *
+ * Run: npx tsx --test src/scheduler/reconciliation.coverage.test.ts
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import { RECONCILE_STATES } from "../db/instances.js";
+import { instanceStateEnum, type ExecutionInstance, type InstanceState } from "../db/schema.js";
+import { isTerminal } from "../engine/stateMachine.js";
+import { reconcileStuckInstances, type ReconciliationDeps } from "./reconciliation.js";
+import type { NodeExecutionJobData } from "../workers/jobs.js";
+
+// The WAITING states are deliberately excluded from the sweep (the due poller
+// covers AWAITING_REPLY/FOLLOWED_UP; REWARD_PENDING/PAYMENT_PENDING are parked on
+// an external reply/form). Re-enqueuing those would spam, not recover.
+const WAITING_STATES: InstanceState[] = [
+  "AWAITING_REPLY",
+  "FOLLOWED_UP",
+  "REWARD_PENDING",
+  "PAYMENT_PENDING",
+];
+
+test("H8: RECONCILE_STATES includes NEGOTIATING and REPLY_RECEIVED (the flagged pair)", () => {
+  assert.ok(
+    RECONCILE_STATES.includes("NEGOTIATING"),
+    "a negotiation stranded between commit and enqueue must be recoverable",
+  );
+  assert.ok(
+    RECONCILE_STATES.includes("REPLY_RECEIVED"),
+    "a reply-received instance stranded (CRITICAL-6 path) must be recoverable",
+  );
+});
+
+test("H8: the sweep excludes every WAITING state (would spam, not recover)", () => {
+  for (const s of WAITING_STATES) {
+    assert.ok(!RECONCILE_STATES.includes(s), `${s} must NOT be swept (it is a waiting state)`);
+  }
+});
+
+test("H8: the sweep excludes every TERMINAL state (nothing to advance)", () => {
+  for (const s of instanceStateEnum.enumValues) {
+    if (isTerminal(s)) {
+      assert.ok(!RECONCILE_STATES.includes(s), `terminal ${s} must NOT be swept`);
+    }
+  }
+});
+
+test("H8: the sweep covers exactly the transient non-waiting non-terminal states", () => {
+  // Belt-and-braces: the selection set equals (all states) minus (terminal ∪
+  // waiting). If a new transient state is added and forgotten here, this fails.
+  const expected = instanceStateEnum.enumValues
+    .filter((s) => !isTerminal(s) && !WAITING_STATES.includes(s))
+    .sort();
+  assert.deepEqual([...RECONCILE_STATES].sort(), expected);
+});
+
+// ---------------------------------------------------------------------------
+// Behavioral: both flagged states actually flow through the sweep.
+// ---------------------------------------------------------------------------
+
+function inst(id: string, state: InstanceState, updatedAt: Date): ExecutionInstance {
+  return {
+    id,
+    workflowVersionId: "wv-1",
+    creatorId: `creator-${id}`,
+    currentState: state,
+    currentNodeId: "node-x",
+    followUpCount: 0,
+    negotiationRound: 0,
+    dueAt: null,
+    enrolledAt: updatedAt,
+    completedAt: null,
+    createdAt: updatedAt,
+    updatedAt,
+  } as unknown as ExecutionInstance;
+}
+
+test("H8: reconcileStuckInstances re-enqueues NEGOTIATING and REPLY_RECEIVED keyed on state", async () => {
+  const NOW = new Date("2026-07-14T12:00:00.000Z");
+  const OLD = new Date("2026-07-14T11:00:00.000Z"); // 1h ago — past the stale window
+  const enqueued: NodeExecutionJobData[] = [];
+  const deps: ReconciliationDeps = {
+    async listStuckInstances() {
+      return [inst("neg", "NEGOTIATING", OLD), inst("reply", "REPLY_RECEIVED", OLD)];
+    },
+    async enqueueNodeExecution(data) {
+      enqueued.push(data);
+    },
+  };
+
+  const count = await reconcileStuckInstances(NOW, deps);
+
+  assert.equal(count, 2, "both stranded instances are re-enqueued");
+  const byId = new Map(enqueued.map((e) => [e.instanceId, e]));
+  assert.equal(byId.get("neg")?.expectedState, "NEGOTIATING");
+  assert.equal(byId.get("reply")?.expectedState, "REPLY_RECEIVED");
+});

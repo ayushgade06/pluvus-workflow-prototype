@@ -40,6 +40,8 @@ import {
 import {
   maxRoundsReject,
   escalateOverCeiling,
+  escalateNoCeiling,
+  executeNegotiation,
 } from "./executors/negotiation.js";
 import { assertTransition, InvalidTransitionError, isTerminal } from "./stateMachine.js";
 
@@ -205,6 +207,91 @@ test("trap: agent ESCALATE (over-ceiling) → MANUAL_REVIEW, reason 'escalated' 
   assert.equal(payload["creatorRate"], 5000, "the over-ceiling ask is recorded for the queue");
   // Not a topic escalation, so no alwaysEscalateTopic marker.
   assert.equal(payload["alwaysEscalateTopic"], undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Trap 3b (H1) — Uncapped campaign (floor, no ceiling) → MANUAL_REVIEW, and the
+// agent is NEVER consulted. Without a ceiling the over-ceiling ACCEPT guard is a
+// no-op, so negotiating would leave the prompt as the only cap. The guard is a
+// pure-config precondition: it must fire before any agent call or DB load.
+// ---------------------------------------------------------------------------
+
+test("H1: escalateNoCeiling → MANUAL_REVIEW, reason 'no_ceiling_configured'", () => {
+  const result = escalateNoCeiling({ round: 2 });
+  assert.equal(result.nextState, "MANUAL_REVIEW", "uncapped money turn hands off to a human");
+  assert.equal(result.completedAt instanceof Date, true, "MANUAL_REVIEW is terminal");
+  assert.equal(result.nextNodeId, null);
+  const payload = result.eventPayload as Record<string, unknown>;
+  assert.equal(payload["outcome"], "ESCALATE");
+  assert.equal(payload["reason"], "no_ceiling_configured");
+  assert.equal(payload["round"], 2);
+});
+
+test("H1: executeNegotiation escalates an uncapped campaign WITHOUT calling the agent", async () => {
+  // Floor set (minBudget) but NO ceiling (maxBudget absent) → the dangerous
+  // "looks capped, isn't" case. The guard runs before loadCreatorInbounds, so no
+  // DB is touched; a spy agent proves negotiate() is never reached.
+  let negotiateCalls = 0;
+  const spyAgent = {
+    negotiate: async () => {
+      negotiateCalls++;
+      throw new Error("agent must NOT be consulted when the campaign has no ceiling");
+    },
+    draftEmail: async () => null,
+    classify: async () => ({ intent: "POSITIVE", confidence: 1 }),
+  } as never;
+
+  const ctx = {
+    instance: { id: "i1", currentState: "NEGOTIATING", negotiationRound: 1 },
+    node: {
+      id: "node-negotiation",
+      type: "NEGOTIATION",
+      order: 5,
+      config: { minBudget: 200 }, // floor only — no maxBudget/termCeiling
+    },
+    nodeGraph: [{ id: "node-negotiation", type: "NEGOTIATION", order: 5, config: { minBudget: 200 } }],
+    creator: { id: "c1", name: "Alex" },
+  } as never;
+
+  const result = await executeNegotiation(ctx, fakeEmail, spyAgent);
+
+  assert.equal(negotiateCalls, 0, "the agent was never consulted (precondition fired first)");
+  assert.equal(result.nextState, "MANUAL_REVIEW");
+  assert.equal((result.eventPayload as Record<string, unknown>)["reason"], "no_ceiling_configured");
+});
+
+test("H1: a fully-capped campaign (floor AND ceiling) does NOT trip the no-ceiling guard", async () => {
+  // Regression guard on the guard: a normal capped campaign must fall THROUGH to
+  // the agent. We prove that by letting the spy agent throw a sentinel — reaching
+  // it means the no-ceiling precondition correctly did not fire.
+  const SENTINEL = "reached-agent-as-expected";
+  const spyAgent = {
+    negotiate: async () => {
+      throw new Error(SENTINEL);
+    },
+    draftEmail: async () => null,
+    classify: async () => ({ intent: "POSITIVE", confidence: 1 }),
+  } as never;
+
+  const cfg = { minBudget: 200, maxBudget: 500 };
+  const ctx = {
+    instance: { id: "i1", currentState: "NEGOTIATING", negotiationRound: 1 },
+    node: { id: "node-negotiation", type: "NEGOTIATION", order: 5, config: cfg },
+    nodeGraph: [{ id: "node-negotiation", type: "NEGOTIATION", order: 5, config: cfg }],
+    creator: { id: "c1", name: "Alex" },
+  } as never;
+
+  // loadCreatorInbounds hits the DB; a capped campaign must get PAST the guard and
+  // reach either that load or the agent. Either way the no-ceiling path is NOT
+  // taken — assert the result is not the no_ceiling escalation.
+  await assert.rejects(
+    () => executeNegotiation(ctx, fakeEmail, spyAgent),
+    (err: Error) =>
+      // It reached the agent sentinel (capped campaign proceeded), OR it failed at
+      // the DB load (no test DB) — both prove the no-ceiling guard did NOT short it.
+      err.message.includes(SENTINEL) || /database|connect|ECONNREFUSED|relation|DATABASE_URL/i.test(err.message),
+    "a capped campaign proceeds past the no-ceiling guard",
+  );
 });
 
 // ---------------------------------------------------------------------------

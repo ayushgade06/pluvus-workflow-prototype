@@ -175,7 +175,11 @@ export async function listDueInstances(
 // WAITING states (AWAITING_REPLY/FOLLOWED_UP — covered by the due poller;
 // REWARD_PENDING/PAYMENT_PENDING — parked on an external reply/form):
 // re-enqueuing those would spam, not recover.
-const RECONCILE_STATES: InstanceState[] = [
+// Exported so the H8 reconciliation-coverage test can assert the selection set
+// directly — specifically that NEGOTIATING and REPLY_RECEIVED are recovered (the
+// review flagged sweep coverage of those two as unverified) and that the WAITING
+// states are NOT swept. The DB query below is the only consumer.
+export const RECONCILE_STATES: InstanceState[] = [
   "ENROLLED",
   "OUTREACH_SENT",
   "REPLY_RECEIVED",

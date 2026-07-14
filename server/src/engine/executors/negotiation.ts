@@ -16,6 +16,7 @@ import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
 import { extractReplyText } from "./replyText.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
+import { resolveBand } from "../band.js";
 // HARD-A2: the output-guard-blocked MANUAL_REVIEW result is the SAME shape used
 // by other executors, so it lives in one place (guardEscalation.ts) rather than
 // being duplicated inline here. Previously negotiation.ts and guardEscalation.ts
@@ -302,6 +303,35 @@ export function escalateOverCeiling(args: {
   };
 }
 
+// H1: the campaign defines a floor but no ceiling (maxBudget/termCeiling.rate is
+// null/absent), so `ceiling = +inf` and the agent's over-ceiling ACCEPT guard is
+// a NO-OP — nothing can exceed infinity, so the model's prompt would be the ONLY
+// thing standing between the creator and an unbounded agree. Rather than
+// negotiate against an infinite cap on the money path, hand the conversation to a
+// human (terminal MANUAL_REVIEW) with a reason that tells the brand exactly what
+// to fix: set a maximum budget. This is the runtime backstop for the same
+// invariant the parent enforces at campaign-publish time ("derive the band from
+// campaigns.fixedPaymentAmount, validate at creation"). Exported for the T1
+// routing test. NB: an uncapped campaign with NO floor is unconfigured anyway
+// (the band logic was already inert) — only a floor-but-no-ceiling campaign is
+// the dangerous "looks capped, isn't" case, so that is what this guards.
+export function escalateNoCeiling(args: { round: number }): NodeResult {
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
+    eventType: "NEGOTIATION_TURN",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "no_ceiling_configured",
+      round: args.round,
+      message:
+        "Negotiation cannot run: this campaign has a preferred budget but no maximum budget, " +
+        "so there is no ceiling to negotiate within. Set a maximum budget to enable auto-negotiation.",
+    },
+  };
+}
+
 export async function executeNegotiation(
   ctx: ExecutionContext,
   email: IEmailProvider,
@@ -318,6 +348,20 @@ export async function executeNegotiation(
     throw new Error(
       `NEGOTIATION expects NEGOTIATING state, got ${instance.currentState}`,
     );
+  }
+
+  // H1: a money-path campaign MUST have a ceiling. Resolve the band from the same
+  // config the agent would see; if there's a floor but no ceiling, the over-ceiling
+  // ACCEPT guard downstream is a no-op (nothing exceeds +inf) — the model's prompt
+  // would be the ONLY cap between the creator and an unbounded agree. Escalate to a
+  // human here, as a pure-config PRECONDITION (before any DB load or agent call),
+  // rather than risk it. (No floor + no ceiling = an unconfigured band; the
+  // accept/counter logic is already inert there and there's no money exposure to
+  // guard, so that case falls through unchanged.) This is the runtime backstop for
+  // the invariant the parent enforces at campaign-publish time.
+  const { floor, ceiling } = resolveBand(config);
+  if (floor !== undefined && ceiling === undefined) {
+    return escalateNoCeiling({ round: instance.negotiationRound });
   }
 
   // When a downstream node owns the post-acceptance email, the negotiation ACCEPT
@@ -730,6 +774,23 @@ export async function executeNegotiation(
           ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         },
       };
+    }
+    default: {
+      // H7: exhaustiveness backstop on a MONEY path. `outcome` is typed as the
+      // NegotiateOutcome union, so assigning it to `never` here makes tsc flag
+      // this switch if a new outcome is added without a case. At RUNTIME, though,
+      // `outcome` arrives across the agent HTTP seam: a future/garbled value that
+      // slips the adapter's validation would otherwise fall off the end of this
+      // function and return `undefined`, silently breaking the NodeResult
+      // contract. Escalate to a human instead — never guess a money state.
+      // Mirrors mapNegotiationResponse's own default arm. The `String(outcome)`
+      // read of the `never`-typed value is what keeps the exhaustiveness check
+      // live without a throwaway assignment.
+      return escalateOverCeiling({
+        round: instance.negotiationRound,
+        message: `Unrecognized negotiation outcome "${String(outcome as never)}" — routed to a human.`,
+        creatorRate: creatorRequestedRate,
+      });
     }
   }
 }

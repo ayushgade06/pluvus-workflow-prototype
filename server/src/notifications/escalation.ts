@@ -58,6 +58,8 @@ const REASON_LABELS: Record<string, string> = {
   output_guard_blocked:
     "an outbound draft was blocked by the safety guard before sending",
   escalated: "the negotiation agent escalated this conversation for human review",
+  no_ceiling_configured:
+    "this campaign has no maximum budget set, so the AI has no ceiling to negotiate within — set a maximum budget to let it auto-negotiate",
   agent_unavailable:
     "the AI agent was unavailable (degraded mode), so this was routed to a human",
   missing_brand_name:

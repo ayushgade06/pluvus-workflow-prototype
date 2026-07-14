@@ -52,6 +52,7 @@ const REASON_LABELS: Record<string, string> = {
   max_rounds_reached_on_counter: "Next counter would exceed maximum rounds",
   output_guard_blocked: "Outbound draft blocked by safety guard",
   escalated: "Escalated by the negotiation agent",
+  no_ceiling_configured: "Campaign has no maximum budget — set one to auto-negotiate",
   agent_unavailable: "AI agent unavailable (degraded mode)",
   max_rounds_no_agreement: "Negotiation closed — no agreement within the round limit",
   missing_brand_name: "Waiting on the brand name to use in emails",
