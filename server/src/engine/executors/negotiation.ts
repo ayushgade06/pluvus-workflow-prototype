@@ -2,7 +2,7 @@ import {
   listMessagesByInstance,
   listEventsByInstance,
 } from "../../db/index.js";
-import type { Message } from "@prisma/client";
+import type { Message } from "../../db/schema.js";
 import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import {

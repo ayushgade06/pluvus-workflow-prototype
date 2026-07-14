@@ -17,8 +17,18 @@ import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
 
 import assert from "node:assert/strict";
-import type { InstanceState } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import { eq } from "drizzle-orm";
+import type { InstanceState, InputJsonValue } from "../db/schema.js";
+import {
+  brandNotifications,
+  creators,
+  events as eventsTable,
+  executionInstances,
+  messages,
+  workflows,
+  workflowVersions,
+} from "../db/schema.js";
+import { db } from "../db/drizzle.js";
 import {
   findInstanceById,
   listEventsByInstance,
@@ -74,30 +84,39 @@ async function main(): Promise<void> {
 
   // ── Setup: throwaway workflow + version + creator + instance ──────────────
   const stamp = process.env["HARNESS_STAMP"] ?? "rs-harness";
-  const workflow = await prisma.workflow.create({
-    data: { name: `Reward Setup Harness ${stamp}`, status: "PUBLISHED" },
-  });
+  const workflow = (await db.insert(workflows).values({
+    name: `Reward Setup Harness ${stamp}`,
+    status: "PUBLISHED",
+  }).returning())[0]!;
   // Apply the same save/publish stamp the workflows route runs, so the frozen
   // version carries the negotiation commission on the Reward Setup node.
   const publishedGraph = stampRewardFromNegotiation(REWARD_NODES);
-  const version = await prisma.workflowVersion.create({
-    data: { workflowId: workflow.id, version: 1, nodeGraph: publishedGraph as unknown as object },
-  });
-  const creator = await prisma.creator.create({
-    data: { name: "Casey Creator", email: `casey-${stamp}@example.com`, platform: "Instagram", niche: "fitness" },
-  });
-  const instance = await prisma.executionInstance.create({
-    data: { workflowVersionId: version.id, creatorId: creator.id, currentState: "ENROLLED", currentNodeId: "node-import" },
-  });
+  const version = (await db.insert(workflowVersions).values({
+    workflowId: workflow.id,
+    version: 1,
+    nodeGraph: publishedGraph as unknown as InputJsonValue,
+  }).returning())[0]!;
+  const creator = (await db.insert(creators).values({
+    name: "Casey Creator",
+    email: `casey-${stamp}@example.com`,
+    platform: "Instagram",
+    niche: "fitness",
+  }).returning())[0]!;
+  const instance = (await db.insert(executionInstances).values({
+    workflowVersionId: version.id,
+    creatorId: creator.id,
+    currentState: "ENROLLED",
+    currentNodeId: "node-import",
+  }).returning())[0]!;
 
   const cleanup = async () => {
-    await prisma.event.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.message.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.brandNotification.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.executionInstance.delete({ where: { id: instance.id } });
-    await prisma.workflowVersion.delete({ where: { id: version.id } });
-    await prisma.workflow.delete({ where: { id: workflow.id } });
-    await prisma.creator.delete({ where: { id: creator.id } });
+    await db.delete(eventsTable).where(eq(eventsTable.instanceId, instance.id));
+    await db.delete(messages).where(eq(messages.instanceId, instance.id));
+    await db.delete(brandNotifications).where(eq(brandNotifications.instanceId, instance.id));
+    await db.delete(executionInstances).where(eq(executionInstances.id, instance.id));
+    await db.delete(workflowVersions).where(eq(workflowVersions.id, version.id));
+    await db.delete(workflows).where(eq(workflows.id, workflow.id));
+    await db.delete(creators).where(eq(creators.id, creator.id));
   };
 
   try {
@@ -211,17 +230,18 @@ async function main(): Promise<void> {
     // ── Non-confirming reply keeps the instance in REWARD_PENDING ────────────
     // Fresh instance parked directly in REWARD_PENDING, driven by a QUESTION-fixed
     // agent so the classifier fallback (non-POSITIVE) does NOT confirm.
-    const creator2 = await prisma.creator.create({
-      data: { name: "Dana Creator", email: `dana-${stamp}@example.com`, platform: "Instagram", niche: "beauty" },
-    });
-    const pending = await prisma.executionInstance.create({
-      data: {
-        workflowVersionId: version.id,
-        creatorId: creator2.id,
-        currentState: "REWARD_PENDING",
-        currentNodeId: "node-reward-setup",
-      },
-    });
+    const creator2 = (await db.insert(creators).values({
+      name: "Dana Creator",
+      email: `dana-${stamp}@example.com`,
+      platform: "Instagram",
+      niche: "beauty",
+    }).returning())[0]!;
+    const pending = (await db.insert(executionInstances).values({
+      workflowVersionId: version.id,
+      creatorId: creator2.id,
+      currentState: "REWARD_PENDING",
+      currentNodeId: "node-reward-setup",
+    }).returning())[0]!;
     try {
       const questionRuntime = new WorkflowRuntime(
         new MockEmailProvider(),
@@ -238,10 +258,10 @@ async function main(): Promise<void> {
       );
       console.log("  ✓ non-agreement reply keeps instance in REWARD_PENDING");
     } finally {
-      await prisma.event.deleteMany({ where: { instanceId: pending.id } });
-      await prisma.message.deleteMany({ where: { instanceId: pending.id } });
-      await prisma.executionInstance.delete({ where: { id: pending.id } });
-      await prisma.creator.delete({ where: { id: creator2.id } });
+      await db.delete(eventsTable).where(eq(eventsTable.instanceId, pending.id));
+      await db.delete(messages).where(eq(messages.instanceId, pending.id));
+      await db.delete(executionInstances).where(eq(executionInstances.id, pending.id));
+      await db.delete(creators).where(eq(creators.id, creator2.id));
     }
 
     console.log("\nAll Reward Setup checks passed ✓\n");

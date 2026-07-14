@@ -14,7 +14,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { Prisma } from "@prisma/client";
+import type { CreatorInsert, InputJsonValue } from "../db/schema.js";
 import { listCreators, bulkUpsertCreators } from "../db/creators.js";
 
 const router = Router();
@@ -67,7 +67,7 @@ interface RawRow {
 }
 
 export interface ValidatedImport {
-  valid: Prisma.CreatorCreateInput[];
+  valid: CreatorInsert[];
   errors: Array<{ row: number; reason: string }>;
 }
 
@@ -78,7 +78,7 @@ export interface ValidatedImport {
  * email local-part; unrecognized `metadata` objects are attached as-is.
  */
 export function validateImportRows(rows: unknown[]): ValidatedImport {
-  const valid: Prisma.CreatorCreateInput[] = [];
+  const valid: CreatorInsert[] = [];
   const errors: Array<{ row: number; reason: string }> = [];
 
   rows.forEach((raw, i) => {
@@ -97,7 +97,7 @@ export function validateImportRows(rows: unknown[]): ValidatedImport {
     const name = cleanStr(r.name) ?? email.split("@")[0]!;
     const metadata =
       r.metadata && typeof r.metadata === "object" && !Array.isArray(r.metadata)
-        ? (r.metadata as Prisma.InputJsonValue)
+        ? (r.metadata as InputJsonValue)
         : undefined;
 
     valid.push({

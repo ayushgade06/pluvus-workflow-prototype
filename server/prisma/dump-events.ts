@@ -1,18 +1,16 @@
-import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import dotenv from "dotenv";
-dotenv.config({ path: "../.env" });
-const adapter = new PrismaPg({ connectionString: process.env["DATABASE_URL"] });
-const prisma = new PrismaClient({ adapter });
+import { asc, eq } from "drizzle-orm";
+import { db, pool } from "../src/db/drizzle.js";
+import { events } from "../src/db/schema.js";
 async function main() {
   const id = process.argv[2]!;
-  const events = await prisma.event.findMany({
-    where: { instanceId: id },
-    orderBy: { occurredAt: "asc" },
-  });
-  for (const e of events) {
+  const rows = await db
+    .select()
+    .from(events)
+    .where(eq(events.instanceId, id))
+    .orderBy(asc(events.occurredAt));
+  for (const e of rows) {
     console.log(`${e.occurredAt.toISOString()}  ${e.type}`);
     console.log(`   ${JSON.stringify(e.payload)}`);
   }
 }
-main().catch((e) => { console.error(e); process.exit(1); }).finally(() => prisma.$disconnect());
+main().catch((e) => { console.error(e); process.exit(1); }).finally(() => pool.end());

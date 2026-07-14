@@ -3,7 +3,8 @@ import {
   findMessageByIdempotencyKey as findByKeyDb,
   updateMessageSent as updateMessageSentDb,
 } from "../../db/index.js";
-import type { Creator, Message, Prisma } from "@prisma/client";
+import { isUniqueViolation } from "../../db/errors.js";
+import type { Creator, Message, MessageInsert } from "../../db/schema.js";
 import type { EmailDraft } from "../types.js";
 import type { IEmailProvider, EmailRecipient } from "../providers.js";
 
@@ -36,7 +37,7 @@ export interface SentResult {
 // DB seam — injectable so the reserve→send→finalize sequencing (incl. the P2002
 // branch) is unit-testable without a live database. Defaults to the real db.
 export interface SendOnceDeps {
-  createMessage(data: Prisma.MessageCreateInput): Promise<Message>;
+  createMessage(data: MessageInsert): Promise<Message>;
   findMessageByIdempotencyKey(key: string): Promise<Message | null>;
   updateMessageSent(
     id: string,
@@ -49,15 +50,6 @@ const defaultDeps: SendOnceDeps = {
   findMessageByIdempotencyKey: findByKeyDb,
   updateMessageSent: updateMessageSentDb,
 };
-
-// Prisma unique-constraint violation is error code P2002.
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === "P2002"
-  );
-}
 
 /**
  * Send an outbound email at most once for the given idempotency key.
@@ -88,7 +80,7 @@ export async function sendOnce(
   let reserved;
   try {
     reserved = await deps.createMessage({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       direction: "OUTBOUND",
       subject: draft.subject,
       body: draft.body,

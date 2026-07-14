@@ -1,5 +1,6 @@
-import type { Message, ReplyIntent } from "@prisma/client";
-import { prisma } from "../../db/client.js";
+import { eq } from "drizzle-orm";
+import { messages, type Message, type ReplyIntent } from "../../db/schema.js";
+import { db } from "../../db/drizzle.js";
 import { listMessagesByInstance as listMessagesDb } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
@@ -44,10 +45,10 @@ export interface ReplyDetectionDeps {
 const defaultDeps: ReplyDetectionDeps = {
   listMessagesByInstance: listMessagesDb,
   updateMessageClassification: async (id, intent, confidence) => {
-    await prisma.message.update({
-      where: { id },
-      data: { replyIntent: intent, classifyConfidence: confidence },
-    });
+    await db
+      .update(messages)
+      .set({ replyIntent: intent, classifyConfidence: confidence })
+      .where(eq(messages.id, id));
   },
 };
 

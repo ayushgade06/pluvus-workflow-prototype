@@ -12,14 +12,9 @@
  * Run with: npm run db:seed  (from server/)
  */
 
-import { PrismaClient, WorkflowStatus } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import dotenv from "dotenv";
-
-dotenv.config({ path: "../.env" });
-
-const adapter = new PrismaPg({ connectionString: process.env["DATABASE_URL"] });
-const prisma = new PrismaClient({ adapter });
+import { db, pool } from "../src/db/drizzle.js";
+import { workflows, workflowVersions } from "../src/db/schema.js";
+import type { InputJsonValue } from "../src/db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Node graph snapshot
@@ -122,37 +117,43 @@ const NODE_GRAPH: NodeSnapshot[] = [
 async function main() {
   console.log("Seeding database…");
 
-  // Upsert the workflow so seed is idempotent
-  const workflow = await prisma.workflow.upsert({
-    where: { id: "workflow_seed_v1" },
-    update: {},
-    create: {
-      id: "workflow_seed_v1",
-      name: "Creator Outreach Campaign",
-      description:
-        "Linear outreach workflow: import → outreach → follow-up → reply detection → negotiation → end.",
-      status: WorkflowStatus.PUBLISHED,
-    },
-  });
+  // Upsert the workflow so seed is idempotent (empty Prisma `update` → no-op
+  // write on the unique key so the row still returns).
+  const workflow = (
+    await db
+      .insert(workflows)
+      .values({
+        id: "workflow_seed_v1",
+        name: "Creator Outreach Campaign",
+        description:
+          "Linear outreach workflow: import → outreach → follow-up → reply detection → negotiation → end.",
+        status: "PUBLISHED",
+      })
+      .onConflictDoUpdate({
+        target: workflows.id,
+        set: { id: "workflow_seed_v1" },
+      })
+      .returning()
+  )[0]!;
 
   console.log(`  Workflow: ${workflow.id} — "${workflow.name}"`);
 
   // Upsert the workflow version
-  const workflowVersion = await prisma.workflowVersion.upsert({
-    where: {
-      workflowId_version: {
+  const workflowVersion = (
+    await db
+      .insert(workflowVersions)
+      .values({
+        id: "wfv_seed_v1",
         workflowId: workflow.id,
         version: 1,
-      },
-    },
-    update: {},
-    create: {
-      id: "wfv_seed_v1",
-      workflowId: workflow.id,
-      version: 1,
-      nodeGraph: NODE_GRAPH,
-    },
-  });
+        nodeGraph: NODE_GRAPH as unknown as InputJsonValue,
+      })
+      .onConflictDoUpdate({
+        target: [workflowVersions.workflowId, workflowVersions.version],
+        set: { workflowId: workflow.id },
+      })
+      .returning()
+  )[0]!;
 
   console.log(`  WorkflowVersion: ${workflowVersion.id} (v${workflowVersion.version})`);
 
@@ -165,4 +166,4 @@ main()
     console.error(err);
     process.exit(1);
   })
-  .finally(() => prisma.$disconnect());
+  .finally(() => pool.end());

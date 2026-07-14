@@ -30,8 +30,19 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { InstanceState } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import type { InstanceState, InputJsonValue } from "../db/schema.js";
+import { eq } from "drizzle-orm";
+import { db } from "../db/drizzle.js";
+import {
+  brandNotifications,
+  creators,
+  events,
+  executionInstances,
+  messages,
+  paymentInfo,
+  workflows,
+  workflowVersions,
+} from "../db/schema.js";
 import {
   appendEvent,
   findInstanceById,
@@ -139,7 +150,7 @@ async function state(instanceId: string): Promise<InstanceState> {
 // rate as the finalized offer (mirrors what the negotiation executor persists).
 async function seedAcceptEvent(instanceId: string): Promise<void> {
   await appendEvent({
-    instance: { connect: { id: instanceId } },
+    instanceId,
     type: "NEGOTIATION_TURN",
     nodeId: "node-negotiation",
     payload: { outcome: "accept", round: 1, message: "Deal", rate: AGREED_RATE },
@@ -161,36 +172,40 @@ async function main(): Promise<void> {
   const MERGED = mergedNodes(stored.reference, stored.originalName);
   const LEGACY = legacyNodes(stored.reference, stored.originalName);
 
-  const workflow = await prisma.workflow.create({
-    data: { name: `Content Brief Harness ${stamp}`, status: "PUBLISHED" },
-  });
-  const version = await prisma.workflowVersion.create({
-    data: { workflowId: workflow.id, version: 1, nodeGraph: MERGED as unknown as object },
-  });
-  const creator = await prisma.creator.create({
-    data: { name: "Casey Creator", email: `casey-cb-${stamp}@example.com`, platform: "Instagram", niche: "fitness" },
-  });
+  const workflow = (await db.insert(workflows).values({
+    name: `Content Brief Harness ${stamp}`,
+    status: "PUBLISHED",
+  }).returning())[0]!;
+  const version = (await db.insert(workflowVersions).values({
+    workflowId: workflow.id,
+    version: 1,
+    nodeGraph: MERGED as unknown as InputJsonValue,
+  }).returning())[0]!;
+  const creator = (await db.insert(creators).values({
+    name: "Casey Creator",
+    email: `casey-cb-${stamp}@example.com`,
+    platform: "Instagram",
+    niche: "fitness",
+  }).returning())[0]!;
   // Park directly in ACCEPTED with currentNodeId cleared — exactly what the
   // negotiation ACCEPT leaves behind for the merged hand-off.
-  const instance = await prisma.executionInstance.create({
-    data: {
-      workflowVersionId: version.id,
-      creatorId: creator.id,
-      currentState: "ACCEPTED",
-      currentNodeId: null,
-    },
-  });
+  const instance = (await db.insert(executionInstances).values({
+    workflowVersionId: version.id,
+    creatorId: creator.id,
+    currentState: "ACCEPTED",
+    currentNodeId: null,
+  }).returning())[0]!;
   await seedAcceptEvent(instance.id);
 
   const cleanup = async () => {
-    await prisma.event.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.message.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.brandNotification.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.paymentInfo.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.executionInstance.delete({ where: { id: instance.id } });
-    await prisma.workflowVersion.delete({ where: { id: version.id } });
-    await prisma.workflow.delete({ where: { id: workflow.id } });
-    await prisma.creator.delete({ where: { id: creator.id } });
+    await db.delete(events).where(eq(events.instanceId, instance.id));
+    await db.delete(messages).where(eq(messages.instanceId, instance.id));
+    await db.delete(brandNotifications).where(eq(brandNotifications.instanceId, instance.id));
+    await db.delete(paymentInfo).where(eq(paymentInfo.instanceId, instance.id));
+    await db.delete(executionInstances).where(eq(executionInstances.id, instance.id));
+    await db.delete(workflowVersions).where(eq(workflowVersions.id, version.id));
+    await db.delete(workflows).where(eq(workflows.id, workflow.id));
+    await db.delete(creators).where(eq(creators.id, creator.id));
     await rm(uploadDir, { recursive: true, force: true });
     if (prevUploads === undefined) delete process.env["UPLOADS_DIR"];
     else process.env["UPLOADS_DIR"] = prevUploads;
@@ -228,17 +243,17 @@ async function main(): Promise<void> {
     console.log("  ✓ email carries offer (fee/commission/deliverables) + payout link + referral + notes");
 
     // A PaymentInfo row/token was minted, and no completedAt yet (still waiting).
-    const pi = await prisma.paymentInfo.findUnique({ where: { instanceId: instance.id } });
+    const pi =
+      (await db.select().from(paymentInfo).where(eq(paymentInfo.instanceId, instance.id)).limit(1))[0] ?? null;
     assert.ok(pi && pi.token, "a PaymentInfo row + token must be minted");
     const midInst = await findInstanceById(instance.id);
     assert.ok(!midInst!.completedAt, "completedAt must NOT be stamped while awaiting the form");
 
     // Idempotency: re-running the send step must NOT send a second email or mint a
     // second token. Reset to ACCEPTED and step again.
-    await prisma.executionInstance.update({
-      where: { id: instance.id },
-      data: { currentState: "ACCEPTED", currentNodeId: null },
-    });
+    await db.update(executionInstances)
+      .set({ currentState: "ACCEPTED", currentNodeId: null })
+      .where(eq(executionInstances.id, instance.id));
     await runtime.stepInstance(instance.id);
     const briefEmails = (await listMessagesByInstance(instance.id)).filter(
       (m) => m.direction === "OUTBOUND" && (m.idempotencyKey ?? "").startsWith("content-brief:"),
@@ -260,17 +275,17 @@ async function main(): Promise<void> {
     console.log("  ✓ payout form submit → CONTENT_BRIEF_SENT + completedAt stamped");
 
     // ── LEGACY SUB-CASE: reward → payment → content-brief still reaches terminal ─
-    const legacyVersion = await prisma.workflowVersion.create({
-      data: { workflowId: workflow.id, version: 2, nodeGraph: LEGACY as unknown as object },
-    });
-    const legacyInstance = await prisma.executionInstance.create({
-      data: {
-        workflowVersionId: legacyVersion.id,
-        creatorId: creator.id,
-        currentState: "PAYMENT_RECEIVED",
-        currentNodeId: "node-payment-info",
-      },
-    });
+    const legacyVersion = (await db.insert(workflowVersions).values({
+      workflowId: workflow.id,
+      version: 2,
+      nodeGraph: LEGACY as unknown as InputJsonValue,
+    }).returning())[0]!;
+    const legacyInstance = (await db.insert(executionInstances).values({
+      workflowVersionId: legacyVersion.id,
+      creatorId: creator.id,
+      currentState: "PAYMENT_RECEIVED",
+      currentNodeId: "node-payment-info",
+    }).returning())[0]!;
     try {
       assert.equal(await runtime.contentBriefApplies(legacyInstance.id), true);
       // Legacy Content Brief runs from PAYMENT_RECEIVED with the brief-only email.
@@ -284,37 +299,33 @@ async function main(): Promise<void> {
       assert.ok(!/\/payment\//.test(legacyBrief!.body), "legacy brief email must NOT include a payout link (already collected)");
       console.log("  ✓ legacy graph: PAYMENT_RECEIVED → CONTENT_BRIEF_SENT (brief-only email, no payout link)");
     } finally {
-      await prisma.event.deleteMany({ where: { instanceId: legacyInstance.id } });
-      await prisma.message.deleteMany({ where: { instanceId: legacyInstance.id } });
-      await prisma.executionInstance.delete({ where: { id: legacyInstance.id } });
-      await prisma.workflowVersion.delete({ where: { id: legacyVersion.id } });
+      await db.delete(events).where(eq(events.instanceId, legacyInstance.id));
+      await db.delete(messages).where(eq(messages.instanceId, legacyInstance.id));
+      await db.delete(executionInstances).where(eq(executionInstances.id, legacyInstance.id));
+      await db.delete(workflowVersions).where(eq(workflowVersions.id, legacyVersion.id));
     }
 
     // ── LEGACY SUB-CASE: no CONTENT_BRIEF node → PAYMENT_RECEIVED stays terminal ─
-    const bareVersion = await prisma.workflowVersion.create({
-      data: {
-        workflowId: workflow.id,
-        version: 3,
-        nodeGraph: LEGACY.filter((n) => n.type !== "CONTENT_BRIEF") as unknown as object,
-      },
-    });
-    const bareInstance = await prisma.executionInstance.create({
-      data: {
-        workflowVersionId: bareVersion.id,
-        creatorId: creator.id,
-        currentState: "PAYMENT_RECEIVED",
-        currentNodeId: "node-payment-info",
-      },
-    });
+    const bareVersion = (await db.insert(workflowVersions).values({
+      workflowId: workflow.id,
+      version: 3,
+      nodeGraph: LEGACY.filter((n) => n.type !== "CONTENT_BRIEF") as unknown as InputJsonValue,
+    }).returning())[0]!;
+    const bareInstance = (await db.insert(executionInstances).values({
+      workflowVersionId: bareVersion.id,
+      creatorId: creator.id,
+      currentState: "PAYMENT_RECEIVED",
+      currentNodeId: "node-payment-info",
+    }).returning())[0]!;
     try {
       assert.equal(await runtime.contentBriefApplies(bareInstance.id), false);
       const endState = await runtime.runUntilWaiting(bareInstance.id);
       assert.equal(endState, "PAYMENT_RECEIVED", "graph with no CONTENT_BRIEF keeps PAYMENT_RECEIVED terminal");
       console.log("  ✓ legacy graph without CONTENT_BRIEF: PAYMENT_RECEIVED stays terminal");
     } finally {
-      await prisma.event.deleteMany({ where: { instanceId: bareInstance.id } });
-      await prisma.executionInstance.delete({ where: { id: bareInstance.id } });
-      await prisma.workflowVersion.delete({ where: { id: bareVersion.id } });
+      await db.delete(events).where(eq(events.instanceId, bareInstance.id));
+      await db.delete(executionInstances).where(eq(executionInstances.id, bareInstance.id));
+      await db.delete(workflowVersions).where(eq(workflowVersions.id, bareVersion.id));
     }
 
     console.log("\nAll Content Brief checks passed ✓\n");

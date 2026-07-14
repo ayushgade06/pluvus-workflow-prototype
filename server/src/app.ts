@@ -1,6 +1,7 @@
 import express from "express";
 import type { Express } from "express";
-import { prisma } from "./db/index.js";
+import { sql } from "drizzle-orm";
+import { db } from "./db/drizzle.js";
 import queuesRouter from "./routes/queues.js";
 import webhooksRouter from "./routes/webhooks.js";
 import observabilityRouter from "./routes/observability.js";
@@ -37,10 +38,10 @@ export function createApp(): Express {
     res.json({ status: "ok", service: "server", timestamp: new Date().toISOString() });
   });
 
-  // DB health: verifies the Prisma client can reach PostgreSQL.
+  // DB health: verifies the db client can reach PostgreSQL.
   app.get("/health/db", async (_req, res) => {
     try {
-      await prisma.$queryRaw`SELECT 1`;
+      await db.execute(sql`SELECT 1`);
       res.json({ status: "ok", service: "database", timestamp: new Date().toISOString() });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

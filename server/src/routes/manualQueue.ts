@@ -14,11 +14,18 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { Event, Prisma } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import type { Event, JsonValue } from "../db/schema.js";
+import {
+  creators,
+  events as eventsTable,
+  executionInstances,
+} from "../db/schema.js";
+import { db } from "../db/drizzle.js";
 import { findWorkflowById, findLatestVersion } from "../db/workflows.js";
 import {
   findInstanceById,
+  listEventsByInstance,
   listLatestBrandNotificationsForInstances,
 } from "../db/index.js";
 import { emailProvider } from "../engine/providerFactory.js";
@@ -26,7 +33,7 @@ import { notifyBrandOfEscalation, resolveBrandRecipient } from "../notifications
 
 const router = Router();
 
-function asRecord(json: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {
+function asRecord(json: JsonValue | null | undefined): Record<string, unknown> | null {
   if (json && typeof json === "object" && !Array.isArray(json)) {
     return json as Record<string, unknown>;
   }
@@ -120,30 +127,48 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
       return;
     }
 
-    const instances = await prisma.executionInstance.findMany({
-      where: { workflowVersionId: latestVersion.id, currentState: "MANUAL_REVIEW" },
-      include: {
-        creator: true,
-        events: { orderBy: { occurredAt: "asc" } },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
+    const instRows = await db
+      .select({ instance: executionInstances, creator: creators })
+      .from(executionInstances)
+      .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+      .where(
+        and(
+          eq(executionInstances.workflowVersionId, latestVersion.id),
+          eq(executionInstances.currentState, "MANUAL_REVIEW"),
+        ),
+      )
+      .orderBy(desc(executionInstances.updatedAt));
 
-    const notifications = await listLatestBrandNotificationsForInstances(
-      instances.map((i) => i.id),
-    );
+    // Full event log per escalated instance (Prisma's include events), fetched
+    // in one query and grouped in memory.
+    const ids = instRows.map((r) => r.instance.id);
+    const eventsByInstance = new Map<string, Event[]>();
+    if (ids.length > 0) {
+      const eventRows = await db
+        .select()
+        .from(eventsTable)
+        .where(inArray(eventsTable.instanceId, ids))
+        .orderBy(asc(eventsTable.occurredAt));
+      for (const ev of eventRows) {
+        const list = eventsByInstance.get(ev.instanceId);
+        if (list) list.push(ev);
+        else eventsByInstance.set(ev.instanceId, [ev]);
+      }
+    }
 
-    const items = instances.map((inst) => {
-      const { reason, escalatedAt } = deriveEscalation(inst.events);
+    const notifications = await listLatestBrandNotificationsForInstances(ids);
+
+    const items = instRows.map(({ instance: inst, creator }) => {
+      const { reason, escalatedAt } = deriveEscalation(eventsByInstance.get(inst.id) ?? []);
       const notification = notifications.get(inst.id) ?? null;
       return {
         instanceId: inst.id,
         creatorId: inst.creatorId,
-        creatorName: inst.creator.name,
-        creatorEmail: inst.creator.email,
-        creatorHandle: inst.creator.handle,
-        platform: inst.creator.platform,
-        niche: inst.creator.niche,
+        creatorName: creator.name,
+        creatorEmail: creator.email,
+        creatorHandle: creator.handle,
+        platform: creator.platform,
+        niche: creator.niche,
         negotiationRound: inst.negotiationRound,
         reason,
         reasonLabel: reasonLabel(reason),
@@ -199,10 +224,7 @@ router.post("/instances/:instanceId/notify", async (req: Request, res: Response)
       return;
     }
 
-    const events = await prisma.event.findMany({
-      where: { instanceId },
-      orderBy: { occurredAt: "asc" },
-    });
+    const events = await listEventsByInstance(instanceId);
     const { reason } = deriveEscalation(events);
 
     // Force a fresh notification distinct from the automatic one so operators can

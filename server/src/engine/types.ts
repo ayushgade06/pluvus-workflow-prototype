@@ -5,7 +5,7 @@ import type {
   InstanceState,
   EventType,
   ReplyIntent,
-} from "@prisma/client";
+} from "../db/schema.js";
 
 // NodeSnapshot — matches what is stored in WorkflowVersion.nodeGraph
 export interface NodeSnapshot {

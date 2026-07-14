@@ -1,4 +1,4 @@
-import type { Creator } from "@prisma/client";
+import type { Creator } from "../../db/schema.js";
 import type { IEmailProvider, EmailRecipient } from "../../engine/providers.js";
 import { MockEmailProvider } from "../../engine/providers.js";
 import type { EmailDraft } from "../../engine/types.js";

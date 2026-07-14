@@ -1,6 +1,7 @@
 import type { Queue } from "bullmq";
-import type { InstanceState } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import { and, count, lt, notInArray } from "drizzle-orm";
+import { executionInstances, type InstanceState } from "../db/schema.js";
+import { db } from "../db/drizzle.js";
 import { getNodeExecutionQueue, getInboundEmailQueue } from "./queues.js";
 import { TERMINAL_STATES } from "../observability/dto.js";
 
@@ -66,20 +67,21 @@ export async function stuckStateCounts(now: number = Date.now()): Promise<{
   total: number;
 }> {
   const cutoff = new Date(now - STUCK_AGE_MS);
-  const rows = await prisma.executionInstance.groupBy({
-    by: ["currentState"],
-    where: {
-      currentState: { notIn: TERMINAL_STATES as InstanceState[] },
-      updatedAt: { lt: cutoff },
-    },
-    _count: { _all: true },
-  });
+  const rows = await db
+    .select({ currentState: executionInstances.currentState, count: count() })
+    .from(executionInstances)
+    .where(
+      and(
+        notInArray(executionInstances.currentState, TERMINAL_STATES as InstanceState[]),
+        lt(executionInstances.updatedAt, cutoff),
+      ),
+    )
+    .groupBy(executionInstances.currentState);
   const byState: Record<string, number> = {};
   let total = 0;
   for (const r of rows) {
-    const c = r._count._all;
-    byState[r.currentState] = c;
-    total += c;
+    byState[r.currentState] = r.count;
+    total += r.count;
   }
   return { byState, total };
 }

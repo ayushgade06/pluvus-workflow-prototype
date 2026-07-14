@@ -16,7 +16,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Message, ReplyIntent } from "@prisma/client";
+import type { Message, ReplyIntent } from "../../db/schema.js";
 import {
   executeReplyDetection,
   type ReplyDetectionDeps,

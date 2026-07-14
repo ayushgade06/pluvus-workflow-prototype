@@ -1,4 +1,5 @@
-import type { Prisma } from "@prisma/client";
+import type { JsonObject } from "../../db/schema.js";
+import { isUniqueViolation } from "../../db/errors.js";
 import {
   createPaymentInfo,
   findPaymentInfoByInstance,
@@ -46,11 +47,7 @@ export async function resolvePaymentToken(instanceId: string): Promise<string> {
     return created.token;
   } catch (err) {
     // Another attempt created the row first (unique instanceId) — reuse it.
-    if (
-      typeof err === "object" &&
-      err !== null &&
-      (err as { code?: unknown }).code === "P2002"
-    ) {
+    if (isUniqueViolation(err)) {
       const row = await findPaymentInfoByInstance(instanceId);
       if (row) return row.token;
     }
@@ -121,7 +118,7 @@ export async function executePaymentInfo(
     nextState: "PAYMENT_PENDING",
     nextNodeId: node.id,
     eventType: "PAYMENT_INFO_SENT",
-    eventPayload: { token, formLink } as Prisma.JsonObject,
+    eventPayload: { token, formLink } as JsonObject,
   };
 }
 
@@ -172,6 +169,6 @@ export async function executePaymentSubmission(
     eventPayload: {
       method: payment.method,
       country: payment.country ?? undefined,
-    } as Prisma.JsonObject,
+    } as JsonObject,
   };
 }

@@ -43,9 +43,11 @@ import {
   findInstanceById,
   listMessagesByInstance,
   listEventsByInstance,
-  prisma,
 } from "../db/index.js";
-import type { InstanceState } from "@prisma/client";
+import { eq } from "drizzle-orm";
+import { db } from "../db/drizzle.js";
+import { events as eventsTable, messages as messagesTable } from "../db/schema.js";
+import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -73,8 +75,8 @@ async function resetInstance(instanceId: string): Promise<void> {
   // Necessary because the mock Nylas client emits deterministic message ids
   // (for reproducible signatures), which would otherwise collide with rows from
   // a previous run on the unique externalMessageId constraint.
-  await prisma.event.deleteMany({ where: { instanceId } });
-  await prisma.message.deleteMany({ where: { instanceId } });
+  await db.delete(eventsTable).where(eq(eventsTable.instanceId, instanceId));
+  await db.delete(messagesTable).where(eq(messagesTable.instanceId, instanceId));
   await updateInstanceState(instanceId, {
     currentState: "ENROLLED",
     currentNodeId: "node_import",

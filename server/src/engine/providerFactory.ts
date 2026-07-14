@@ -1,4 +1,4 @@
-import type { Creator } from "@prisma/client";
+import type { Creator } from "../db/schema.js";
 import {
   MockEmailProvider,
   MockAgentProvider,

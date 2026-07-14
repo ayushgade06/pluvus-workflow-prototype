@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Campaign } from "@prisma/client";
+import type { Campaign } from "../db/schema.js";
 import { mergeCampaignFallback, resolveBrandName } from "./campaignContext.js";
 
 let n = 0;

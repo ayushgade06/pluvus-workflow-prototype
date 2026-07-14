@@ -40,7 +40,7 @@ import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
 import { startPoller, stopPoller } from "./poller.js";
 import { closeLockClient, forceReleaseLock } from "./lock.js";
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Utilities

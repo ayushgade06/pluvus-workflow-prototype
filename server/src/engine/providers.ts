@@ -1,4 +1,4 @@
-import type { Creator, ReplyIntent } from "@prisma/client";
+import type { Creator, ReplyIntent } from "../db/schema.js";
 import type {
   EmailDraft,
   ClassifyResult,

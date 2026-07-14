@@ -19,8 +19,19 @@ import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
 
 import assert from "node:assert/strict";
-import type { InstanceState } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import type { InstanceState, InputJsonValue } from "../db/schema.js";
+import { eq } from "drizzle-orm";
+import { db } from "../db/drizzle.js";
+import {
+  brandNotifications,
+  creators,
+  events,
+  executionInstances,
+  messages,
+  paymentInfo,
+  workflows,
+  workflowVersions,
+} from "../db/schema.js";
 import {
   findInstanceById,
   listEventsByInstance,
@@ -80,36 +91,40 @@ async function main(): Promise<void> {
   console.log("\nPayment Info Harness\n");
 
   const stamp = process.env["HARNESS_STAMP"] ?? "pi-harness";
-  const workflow = await prisma.workflow.create({
-    data: { name: `Payment Info Harness ${stamp}`, status: "PUBLISHED" },
-  });
-  const version = await prisma.workflowVersion.create({
-    data: { workflowId: workflow.id, version: 1, nodeGraph: NODES as unknown as object },
-  });
-  const creator = await prisma.creator.create({
-    data: { name: "Casey Creator", email: `casey-pi-${stamp}@example.com`, platform: "Instagram", niche: "fitness" },
-  });
+  const workflow = (await db.insert(workflows).values({
+    name: `Payment Info Harness ${stamp}`,
+    status: "PUBLISHED",
+  }).returning())[0]!;
+  const version = (await db.insert(workflowVersions).values({
+    workflowId: workflow.id,
+    version: 1,
+    nodeGraph: NODES as unknown as InputJsonValue,
+  }).returning())[0]!;
+  const creator = (await db.insert(creators).values({
+    name: "Casey Creator",
+    email: `casey-pi-${stamp}@example.com`,
+    platform: "Instagram",
+    niche: "fitness",
+  }).returning())[0]!;
   // Park directly in REWARD_CONFIRMED on the reward node — the Reward Setup path
   // is already covered by rewardSetup.harness.ts; here we exercise Payment Info.
-  const instance = await prisma.executionInstance.create({
-    data: {
-      workflowVersionId: version.id,
-      creatorId: creator.id,
-      currentState: "REWARD_CONFIRMED",
-      currentNodeId: "node-reward-setup",
-    },
-  });
+  const instance = (await db.insert(executionInstances).values({
+    workflowVersionId: version.id,
+    creatorId: creator.id,
+    currentState: "REWARD_CONFIRMED",
+    currentNodeId: "node-reward-setup",
+  }).returning())[0]!;
 
   const cleanup = async () => {
     // PaymentInfo has ON DELETE RESTRICT → must be removed before the instance.
-    await prisma.paymentInfo.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.event.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.message.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.brandNotification.deleteMany({ where: { instanceId: instance.id } });
-    await prisma.executionInstance.delete({ where: { id: instance.id } });
-    await prisma.workflowVersion.delete({ where: { id: version.id } });
-    await prisma.workflow.delete({ where: { id: workflow.id } });
-    await prisma.creator.delete({ where: { id: creator.id } });
+    await db.delete(paymentInfo).where(eq(paymentInfo.instanceId, instance.id));
+    await db.delete(events).where(eq(events.instanceId, instance.id));
+    await db.delete(messages).where(eq(messages.instanceId, instance.id));
+    await db.delete(brandNotifications).where(eq(brandNotifications.instanceId, instance.id));
+    await db.delete(executionInstances).where(eq(executionInstances.id, instance.id));
+    await db.delete(workflowVersions).where(eq(workflowVersions.id, version.id));
+    await db.delete(workflows).where(eq(workflows.id, workflow.id));
+    await db.delete(creators).where(eq(creators.id, creator.id));
   };
 
   try {
@@ -148,10 +163,9 @@ async function main(): Promise<void> {
 
     // Idempotency: re-running the step must NOT mint a new token or re-send. We
     // reset to REWARD_CONFIRMED and step again; the token stays the same.
-    await prisma.executionInstance.update({
-      where: { id: instance.id },
-      data: { currentState: "REWARD_CONFIRMED", currentNodeId: "node-reward-setup" },
-    });
+    await db.update(executionInstances)
+      .set({ currentState: "REWARD_CONFIRMED", currentNodeId: "node-reward-setup" })
+      .where(eq(executionInstances.id, instance.id));
     await runtime.stepInstance(instance.id);
     const paymentAfter = await findPaymentInfoByInstance(instance.id);
     assert.equal(paymentAfter!.token, payment!.token, "re-run must reuse the same token (no new link)");
@@ -219,17 +233,17 @@ async function main(): Promise<void> {
           }
         : n,
     );
-    const shipVersion = await prisma.workflowVersion.create({
-      data: { workflowId: workflow.id, version: 3, nodeGraph: shipNodes as unknown as object },
-    });
-    const shipInstance = await prisma.executionInstance.create({
-      data: {
-        workflowVersionId: shipVersion.id,
-        creatorId: creator.id,
-        currentState: "REWARD_CONFIRMED",
-        currentNodeId: "node-reward-setup",
-      },
-    });
+    const shipVersion = (await db.insert(workflowVersions).values({
+      workflowId: workflow.id,
+      version: 3,
+      nodeGraph: shipNodes as unknown as InputJsonValue,
+    }).returning())[0]!;
+    const shipInstance = (await db.insert(executionInstances).values({
+      workflowVersionId: shipVersion.id,
+      creatorId: creator.id,
+      currentState: "REWARD_CONFIRMED",
+      currentNodeId: "node-reward-setup",
+    }).returning())[0]!;
     try {
       // Auto-run Payment Info → PAYMENT_PENDING; the payout email mentions shipping.
       await runtime.stepInstance(shipInstance.id);
@@ -283,29 +297,25 @@ async function main(): Promise<void> {
       assert.deepEqual(extra?.shipping, shipping, "shipping address must persist in extra.shipping");
       console.log("  ✓ physical product: shipping address persisted in PaymentInfo.extra");
     } finally {
-      await prisma.paymentInfo.deleteMany({ where: { instanceId: shipInstance.id } });
-      await prisma.event.deleteMany({ where: { instanceId: shipInstance.id } });
-      await prisma.message.deleteMany({ where: { instanceId: shipInstance.id } });
-      await prisma.executionInstance.delete({ where: { id: shipInstance.id } });
-      await prisma.workflowVersion.delete({ where: { id: shipVersion.id } });
+      await db.delete(paymentInfo).where(eq(paymentInfo.instanceId, shipInstance.id));
+      await db.delete(events).where(eq(events.instanceId, shipInstance.id));
+      await db.delete(messages).where(eq(messages.instanceId, shipInstance.id));
+      await db.delete(executionInstances).where(eq(executionInstances.id, shipInstance.id));
+      await db.delete(workflowVersions).where(eq(workflowVersions.id, shipVersion.id));
     }
 
     // ── Legacy graph: no PAYMENT_INFO node → REWARD_CONFIRMED stays terminal ──
-    const legacyVersion = await prisma.workflowVersion.create({
-      data: {
-        workflowId: workflow.id,
-        version: 2,
-        nodeGraph: NODES.filter((n) => n.type !== "PAYMENT_INFO") as unknown as object,
-      },
-    });
-    const legacyInstance = await prisma.executionInstance.create({
-      data: {
-        workflowVersionId: legacyVersion.id,
-        creatorId: creator.id,
-        currentState: "REWARD_CONFIRMED",
-        currentNodeId: "node-reward-setup",
-      },
-    });
+    const legacyVersion = (await db.insert(workflowVersions).values({
+      workflowId: workflow.id,
+      version: 2,
+      nodeGraph: NODES.filter((n) => n.type !== "PAYMENT_INFO") as unknown as InputJsonValue,
+    }).returning())[0]!;
+    const legacyInstance = (await db.insert(executionInstances).values({
+      workflowVersionId: legacyVersion.id,
+      creatorId: creator.id,
+      currentState: "REWARD_CONFIRMED",
+      currentNodeId: "node-reward-setup",
+    }).returning())[0]!;
     try {
       assert.equal(
         await runtime.paymentInfoApplies(legacyInstance.id),
@@ -316,9 +326,9 @@ async function main(): Promise<void> {
       assert.equal(endState, "REWARD_CONFIRMED", "legacy graph keeps REWARD_CONFIRMED terminal");
       console.log("  ✓ legacy graph: REWARD_CONFIRMED stays terminal (no auto-chain)");
     } finally {
-      await prisma.event.deleteMany({ where: { instanceId: legacyInstance.id } });
-      await prisma.executionInstance.delete({ where: { id: legacyInstance.id } });
-      await prisma.workflowVersion.delete({ where: { id: legacyVersion.id } });
+      await db.delete(events).where(eq(events.instanceId, legacyInstance.id));
+      await db.delete(executionInstances).where(eq(executionInstances.id, legacyInstance.id));
+      await db.delete(workflowVersions).where(eq(workflowVersions.id, legacyVersion.id));
     }
 
     console.log("\nAll Payment Info checks passed ✓\n");

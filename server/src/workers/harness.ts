@@ -30,7 +30,7 @@ import {
 } from "./queues.js";
 import { createNodeExecutionWorker } from "./nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "./inboundEmailWorker.js";
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Utilities

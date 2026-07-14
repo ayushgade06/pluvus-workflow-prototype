@@ -27,13 +27,15 @@ import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
 
 import { Worker } from "bullmq";
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 import {
   listInstancesByVersion,
   updateInstanceState,
   findInstanceById,
-  prisma,
 } from "../db/index.js";
+import { eq } from "drizzle-orm";
+import { db, pool } from "../db/drizzle.js";
+import { events, messages } from "../db/schema.js";
 import {
   enqueueNodeExecution,
   enqueueInboundEmail,
@@ -79,8 +81,8 @@ function delay(ms: number): Promise<void> {
 async function resetInstance(instanceId: string): Promise<void> {
   // Clear prior history so this run's timeline/logs are clean and assertions
   // are deterministic.
-  await prisma.event.deleteMany({ where: { instanceId } });
-  await prisma.message.deleteMany({ where: { instanceId } });
+  await db.delete(events).where(eq(events.instanceId, instanceId));
+  await db.delete(messages).where(eq(messages.instanceId, instanceId));
   await updateInstanceState(instanceId, {
     currentState: "ENROLLED",
     currentNodeId: "node_import",
@@ -372,7 +374,7 @@ async function main(): Promise<void> {
     await getNodeExecutionQueue().close();
     await getInboundEmailQueue().close();
     await closeLockClient();
-    await prisma.$disconnect();
+    await pool.end();
     process.exit(process.exitCode ?? 0);
   }
 }

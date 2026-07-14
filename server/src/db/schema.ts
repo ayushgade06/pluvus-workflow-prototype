@@ -55,6 +55,9 @@ export type JsonValue =
 /** Write-side alias kept for parity with Prisma.InputJsonValue. */
 export type InputJsonValue = JsonValue;
 
+/** Object-shaped JSON (parity with Prisma.JsonObject). */
+export type JsonObject = { [key: string]: JsonValue };
+
 // ---------------------------------------------------------------------------
 // Column helpers — Prisma client-side magic, reproduced
 // ---------------------------------------------------------------------------

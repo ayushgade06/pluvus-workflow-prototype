@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { Prisma } from "@prisma/client";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import {
   findWorkflowById,
   updateWorkflow,
@@ -16,7 +16,16 @@ import {
 } from "../db/instances.js";
 import { listCreators } from "../db/creators.js";
 import { findCampaignById } from "../db/campaigns.js";
-import { prisma } from "../db/client.js";
+import { db } from "../db/drizzle.js";
+import { isForeignKeyViolation, isUniqueViolation } from "../db/errors.js";
+import {
+  campaigns as campaignsTable,
+  creators as creatorsTable,
+  events as eventsTable,
+  executionInstances,
+  workflows as workflowsTable,
+  type InputJsonValue,
+} from "../db/schema.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { validateNodeGraph } from "../templates/index.js";
 import { validateWorkflowGraph } from "../validation/graphValidation.js";
@@ -162,22 +171,20 @@ export function stampRewardFromNegotiation(nodes: unknown): unknown {
 
 router.get("/:id", async (req: Request, res: Response) => {
   try {
-    const wf = await prisma.workflow.findUnique({
-      where: { id: req.params["id"]! },
-      include: {
-        campaign: true,
-        versions: {
-          orderBy: { version: "desc" },
-          take: 1,
-        },
-      },
-    });
-    if (!wf) {
+    const wfRows = await db
+      .select({ workflow: workflowsTable, campaign: campaignsTable })
+      .from(workflowsTable)
+      .leftJoin(campaignsTable, eq(workflowsTable.campaignId, campaignsTable.id))
+      .where(eq(workflowsTable.id, req.params["id"]!))
+      .limit(1);
+    const found = wfRows[0];
+    if (!found) {
       res.status(404).json({ error: "workflow not found" });
       return;
     }
+    const wf = found.workflow;
 
-    const latestVersion = wf.versions[0] ?? null;
+    const latestVersion = await findLatestVersion(wf.id);
 
     res.json({
       id: wf.id,
@@ -185,8 +192,8 @@ router.get("/:id", async (req: Request, res: Response) => {
       description: wf.description,
       status: wf.status,
       campaignId: wf.campaignId,
-      campaign: wf.campaign
-        ? { id: wf.campaign.id, name: wf.campaign.name, brand: wf.campaign.brand }
+      campaign: found.campaign
+        ? { id: found.campaign.id, name: found.campaign.name, brand: found.campaign.brand }
         : null,
       draftNodes: wf.draftNodes ?? [],
       latestVersion: latestVersion
@@ -277,7 +284,7 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
     nodesToSave = stampRewardFromNegotiation(nodesToSave);
 
     const updated = await updateWorkflow(wf.id, {
-      draftNodes: nodesToSave as Prisma.InputJsonValue,
+      draftNodes: nodesToSave as InputJsonValue,
     });
 
     res.json({
@@ -300,10 +307,7 @@ router.put("/:id/draft", async (req: Request, res: Response) => {
 
 router.post("/:id/validate", async (req: Request, res: Response) => {
   try {
-    const wf = await prisma.workflow.findUnique({
-      where: { id: req.params["id"]! },
-      select: { id: true, draftNodes: true },
-    });
+    const wf = await findWorkflowById(req.params["id"]!);
     if (!wf) {
       res.status(404).json({ error: "workflow not found" });
       return;
@@ -344,7 +348,7 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
     // immutable snapshot always carries the campaign's brand context even if the
     // builder's draft-save didn't stamp it (e.g. workflows created before
     // brandDescription was added, or configs edited in the builder).
-    let nodeGraphToPublish: Prisma.InputJsonValue = wf.draftNodes as Prisma.InputJsonValue;
+    let nodeGraphToPublish: InputJsonValue = wf.draftNodes as InputJsonValue;
     if (wf.campaignId) {
       const campaign = await findCampaignById(wf.campaignId);
       if (campaign) {
@@ -356,21 +360,21 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
           campaign.timeline,
           campaign.rewardDescription,
           campaign.shipsPhysicalProduct,
-        ) as Prisma.InputJsonValue;
+        ) as InputJsonValue;
       }
     }
     // Freeze the current negotiation commission onto the Reward Setup node so the
     // immutable version carries the finalized value the deal was published with.
     nodeGraphToPublish = stampRewardFromNegotiation(
       nodeGraphToPublish,
-    ) as Prisma.InputJsonValue;
+    ) as InputJsonValue;
 
     const versionNumber = await nextVersionNumber(wf.id);
     const version = await createVersion({
       version: versionNumber,
       nodeGraph: nodeGraphToPublish,
       publishedAt: new Date(),
-      workflow: { connect: { id: wf.id } },
+      workflowId: wf.id,
     });
 
     await updateWorkflow(wf.id, { status: "PUBLISHED" });
@@ -400,11 +404,22 @@ router.get("/:id/versions", async (req: Request, res: Response) => {
     }
 
     const versions = await listVersions(wf.id);
-    const countsRaw = await prisma.executionInstance.groupBy({
-      by: ["workflowVersionId"],
-      where: { workflowVersionId: { in: versions.map((v) => v.id) } },
-      _count: true,
-    });
+    const countsRaw =
+      versions.length > 0
+        ? await db
+            .select({
+              workflowVersionId: executionInstances.workflowVersionId,
+              _count: count(),
+            })
+            .from(executionInstances)
+            .where(
+              inArray(
+                executionInstances.workflowVersionId,
+                versions.map((v) => v.id),
+              ),
+            )
+            .groupBy(executionInstances.workflowVersionId)
+        : [];
     const countMap = new Map(countsRaw.map((r) => [r.workflowVersionId, r._count]));
 
     res.json(
@@ -468,20 +483,15 @@ router.post("/:id/enroll", async (req: Request, res: Response) => {
     for (const creatorId of ids) {
       try {
         await createInstance({
-          creator: { connect: { id: creatorId } },
-          workflowVersion: { connect: { id: latestVersion.id } },
+          creatorId,
+          workflowVersionId: latestVersion.id,
         });
         enrolled++;
       } catch (err) {
-        if (
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2002"
-        ) {
-          skipped++;
-        } else if (
-          err instanceof Prisma.PrismaClientKnownRequestError &&
-          err.code === "P2025"
-        ) {
+        // Unique violation: already enrolled in this version. FK violation:
+        // the creator id doesn't exist (Prisma surfaced that as P2025 on the
+        // nested connect). Both are skip-and-continue.
+        if (isUniqueViolation(err) || isForeignKeyViolation(err)) {
           skipped++;
         } else {
           throw err;
@@ -584,26 +594,27 @@ router.get("/:id/execution", async (req: Request, res: Response) => {
     }
 
     // Recent events across all instances in this version
-    const recentEvents = await prisma.event.findMany({
-      where: {
-        instance: { workflowVersionId: latestVersion.id },
-        type: "STATE_TRANSITION",
-      },
-      orderBy: { occurredAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        type: true,
-        payload: true,
-        occurredAt: true,
-        instanceId: true,
-        instance: {
-          select: {
-            creator: { select: { name: true, handle: true } },
-          },
-        },
-      },
-    });
+    const recentEvents = await db
+      .select({
+        id: eventsTable.id,
+        type: eventsTable.type,
+        payload: eventsTable.payload,
+        occurredAt: eventsTable.occurredAt,
+        instanceId: eventsTable.instanceId,
+        creatorName: creatorsTable.name,
+        creatorHandle: creatorsTable.handle,
+      })
+      .from(eventsTable)
+      .innerJoin(executionInstances, eq(eventsTable.instanceId, executionInstances.id))
+      .innerJoin(creatorsTable, eq(executionInstances.creatorId, creatorsTable.id))
+      .where(
+        and(
+          eq(executionInstances.workflowVersionId, latestVersion.id),
+          eq(eventsTable.type, "STATE_TRANSITION"),
+        ),
+      )
+      .orderBy(desc(eventsTable.occurredAt))
+      .limit(20);
 
     res.json({
       versionId: latestVersion.id,
@@ -613,8 +624,8 @@ router.get("/:id/execution", async (req: Request, res: Response) => {
       recentEvents: recentEvents.map((e) => ({
         id: e.id,
         instanceId: e.instanceId,
-        creatorName: e.instance.creator.name,
-        creatorHandle: e.instance.creator.handle,
+        creatorName: e.creatorName,
+        creatorHandle: e.creatorHandle,
         payload: e.payload,
         occurredAt: e.occurredAt.toISOString(),
       })),

@@ -1,4 +1,4 @@
-import type { Campaign } from "@prisma/client";
+import type { Campaign } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Campaign → node-config brand-context fallback (H5)

@@ -39,7 +39,7 @@ import type {
   EmailDraft,
   PriorNegotiationContext,
 } from "../engine/types.js";
-import type { Creator } from "@prisma/client";
+import type { Creator } from "../db/schema.js";
 import type { NegotiationTerm } from "../adapters/negotiation/types.js";
 import {
   listInstancesByVersion,
@@ -47,10 +47,12 @@ import {
   listMessagesByInstance,
   listEventsByInstance,
   updateInstanceState,
-  prisma,
 } from "../db/index.js";
+import { eq } from "drizzle-orm";
+import { db, pool } from "../db/drizzle.js";
+import { events as eventsTable, messages as messagesTable } from "../db/schema.js";
 import { closeLockClient } from "../scheduler/lock.js";
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -119,8 +121,8 @@ class HarnessAgentProvider implements IAgentProvider {
 // ---------------------------------------------------------------------------
 
 async function resetInstance(instanceId: string): Promise<void> {
-  await prisma.event.deleteMany({ where: { instanceId } });
-  await prisma.message.deleteMany({ where: { instanceId } });
+  await db.delete(eventsTable).where(eq(eventsTable.instanceId, instanceId));
+  await db.delete(messagesTable).where(eq(messagesTable.instanceId, instanceId));
   await updateInstanceState(instanceId, {
     currentState: "ENROLLED",
     currentNodeId: "node_import",
@@ -663,7 +665,7 @@ async function main(): Promise<void> {
   }
 
   await closeLockClient();
-  await prisma.$disconnect();
+  await pool.end();
   process.exit(process.exitCode ?? 0);
 }
 

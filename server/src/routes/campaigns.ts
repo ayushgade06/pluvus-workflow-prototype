@@ -236,7 +236,7 @@ router.post("/:id/workflows", async (req: Request, res: Response) => {
       name: name.trim(),
       status: "DRAFT",
       draftNodes: nodes,
-      campaign: { connect: { id: campaign.id } },
+      campaignId: campaign.id,
     });
 
     res.status(201).json({

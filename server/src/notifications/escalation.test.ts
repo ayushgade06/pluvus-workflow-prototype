@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { BrandNotification, Creator } from "@prisma/client";
+import type { BrandNotification, Creator } from "../db/schema.js";
 import {
   notifyBrandOfEscalation,
   resolveBrandRecipient,

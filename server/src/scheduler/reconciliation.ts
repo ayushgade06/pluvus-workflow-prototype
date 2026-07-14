@@ -1,4 +1,4 @@
-import type { ExecutionInstance } from "@prisma/client";
+import type { ExecutionInstance } from "../db/schema.js";
 import { listStuckInstances } from "../db/instances.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import type { NodeExecutionJobData } from "../workers/jobs.js";

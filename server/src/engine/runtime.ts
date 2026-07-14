@@ -1,4 +1,9 @@
-import type { InstanceState, Prisma, EventType } from "@prisma/client";
+import type {
+  InstanceState,
+  EventType,
+  InputJsonValue,
+  MessageInsert,
+} from "../db/schema.js";
 import {
   findInstanceById,
   findCreatorById,
@@ -10,7 +15,6 @@ import {
   createMessage,
   findMessageByExternalId,
 } from "../db/index.js";
-import type { Prisma as PrismaTypes } from "@prisma/client";
 import { findCampaignById } from "../db/campaigns.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
@@ -33,7 +37,7 @@ import {
   executeEnd,
 } from "./executors/index.js";
 import { markPaymentReceived } from "../db/index.js";
-import type { PayoutMethod } from "@prisma/client";
+import type { PayoutMethod } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // StaleInstanceError — thrown when OCC detects a concurrent state change
@@ -234,17 +238,17 @@ export class WorkflowRuntime {
 
     // Write domain event (OUTREACH_DRAFTED, FOLLOW_UP_DUE, etc.)
     await appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: result.eventType,
       nodeId: node.id,
-      payload: (result.eventPayload ?? {}) as Prisma.InputJsonValue,
+      payload: (result.eventPayload ?? {}) as InputJsonValue,
       occurredAt: now,
     });
 
     // Write STATE_TRANSITION event (only if state actually changed)
     if (instance.currentState !== result.nextState) {
       await appendEvent({
-        instance: { connect: { id: instanceId } },
+        instanceId,
         type: "STATE_TRANSITION",
         nodeId: node.id,
         // `source`, `worker`, `queueJobId` are persisted so end-to-end
@@ -255,7 +259,7 @@ export class WorkflowRuntime {
           source,
           ...(opts?.worker ? { worker: opts.worker } : {}),
           ...(opts?.queueJobId ? { queueJobId: opts.queueJobId } : {}),
-        } as Prisma.InputJsonValue,
+        } as InputJsonValue,
         occurredAt: now,
       });
 
@@ -297,12 +301,12 @@ export class WorkflowRuntime {
   private async persistInboundMessageOnce(
     instanceId: string,
     externalMessageId: string,
-    data: Omit<PrismaTypes.MessageCreateInput, "instance" | "direction" | "externalMessageId">,
+    data: Omit<MessageInsert, "instanceId" | "direction" | "externalMessageId">,
   ): Promise<void> {
     const existing = await findMessageByExternalId(externalMessageId);
     if (existing) return; // already persisted by a prior (crashed) attempt
     await createMessage({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       direction: "INBOUND",
       externalMessageId,
       ...data,
@@ -370,7 +374,7 @@ export class WorkflowRuntime {
 
     // Write inbound reply event
     await appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: "INBOUND_REPLY_RECEIVED",
       nodeId: instance.currentNodeId ?? null,
       payload: { subject: opts.subject, externalMessageId },
@@ -379,7 +383,7 @@ export class WorkflowRuntime {
 
     // Write state transition event — attributed to the inbound email itself.
     await appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: "STATE_TRANSITION",
       nodeId: instance.currentNodeId ?? null,
       payload: { from: instance.currentState, to: "REPLY_RECEIVED", source: "inbound-email" },
@@ -448,7 +452,7 @@ export class WorkflowRuntime {
     });
 
     await appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: "INBOUND_REPLY_RECEIVED",
       nodeId: instance.currentNodeId ?? null,
       payload: { subject: opts.subject, externalMessageId, rewardReply: true },
@@ -516,7 +520,7 @@ export class WorkflowRuntime {
     });
 
     await appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: "INBOUND_REPLY_RECEIVED",
       nodeId: instance.currentNodeId ?? null,
       payload: { subject: opts.subject, externalMessageId, paymentReply: true },
@@ -557,7 +561,7 @@ export class WorkflowRuntime {
       notes?: string | null;
       /** Extra payout/fulfillment data preserved verbatim on PaymentInfo.extra
        *  (e.g. the shipping address when the campaign ships a physical product). */
-      extra?: Prisma.InputJsonValue;
+      extra?: InputJsonValue;
     },
     opts: {
       source?: TransitionSource;

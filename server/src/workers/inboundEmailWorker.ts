@@ -6,7 +6,7 @@ import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { findInstanceById, findMessageByExternalId, markMessageProcessed } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
-import type { ReplyIntent } from "@prisma/client";
+import type { ReplyIntent } from "../db/schema.js";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
 
 // ---------------------------------------------------------------------------

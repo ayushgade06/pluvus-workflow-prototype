@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Creator } from "@prisma/client";
+import type { Creator } from "../db/schema.js";
 import { AgentProviderAdapter } from "./providerFactory.js";
 import type { ClassificationProvider } from "../adapters/classification/ClassificationProvider.js";
 import type { NegotiationProvider } from "../adapters/negotiation/NegotiationProvider.js";

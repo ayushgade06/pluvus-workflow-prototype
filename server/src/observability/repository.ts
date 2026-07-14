@@ -2,20 +2,26 @@
 // Observability repository (Phase 9, Part 8)
 // ---------------------------------------------------------------------------
 // Read-only queries + DTO mappers for the observability dashboard. This is the
-// boundary that guarantees raw Prisma rows never reach the client.
+// boundary that guarantees raw DB rows never reach the client.
 //
 // Phase 9 is read-only: nothing here mutates execution state. The only reads
 // that touch the engine's tables are SELECTs.
 
-import type {
-  Creator,
-  Event,
-  ExecutionInstance,
-  InstanceState,
-  Message,
-  Prisma,
-} from "@prisma/client";
-import { prisma } from "../db/client.js";
+import { and, asc, count, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
+import { db } from "../db/drizzle.js";
+import {
+  creators,
+  events as eventsTable,
+  executionInstances,
+  messages as messagesTable,
+  workflows,
+  workflowVersions,
+  type Event,
+  type ExecutionInstance,
+  type InstanceState,
+  type JsonValue,
+  type Message,
+} from "../db/schema.js";
 import {
   WORKFLOW_STATE_ORDER,
   TERMINAL_STATES,
@@ -41,7 +47,7 @@ const STUCK_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 const isTerminalState = (s: InstanceState): boolean => TERMINAL_STATES.includes(s);
 const isWaitingState = (s: InstanceState): boolean => WAITING_STATES.includes(s);
 
-function asRecord(json: Prisma.JsonValue | null | undefined): Record<string, unknown> | null {
+function asRecord(json: JsonValue | null | undefined): Record<string, unknown> | null {
   if (json && typeof json === "object" && !Array.isArray(json)) {
     return json as Record<string, unknown>;
   }
@@ -96,28 +102,35 @@ export async function getWorkflowSummary(): Promise<WorkflowSummaryDTO> {
   const now = Date.now();
 
   // Newest published version is the "active" workflow we visualize.
-  const version = await prisma.workflowVersion.findFirst({
-    orderBy: [{ version: "desc" }],
-    include: { workflow: true },
-  });
+  const versionRows = await db
+    .select({ version: workflowVersions, workflow: workflows })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+    .orderBy(desc(workflowVersions.version))
+    .limit(1);
+  const version = versionRows[0] ?? null;
 
-  const instances = await prisma.executionInstance.findMany({
-    select: {
-      id: true,
-      currentState: true,
-      dueAt: true,
-      enrolledAt: true,
-      updatedAt: true,
-    },
-  });
+  const instances = await db
+    .select({
+      id: executionInstances.id,
+      currentState: executionInstances.currentState,
+      dueAt: executionInstances.dueAt,
+      enrolledAt: executionInstances.enrolledAt,
+      updatedAt: executionInstances.updatedAt,
+    })
+    .from(executionInstances);
 
   // Most recent "entered this state" timestamp per instance, from transition
   // events. One query, grouped in memory.
-  const transitionEvents = await prisma.event.findMany({
-    where: { type: "STATE_TRANSITION" },
-    select: { instanceId: true, payload: true, occurredAt: true },
-    orderBy: { occurredAt: "asc" },
-  });
+  const transitionEvents = await db
+    .select({
+      instanceId: eventsTable.instanceId,
+      payload: eventsTable.payload,
+      occurredAt: eventsTable.occurredAt,
+    })
+    .from(eventsTable)
+    .where(eq(eventsTable.type, "STATE_TRANSITION"))
+    .orderBy(asc(eventsTable.occurredAt));
 
   // instanceId -> { state -> latest occurredAt entering that state }
   const enteredAt = new Map<string, number>();
@@ -170,8 +183,8 @@ export async function getWorkflowSummary(): Promise<WorkflowSummaryDTO> {
       ? {
           id: version.workflow.id,
           name: version.workflow.name,
-          version: version.version,
-          versionId: version.id,
+          version: version.version.version,
+          versionId: version.version.id,
         }
       : null,
     totalInstances: instances.length,
@@ -191,47 +204,76 @@ export interface InstanceListParams {
   pageSize?: number;
 }
 
+/** Escape LIKE wildcards so a search for "50%" doesn't match everything
+ *  (Prisma's `contains` escaped these too). */
+function likeContains(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+}
+
 export async function listInstances(params: InstanceListParams): Promise<InstanceListDTO> {
   const now = Date.now();
   const page = Math.max(1, params.page ?? 1);
   const pageSize = Math.max(1, Math.min(params.pageSize ?? 50, 200));
 
-  const where: Prisma.ExecutionInstanceWhereInput = {};
-  if (params.state) where.currentState = params.state;
+  const conditions: SQL[] = [];
+  if (params.state) {
+    conditions.push(eq(executionInstances.currentState, params.state));
+  }
   if (params.search && params.search.trim()) {
-    const q = params.search.trim();
-    where.creator = {
-      OR: [
-        { name: { contains: q, mode: "insensitive" } },
-        { email: { contains: q, mode: "insensitive" } },
-        { handle: { contains: q, mode: "insensitive" } },
-      ],
-    };
+    const pattern = likeContains(params.search.trim());
+    conditions.push(
+      or(
+        ilike(creators.name, pattern),
+        ilike(creators.email, pattern),
+        ilike(creators.handle, pattern),
+      )!,
+    );
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const [totalRows, rows] = await Promise.all([
+    db
+      .select({ total: count() })
+      .from(executionInstances)
+      .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+      .where(where),
+    db
+      .select({ instance: executionInstances, creator: creators })
+      .from(executionInstances)
+      .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+      .where(where)
+      .orderBy(desc(executionInstances.updatedAt))
+      .offset((page - 1) * pageSize)
+      .limit(pageSize),
+  ]);
+  const total = totalRows[0]?.total ?? 0;
+
+  // Last event per listed instance (Prisma's include events take-1), resolved
+  // in one query and reduced newest-first in memory.
+  const ids = rows.map((r) => r.instance.id);
+  const lastEventByInstance = new Map<string, Event>();
+  if (ids.length > 0) {
+    const evRows = await db
+      .select()
+      .from(eventsTable)
+      .where(inArray(eventsTable.instanceId, ids))
+      .orderBy(desc(eventsTable.occurredAt));
+    for (const ev of evRows) {
+      if (!lastEventByInstance.has(ev.instanceId)) {
+        lastEventByInstance.set(ev.instanceId, ev);
+      }
+    }
   }
 
-  const [total, rows] = await Promise.all([
-    prisma.executionInstance.count({ where }),
-    prisma.executionInstance.findMany({
-      where,
-      include: {
-        creator: true,
-        events: { orderBy: { occurredAt: "desc" }, take: 1 },
-      },
-      orderBy: { updatedAt: "desc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-  ]);
-
-  const items: InstanceListItemDTO[] = rows.map((r) => {
-    const lastEvent = r.events[0] ?? null;
+  const items: InstanceListItemDTO[] = rows.map(({ instance: r, creator }) => {
+    const lastEvent = lastEventByInstance.get(r.id) ?? null;
     return {
       instanceId: r.id,
       creatorId: r.creatorId,
-      creatorName: r.creator.name,
-      creatorEmail: r.creator.email,
-      creatorHandle: r.creator.handle,
-      platform: r.creator.platform,
+      creatorName: creator.name,
+      creatorEmail: creator.email,
+      creatorHandle: creator.handle,
+      platform: creator.platform,
       state: r.currentState,
       currentNodeId: r.currentNodeId,
       negotiationRound: r.negotiationRound,
@@ -312,21 +354,41 @@ function extractAgentDecisions(events: Event[]): AgentDecisionDTO[] {
 }
 
 export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO | null> {
-  const inst = await prisma.executionInstance.findUnique({
-    where: { id },
-    include: {
-      creator: true,
-      workflowVersion: { include: { workflow: true } },
-      messages: { orderBy: { createdAt: "asc" } },
-      events: { orderBy: { occurredAt: "asc" } },
-    },
-  });
-  if (!inst) return null;
+  const instRows = await db
+    .select({ instance: executionInstances, creator: creators })
+    .from(executionInstances)
+    .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+    .where(eq(executionInstances.id, id))
+    .limit(1);
+  const found = instRows[0];
+  if (!found) return null;
+  const inst = found.instance;
+
+  const versionRows = await db
+    .select({ version: workflowVersions.version, workflowName: workflows.name })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+    .where(eq(workflowVersions.id, inst.workflowVersionId))
+    .limit(1);
+  const versionInfo = versionRows[0] ?? null;
+
+  const [instMessages, instEvents] = await Promise.all([
+    db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.instanceId, id))
+      .orderBy(asc(messagesTable.createdAt)),
+    db
+      .select()
+      .from(eventsTable)
+      .where(eq(eventsTable.instanceId, id))
+      .orderBy(asc(eventsTable.occurredAt)),
+  ]);
 
   // Attribute each outbound message to a negotiation round, when discoverable
   // from the surrounding NEGOTIATION_TURN events sharing the same body.
   const roundByBody = new Map<string, number>();
-  for (const e of inst.events) {
+  for (const e of instEvents) {
     if (e.type === "NEGOTIATION_TURN") {
       const p = asRecord(e.payload);
       const msg = payloadString(p, "message");
@@ -335,7 +397,7 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
     }
   }
 
-  const lastTransition = [...inst.events]
+  const lastTransition = [...instEvents]
     .reverse()
     .find((e) => e.type === "STATE_TRANSITION");
   const lastTransitionSource = payloadString(asRecord(lastTransition?.payload ?? null), "source");
@@ -344,8 +406,8 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
     instance: {
       instanceId: inst.id,
       workflowVersionId: inst.workflowVersionId,
-      workflowVersion: inst.workflowVersion?.version ?? null,
-      workflowName: inst.workflowVersion?.workflow?.name ?? null,
+      workflowVersion: versionInfo?.version ?? null,
+      workflowName: versionInfo?.workflowName ?? null,
       state: inst.currentState,
       currentNodeId: inst.currentNodeId,
       negotiationRound: inst.negotiationRound,
@@ -358,16 +420,18 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
       lastTransitionSource,
     },
     creator: {
-      id: inst.creator.id,
-      name: inst.creator.name,
-      email: inst.creator.email,
-      handle: inst.creator.handle,
-      niche: inst.creator.niche,
-      platform: inst.creator.platform,
+      id: found.creator.id,
+      name: found.creator.name,
+      email: found.creator.email,
+      handle: found.creator.handle,
+      niche: found.creator.niche,
+      platform: found.creator.platform,
     },
-    messages: inst.messages.map((m) => mapMessage(m, m.body ? roundByBody.get(m.body) ?? null : null)),
-    events: inst.events.map(mapEvent),
-    agentDecisions: extractAgentDecisions(inst.events),
+    messages: instMessages.map((m) =>
+      mapMessage(m, m.body ? roundByBody.get(m.body) ?? null : null),
+    ),
+    events: instEvents.map(mapEvent),
+    agentDecisions: extractAgentDecisions(instEvents),
   };
 }
 
@@ -411,14 +475,23 @@ function summarizeEvent(e: Event): string {
   }
 }
 
-export async function getTimeline(id: string): Promise<TimelineDTO | null> {
-  const inst = await prisma.executionInstance.findUnique({ where: { id }, select: { id: true } });
-  if (!inst) return null;
+async function instanceExists(id: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: executionInstances.id })
+    .from(executionInstances)
+    .where(eq(executionInstances.id, id))
+    .limit(1);
+  return rows.length > 0;
+}
 
-  const events = await prisma.event.findMany({
-    where: { instanceId: id },
-    orderBy: { occurredAt: "asc" },
-  });
+export async function getTimeline(id: string): Promise<TimelineDTO | null> {
+  if (!(await instanceExists(id))) return null;
+
+  const events = await db
+    .select()
+    .from(eventsTable)
+    .where(eq(eventsTable.instanceId, id))
+    .orderBy(asc(eventsTable.occurredAt));
 
   const entries: TimelineEntryDTO[] = events.map((e) => {
     const p = asRecord(e.payload);
@@ -450,13 +523,13 @@ export async function getTimeline(id: string): Promise<TimelineDTO | null> {
  * end-to-end traceability surface (Part 10): for each hop, who triggered it.
  */
 export async function getLogs(id: string): Promise<LogsDTO | null> {
-  const inst = await prisma.executionInstance.findUnique({ where: { id }, select: { id: true } });
-  if (!inst) return null;
+  if (!(await instanceExists(id))) return null;
 
-  const events = await prisma.event.findMany({
-    where: { instanceId: id, type: "STATE_TRANSITION" },
-    orderBy: { occurredAt: "asc" },
-  });
+  const events = await db
+    .select()
+    .from(eventsTable)
+    .where(and(eq(eventsTable.instanceId, id), eq(eventsTable.type, "STATE_TRANSITION")))
+    .orderBy(asc(eventsTable.occurredAt));
 
   const trace: LogEntryDTO[] = events.map((e) => {
     const p = asRecord(e.payload);

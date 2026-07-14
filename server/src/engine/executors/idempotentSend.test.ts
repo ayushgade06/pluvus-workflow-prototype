@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Creator } from "@prisma/client";
+import type { Creator } from "../../db/schema.js";
 import { sendOnce, type SendOnceDeps } from "./idempotentSend.js";
 import type { IEmailProvider } from "../providers.js";
 import type { EmailDraft } from "../types.js";

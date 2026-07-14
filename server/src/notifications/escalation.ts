@@ -18,8 +18,24 @@
 //     uses (mock | nylas). send() addresses the recipient via a Creator-shaped
 //     object whose email/name are the brand's — both providers read only those.
 
-import type { BrandNotification, BrandNotificationStatus, Creator, Event, Prisma } from "@prisma/client";
-import { prisma } from "../db/client.js";
+import { eq } from "drizzle-orm";
+import type {
+  BrandNotification,
+  BrandNotificationInsert,
+  BrandNotificationStatus,
+  Creator,
+  Event,
+  EventInsert,
+} from "../db/schema.js";
+import {
+  campaigns,
+  creators,
+  executionInstances,
+  workflows,
+  workflowVersions,
+} from "../db/schema.js";
+import { db } from "../db/drizzle.js";
+import { isUniqueViolation } from "../db/errors.js";
 import {
   createBrandNotification,
   findBrandNotificationByKey,
@@ -96,38 +112,44 @@ interface EscalationContext {
 // without a live database. Defaults to the real db helpers.
 export interface EscalationDeps {
   loadContext(instanceId: string): Promise<EscalationContext | null>;
-  createBrandNotification(data: Prisma.BrandNotificationCreateInput): Promise<BrandNotification>;
+  createBrandNotification(data: BrandNotificationInsert): Promise<BrandNotification>;
   findBrandNotificationByKey(key: string): Promise<BrandNotification | null>;
   updateBrandNotificationStatus(
     id: string,
     data: { status: BrandNotificationStatus; error?: string | null },
   ): Promise<BrandNotification>;
-  appendEvent(data: Prisma.EventCreateInput): Promise<Event>;
+  appendEvent(data: EventInsert): Promise<Event>;
 }
 
 async function loadEscalationContext(instanceId: string): Promise<EscalationContext | null> {
-  const instance = await prisma.executionInstance.findUnique({
-    where: { id: instanceId },
-    include: {
-      creator: true,
-      workflowVersion: {
-        include: {
-          workflow: { include: { campaign: true } },
-        },
-      },
-    },
-  });
-  if (!instance) return null;
-
-  const workflow = instance.workflowVersion.workflow;
-  const campaign = workflow.campaign;
+  // instance → creator + workflowVersion → workflow → (optional) campaign.
+  const rows = await db
+    .select({
+      creator: creators,
+      workflowName: workflows.name,
+      campaignName: campaigns.name,
+      brandName: campaigns.brand,
+      notifyEmail: campaigns.notifyEmail,
+    })
+    .from(executionInstances)
+    .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+    .innerJoin(
+      workflowVersions,
+      eq(executionInstances.workflowVersionId, workflowVersions.id),
+    )
+    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+    .leftJoin(campaigns, eq(workflows.campaignId, campaigns.id))
+    .where(eq(executionInstances.id, instanceId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
 
   return {
-    creator: instance.creator,
-    campaignName: campaign?.name ?? null,
-    brandName: campaign?.brand ?? null,
-    workflowName: workflow.name ?? null,
-    notifyEmail: campaign?.notifyEmail ?? null,
+    creator: row.creator,
+    campaignName: row.campaignName ?? null,
+    brandName: row.brandName ?? null,
+    workflowName: row.workflowName ?? null,
+    notifyEmail: row.notifyEmail ?? null,
   };
 }
 
@@ -212,7 +234,7 @@ export async function notifyBrandOfEscalation(
     let reservedId: string;
     try {
       const reserved = await deps.createBrandNotification({
-        instance: { connect: { id: instanceId } },
+        instanceId,
         recipient: recipient ?? "(none)",
         reason,
         status: recipient ? "SENT" : "SKIPPED",
@@ -260,7 +282,7 @@ export async function notifyBrandOfEscalation(
 
     // ── Audit event ───────────────────────────────────────────────────────
     await deps.appendEvent({
-      instance: { connect: { id: instanceId } },
+      instanceId,
       type: "BRAND_NOTIFIED",
       payload: { recipient, reason },
       occurredAt: new Date(),
@@ -279,13 +301,4 @@ export async function notifyBrandOfEscalation(
     );
     return { status: "FAILED", recipient: null };
   }
-}
-
-// Prisma unique-constraint violation is error code P2002.
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: unknown }).code === "P2002"
-  );
 }

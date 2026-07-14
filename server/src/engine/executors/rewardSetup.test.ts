@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Event } from "@prisma/client";
+import type { Event } from "../../db/schema.js";
 import { resolveAgreedFee } from "./rewardSetup.js";
 
 let n = 0;

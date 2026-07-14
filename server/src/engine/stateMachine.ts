@@ -1,4 +1,4 @@
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Transition table

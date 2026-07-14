@@ -10,7 +10,7 @@
 import dotenv from "dotenv";
 dotenv.config({ path: "../.env" });
 
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 import {
   listInstancesByVersion,
   updateInstanceState,

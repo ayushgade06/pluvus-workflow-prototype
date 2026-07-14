@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { ExecutionInstance } from "@prisma/client";
+import type { ExecutionInstance } from "../db/schema.js";
 import { reconcileStuckInstances, type ReconciliationDeps } from "./reconciliation.js";
 import type { NodeExecutionJobData } from "../workers/jobs.js";
 

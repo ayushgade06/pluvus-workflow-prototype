@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Event, EventType, Message } from "@prisma/client";
+import type { Event, EventType, Message } from "../../db/schema.js";
 import {
   buildPriorContextFromEvents,
   buildDraftHistory,

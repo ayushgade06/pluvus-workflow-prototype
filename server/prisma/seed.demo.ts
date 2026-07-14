@@ -19,15 +19,22 @@
  * Run with:  npm run db:seed:demo   (from server/)
  */
 
-import { PrismaClient, Prisma } from "@prisma/client";
-import type { EventType, InstanceState, MessageDirection } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import dotenv from "dotenv";
-
-dotenv.config({ path: "../.env" });
-
-const adapter = new PrismaPg({ connectionString: process.env["DATABASE_URL"] });
-const prisma = new PrismaClient({ adapter });
+import { count, eq } from "drizzle-orm";
+import { db, pool } from "../src/db/drizzle.js";
+import {
+  creators,
+  events,
+  executionInstances,
+  messages,
+  workflows,
+  workflowVersions,
+} from "../src/db/schema.js";
+import type {
+  EventType,
+  InputJsonValue,
+  InstanceState,
+  MessageDirection,
+} from "../src/db/schema.js";
 
 const DEMO_DOMAIN = "@demo.pluvus.com";
 
@@ -430,11 +437,16 @@ async function buildInstance(
   versionId: string,
   s: Scenario,
 ): Promise<void> {
-  const creator = await prisma.creator.upsert({
-    where: { email: s.creator.email },
-    update: { name: s.creator.name, handle: s.creator.handle, niche: s.creator.niche, platform: s.creator.platform },
-    create: s.creator,
-  });
+  const creator = (
+    await db
+      .insert(creators)
+      .values(s.creator)
+      .onConflictDoUpdate({
+        target: creators.email,
+        set: { name: s.creator.name, handle: s.creator.handle, niche: s.creator.niche, platform: s.creator.platform },
+      })
+      .returning()
+  )[0]!;
 
   const enrolledAt = ago(s.enrolledAgo);
   const dueAt = s.dueAt === null ? null : ago(s.dueAt);
@@ -443,43 +455,46 @@ async function buildInstance(
   const lastStepAgo = Math.min(...s.steps.map((st) => st.at), s.enrolledAgo);
   const updatedAt = ago(lastStepAgo);
 
-  const instance = await prisma.executionInstance.upsert({
-    where: { workflowVersionId_creatorId: { workflowVersionId: versionId, creatorId: creator.id } },
-    update: {
-      currentState: s.finalState,
-      currentNodeId: s.currentNodeId,
-      negotiationRound: s.negotiationRound,
-      followUpCount: s.followUpCount,
-      dueAt,
-      completedAt: isTerminal(s.finalState) ? updatedAt : null,
-      updatedAt,
-    },
-    create: {
-      workflowVersionId: versionId,
-      creatorId: creator.id,
-      currentState: s.finalState,
-      currentNodeId: s.currentNodeId,
-      negotiationRound: s.negotiationRound,
-      followUpCount: s.followUpCount,
-      dueAt,
-      enrolledAt,
-      completedAt: isTerminal(s.finalState) ? updatedAt : null,
-    },
-  });
+  const instance = (
+    await db
+      .insert(executionInstances)
+      .values({
+        workflowVersionId: versionId,
+        creatorId: creator.id,
+        currentState: s.finalState,
+        currentNodeId: s.currentNodeId,
+        negotiationRound: s.negotiationRound,
+        followUpCount: s.followUpCount,
+        dueAt,
+        enrolledAt,
+        completedAt: isTerminal(s.finalState) ? updatedAt : null,
+      })
+      .onConflictDoUpdate({
+        target: [executionInstances.workflowVersionId, executionInstances.creatorId],
+        set: {
+          currentState: s.finalState,
+          currentNodeId: s.currentNodeId,
+          negotiationRound: s.negotiationRound,
+          followUpCount: s.followUpCount,
+          dueAt,
+          completedAt: isTerminal(s.finalState) ? updatedAt : null,
+          updatedAt,
+        },
+      })
+      .returning()
+  )[0]!;
 
   // Wipe prior demo events/messages for this instance so re-runs are clean.
-  await prisma.event.deleteMany({ where: { instanceId: instance.id } });
-  await prisma.message.deleteMany({ where: { instanceId: instance.id } });
+  await db.delete(events).where(eq(events.instanceId, instance.id));
+  await db.delete(messages).where(eq(messages.instanceId, instance.id));
 
   // Enrollment event always first.
-  await prisma.event.create({
-    data: {
-      instanceId: instance.id,
-      type: "NODE_ENTERED",
-      nodeId: "node_import",
-      payload: { enrolled: true },
-      occurredAt: enrolledAt,
-    },
+  await db.insert(events).values({
+    instanceId: instance.id,
+    type: "NODE_ENTERED",
+    nodeId: "node_import",
+    payload: { enrolled: true },
+    occurredAt: enrolledAt,
   });
 
   const threadId = `demo-thread-${creator.id}`;
@@ -493,67 +508,57 @@ async function buildInstance(
   for (const step of orderedSteps) {
     const at = ago(step.at);
     if (step.kind === "transition") {
-      await prisma.event.create({
-        data: {
-          instanceId: instance.id,
-          type: "STATE_TRANSITION",
-          nodeId: step.nodeId,
-          payload: {
-            from: step.from,
-            to: step.to,
-            source: step.source,
-            ...(step.worker ? { worker: step.worker } : {}),
-            ...(step.queueJobId ? { queueJobId: step.queueJobId } : {}),
-          } as Prisma.InputJsonValue,
-          occurredAt: at,
-        },
+      await db.insert(events).values({
+        instanceId: instance.id,
+        type: "STATE_TRANSITION",
+        nodeId: step.nodeId,
+        payload: {
+          from: step.from,
+          to: step.to,
+          source: step.source,
+          ...(step.worker ? { worker: step.worker } : {}),
+          ...(step.queueJobId ? { queueJobId: step.queueJobId } : {}),
+        } as InputJsonValue,
+        occurredAt: at,
       });
     } else if (step.kind === "domain") {
-      await prisma.event.create({
-        data: {
-          instanceId: instance.id,
-          type: step.type,
-          nodeId: step.nodeId,
-          payload: step.payload as Prisma.InputJsonValue,
-          occurredAt: at,
-        },
+      await db.insert(events).values({
+        instanceId: instance.id,
+        type: step.type,
+        nodeId: step.nodeId,
+        payload: step.payload as InputJsonValue,
+        occurredAt: at,
       });
     } else if (step.kind === "outbound") {
-      await prisma.message.create({
-        data: {
-          instanceId: instance.id,
-          direction: "OUTBOUND" as MessageDirection,
-          subject: step.subject,
-          body: step.body,
-          threadId,
-          externalMessageId: `demo-out-${instance.id}-${msgSeq++}`,
-          sentAt: at,
-          createdAt: at,
-        },
+      await db.insert(messages).values({
+        instanceId: instance.id,
+        direction: "OUTBOUND" as MessageDirection,
+        subject: step.subject,
+        body: step.body,
+        threadId,
+        externalMessageId: `demo-out-${instance.id}-${msgSeq++}`,
+        sentAt: at,
+        createdAt: at,
       });
     } else if (step.kind === "inbound") {
-      await prisma.message.create({
-        data: {
-          instanceId: instance.id,
-          direction: "INBOUND" as MessageDirection,
-          subject: step.subject,
-          body: step.body,
-          threadId,
-          externalMessageId: `demo-in-${instance.id}-${msgSeq++}`,
-          replyIntent: step.intent ?? null,
-          classifyConfidence: step.confidence ?? null,
-          receivedAt: at,
-          createdAt: at,
-        },
+      await db.insert(messages).values({
+        instanceId: instance.id,
+        direction: "INBOUND" as MessageDirection,
+        subject: step.subject,
+        body: step.body,
+        threadId,
+        externalMessageId: `demo-in-${instance.id}-${msgSeq++}`,
+        replyIntent: step.intent ?? null,
+        classifyConfidence: step.confidence ?? null,
+        receivedAt: at,
+        createdAt: at,
       });
-      await prisma.event.create({
-        data: {
-          instanceId: instance.id,
-          type: "INBOUND_REPLY_RECEIVED",
-          nodeId: "node_reply_detection",
-          payload: { subject: step.subject, source: "inbound-email" },
-          occurredAt: at,
-        },
+      await db.insert(events).values({
+        instanceId: instance.id,
+        type: "INBOUND_REPLY_RECEIVED",
+        nodeId: "node_reply_detection",
+        payload: { subject: step.subject, source: "inbound-email" },
+        occurredAt: at,
       });
     }
   }
@@ -571,22 +576,37 @@ function isTerminal(s: InstanceState): boolean {
 async function main(): Promise<void> {
   console.log("Seeding Phase 9 demo dataset…");
 
-  const workflow = await prisma.workflow.upsert({
-    where: { id: "workflow_seed_v1" },
-    update: {},
-    create: {
-      id: "workflow_seed_v1",
-      name: "Creator Outreach Campaign",
-      description: "Linear outreach workflow: import → outreach → follow-up → reply detection → negotiation → end.",
-      status: "PUBLISHED",
-    },
-  });
+  const workflow = (
+    await db
+      .insert(workflows)
+      .values({
+        id: "workflow_seed_v1",
+        name: "Creator Outreach Campaign",
+        description: "Linear outreach workflow: import → outreach → follow-up → reply detection → negotiation → end.",
+        status: "PUBLISHED",
+      })
+      .onConflictDoUpdate({
+        target: workflows.id,
+        set: { id: "workflow_seed_v1" },
+      })
+      .returning()
+  )[0]!;
 
-  const version = await prisma.workflowVersion.upsert({
-    where: { workflowId_version: { workflowId: workflow.id, version: 1 } },
-    update: {},
-    create: { id: "wfv_seed_v1", workflowId: workflow.id, version: 1, nodeGraph: NODE_GRAPH },
-  });
+  const version = (
+    await db
+      .insert(workflowVersions)
+      .values({
+        id: "wfv_seed_v1",
+        workflowId: workflow.id,
+        version: 1,
+        nodeGraph: NODE_GRAPH as unknown as InputJsonValue,
+      })
+      .onConflictDoUpdate({
+        target: [workflowVersions.workflowId, workflowVersions.version],
+        set: { workflowId: workflow.id },
+      })
+      .returning()
+  )[0]!;
 
   console.log(`  Workflow ${workflow.id} v${version.version}`);
 
@@ -607,7 +627,10 @@ async function main(): Promise<void> {
   }
 
   // Summary by state.
-  const counts = await prisma.executionInstance.groupBy({ by: ["currentState"], _count: true });
+  const counts = await db
+    .select({ currentState: executionInstances.currentState, _count: count() })
+    .from(executionInstances)
+    .groupBy(executionInstances.currentState);
   console.log("\n  State distribution (all instances):");
   for (const c of counts.sort((a, b) => b._count - a._count)) {
     console.log(`    ${c.currentState.padEnd(16)} ${c._count}`);
@@ -620,4 +643,4 @@ main()
     console.error(err);
     process.exit(1);
   })
-  .finally(() => prisma.$disconnect());
+  .finally(() => pool.end());

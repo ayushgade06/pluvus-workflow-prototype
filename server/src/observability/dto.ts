@@ -11,7 +11,7 @@ import type {
   EventType,
   MessageDirection,
   ReplyIntent,
-} from "@prisma/client";
+} from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
 // Canonical workflow state order (matches stateMachine.ts transition table)

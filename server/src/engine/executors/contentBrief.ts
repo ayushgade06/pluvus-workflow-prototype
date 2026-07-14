@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { JsonObject } from "../../db/schema.js";
 import { listEventsByInstance, findPaymentInfoByInstance } from "../../db/index.js";
 import type { ExecutionContext, NodeResult, EmailAttachment } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
@@ -187,7 +187,7 @@ export async function executeContentBrief(
         ...(token ? { token, formLink } : {}),
         ...(fixedFee !== undefined ? { fixedFee } : {}),
         ...(commissionRate !== undefined ? { commission: commissionRate } : {}),
-      } as Prisma.JsonObject,
+      } as JsonObject,
     };
   }
 
@@ -200,7 +200,7 @@ export async function executeContentBrief(
     eventPayload: {
       briefFileName,
       ...(referralLink ? { referralLink } : {}),
-    } as Prisma.JsonObject,
+    } as JsonObject,
   };
 }
 
@@ -251,6 +251,6 @@ export async function executeContentBriefSubmission(
       briefFileName,
       method: payment.method,
       ...(payment.country ? { country: payment.country } : {}),
-    } as Prisma.JsonObject,
+    } as JsonObject,
   };
 }

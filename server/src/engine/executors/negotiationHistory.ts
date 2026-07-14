@@ -1,4 +1,4 @@
-import type { Event, Message } from "@prisma/client";
+import type { Event, Message } from "../../db/schema.js";
 import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../types.js";
 import type { DraftHistoryEntry } from "../../adapters/negotiation/types.js";
 import { extractReplyText } from "./replyText.js";

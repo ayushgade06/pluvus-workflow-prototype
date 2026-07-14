@@ -1,6 +1,6 @@
 import { Router, urlencoded } from "express";
 import type { Request, Response } from "express";
-import type { PayoutMethod } from "@prisma/client";
+import type { PayoutMethod } from "../db/schema.js";
 import { findPaymentInfoByToken, findInstanceById } from "../db/index.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";

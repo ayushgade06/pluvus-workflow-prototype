@@ -12,14 +12,15 @@
  * Run: tsx prisma/setup-live-test.ts
  */
 
-import { PrismaClient, WorkflowStatus } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import dotenv from "dotenv";
-
-dotenv.config({ path: "../.env" });
-
-const adapter = new PrismaPg({ connectionString: process.env["DATABASE_URL"] });
-const prisma = new PrismaClient({ adapter });
+import { eq } from "drizzle-orm";
+import { db, pool } from "../src/db/drizzle.js";
+import {
+  creators,
+  executionInstances,
+  workflows,
+  workflowVersions,
+  type InputJsonValue,
+} from "../src/db/schema.js";
 
 const CREATOR_EMAIL = "ayushgade23@gmail.com"; // Alex Rivera
 const BRAND = "Pluvus Partnerships";
@@ -68,49 +69,61 @@ const NODE_GRAPH = [
 ];
 
 async function main() {
-  const workflow = await prisma.workflow.upsert({
-    where: { id: "workflow_live_test_ui" },
-    update: { status: WorkflowStatus.PUBLISHED },
-    create: {
-      id: "workflow_live_test_ui",
-      name: "Live Test — UI band 200/500",
-      description: "Fresh UI-style workflow (minBudget/maxBudget) for live Nylas negotiation testing.",
-      status: WorkflowStatus.PUBLISHED,
-    },
-  });
+  const workflow = (
+    await db
+      .insert(workflows)
+      .values({
+        id: "workflow_live_test_ui",
+        name: "Live Test — UI band 200/500",
+        description: "Fresh UI-style workflow (minBudget/maxBudget) for live Nylas negotiation testing.",
+        status: "PUBLISHED",
+      })
+      .onConflictDoUpdate({ target: workflows.id, set: { status: "PUBLISHED" } })
+      .returning()
+  )[0]!;
 
-  const version = await prisma.workflowVersion.upsert({
-    where: { workflowId_version: { workflowId: workflow.id, version: 1 } },
-    update: { nodeGraph: NODE_GRAPH },
-    create: {
-      id: "wfv_live_test_ui_v1",
-      workflowId: workflow.id,
-      version: 1,
-      nodeGraph: NODE_GRAPH,
-    },
-  });
+  const version = (
+    await db
+      .insert(workflowVersions)
+      .values({
+        id: "wfv_live_test_ui_v1",
+        workflowId: workflow.id,
+        version: 1,
+        nodeGraph: NODE_GRAPH as unknown as InputJsonValue,
+      })
+      .onConflictDoUpdate({
+        target: [workflowVersions.workflowId, workflowVersions.version],
+        set: { nodeGraph: NODE_GRAPH as unknown as InputJsonValue },
+      })
+      .returning()
+  )[0]!;
 
-  const creator = await prisma.creator.findUnique({ where: { email: CREATOR_EMAIL } });
+  const creator = (
+    await db.select().from(creators).where(eq(creators.email, CREATOR_EMAIL)).limit(1)
+  )[0];
   if (!creator) throw new Error(`Creator ${CREATOR_EMAIL} not found — run db:seed first.`);
 
-  // Fresh ENROLLED instance. upsert on (version, creator) so re-runs reset it to
+  // Fresh ENROLLED instance. Upsert on (version, creator) so re-runs reset it to
   // ENROLLED at the import node rather than piling up duplicates.
-  const instance = await prisma.executionInstance.upsert({
-    where: {
-      workflowVersionId_creatorId: { workflowVersionId: version.id, creatorId: creator.id },
-    },
-    update: {
-      currentState: "ENROLLED",
-      currentNodeId: "node-outreach",
-      negotiationRound: 0,
-    },
-    create: {
-      workflowVersionId: version.id,
-      creatorId: creator.id,
-      currentState: "ENROLLED",
-      currentNodeId: "node-outreach",
-    },
-  });
+  const instance = (
+    await db
+      .insert(executionInstances)
+      .values({
+        workflowVersionId: version.id,
+        creatorId: creator.id,
+        currentState: "ENROLLED",
+        currentNodeId: "node-outreach",
+      })
+      .onConflictDoUpdate({
+        target: [executionInstances.workflowVersionId, executionInstances.creatorId],
+        set: {
+          currentState: "ENROLLED",
+          currentNodeId: "node-outreach",
+          negotiationRound: 0,
+        },
+      })
+      .returning()
+  )[0]!;
 
   console.log(JSON.stringify({
     creator: `${creator.name} <${creator.email}>`,
@@ -125,4 +138,4 @@ async function main() {
 
 main()
   .catch((err) => { console.error(err); process.exit(1); })
-  .finally(() => prisma.$disconnect());
+  .finally(() => pool.end());

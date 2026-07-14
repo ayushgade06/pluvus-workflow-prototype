@@ -12,7 +12,7 @@
 //   GET /observability/meta            static state metadata for the canvas
 
 import { Router } from "express";
-import type { InstanceState } from "@prisma/client";
+import type { InstanceState } from "../db/schema.js";
 import {
   getWorkflowSummary,
   listInstances,

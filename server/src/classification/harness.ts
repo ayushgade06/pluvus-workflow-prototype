@@ -32,10 +32,12 @@ import {
   listMessagesByInstance,
   listEventsByInstance,
   updateInstanceState,
-  prisma,
 } from "../db/index.js";
+import { eq } from "drizzle-orm";
+import { db, pool } from "../db/drizzle.js";
+import { events as eventsTable, messages as messagesTable } from "../db/schema.js";
 import { closeLockClient } from "../scheduler/lock.js";
-import type { InstanceState, ReplyIntent } from "@prisma/client";
+import type { InstanceState, ReplyIntent } from "../db/schema.js";
 import type { ClassifyResult } from "../engine/types.js";
 import type { ClassificationProvider } from "../adapters/classification/ClassificationProvider.js";
 import type { IAgentProvider } from "../engine/providers.js";
@@ -87,8 +89,8 @@ class HarnessAgentProvider implements IAgentProvider {
 
 async function resetToReplyReceived(instanceId: string, body: string): Promise<string> {
   // Wipe prior messages + events for a clean slate.
-  await prisma.event.deleteMany({ where: { instanceId } });
-  await prisma.message.deleteMany({ where: { instanceId } });
+  await db.delete(eventsTable).where(eq(eventsTable.instanceId, instanceId));
+  await db.delete(messagesTable).where(eq(messagesTable.instanceId, instanceId));
 
   // Advance to AWAITING_REPLY via a MockEmailProvider runtime.
   await updateInstanceState(instanceId, {
@@ -385,7 +387,7 @@ async function main(): Promise<void> {
   }
 
   await closeLockClient();
-  await prisma.$disconnect();
+  await pool.end();
   process.exit(process.exitCode ?? 0);
 }
 
