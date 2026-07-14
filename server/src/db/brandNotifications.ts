@@ -1,5 +1,11 @@
-import type { BrandNotification, BrandNotificationStatus, Prisma } from "@prisma/client";
-import { prisma } from "./client.js";
+import { desc, eq, inArray } from "drizzle-orm";
+import { db } from "./drizzle.js";
+import {
+  brandNotifications,
+  type BrandNotification,
+  type BrandNotificationInsert,
+  type BrandNotificationStatus,
+} from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // BrandNotification — manual-queue escalation notices sent to the brand.
@@ -9,25 +15,41 @@ import { prisma } from "./client.js";
 // BullMQ retry of the same step never double-emails the brand.
 
 export async function createBrandNotification(
-  data: Prisma.BrandNotificationCreateInput,
+  data: BrandNotificationInsert,
 ): Promise<BrandNotification> {
-  return prisma.brandNotification.create({ data });
+  const rows = await db.insert(brandNotifications).values(data).returning();
+  return rows[0]!;
 }
 
 export async function findBrandNotificationByKey(
   idempotencyKey: string,
 ): Promise<BrandNotification | null> {
-  return prisma.brandNotification.findUnique({ where: { idempotencyKey } });
+  const rows = await db
+    .select()
+    .from(brandNotifications)
+    .where(eq(brandNotifications.idempotencyKey, idempotencyKey))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function updateBrandNotificationStatus(
   id: string,
   data: { status: BrandNotificationStatus; error?: string | null },
 ): Promise<BrandNotification> {
-  return prisma.brandNotification.update({
-    where: { id },
-    data: { status: data.status, ...(data.error !== undefined ? { error: data.error } : {}) },
-  });
+  const rows = await db
+    .update(brandNotifications)
+    .set({
+      status: data.status,
+      ...(data.error !== undefined ? { error: data.error } : {}),
+    })
+    .where(eq(brandNotifications.id, id))
+    .returning();
+  const updated = rows[0];
+  if (!updated) {
+    // Prisma threw P2025 here; the row was just reserved by the caller.
+    throw new Error(`BrandNotification ${id} not found`);
+  }
+  return updated;
 }
 
 /** Latest notification for an instance, if any. Used by the manual-queue UI to
@@ -35,10 +57,13 @@ export async function updateBrandNotificationStatus(
 export async function findLatestBrandNotificationForInstance(
   instanceId: string,
 ): Promise<BrandNotification | null> {
-  return prisma.brandNotification.findFirst({
-    where: { instanceId },
-    orderBy: { createdAt: "desc" },
-  });
+  const rows = await db
+    .select()
+    .from(brandNotifications)
+    .where(eq(brandNotifications.instanceId, instanceId))
+    .orderBy(desc(brandNotifications.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** Latest notification per instance for a set of instances (one query).
@@ -48,10 +73,11 @@ export async function listLatestBrandNotificationsForInstances(
 ): Promise<Map<string, BrandNotification>> {
   if (instanceIds.length === 0) return new Map();
   // Ordered newest-first so the first row seen per instance is the latest.
-  const rows = await prisma.brandNotification.findMany({
-    where: { instanceId: { in: instanceIds } },
-    orderBy: { createdAt: "desc" },
-  });
+  const rows = await db
+    .select()
+    .from(brandNotifications)
+    .where(inArray(brandNotifications.instanceId, instanceIds))
+    .orderBy(desc(brandNotifications.createdAt));
   const map = new Map<string, BrandNotification>();
   for (const r of rows) {
     if (!map.has(r.instanceId)) map.set(r.instanceId, r);

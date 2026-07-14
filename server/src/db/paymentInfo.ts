@@ -1,6 +1,18 @@
-import type { PaymentInfo, PayoutMethod, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { prisma } from "./client.js";
+import { eq } from "drizzle-orm";
+import { db } from "./drizzle.js";
+import {
+  campaigns,
+  creators,
+  executionInstances,
+  paymentInfo,
+  workflows,
+  workflowVersions,
+  type InputJsonValue,
+  type JsonValue,
+  type PaymentInfo,
+  type PayoutMethod,
+} from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // PaymentInfo — payout details collected by the Payment Info node.
@@ -34,23 +46,38 @@ export function paymentTokenExpiry(now: Date = new Date()): Date {
  * Idempotent for the node's purposes: the row is keyed by the unique
  * `instanceId`, so a re-run of the Payment Info step (e.g. a BullMQ retry) that
  * tries to create a second row hits the unique constraint. Callers that need to
- * tolerate that should catch P2002 (see the executor, which reuses the existing
- * row's token rather than minting a new link).
+ * tolerate that should catch the unique violation (see the executor, which
+ * reuses the existing row's token rather than minting a new link).
  */
 export async function createPaymentInfo(data: {
   instanceId: string;
   token: string;
 }): Promise<PaymentInfo> {
-  return prisma.paymentInfo.create({
-    data: {
+  const rows = await db
+    .insert(paymentInfo)
+    .values({
+      instanceId: data.instanceId,
       token: data.token,
       status: "PAYMENT_PENDING",
       // MED-S5: stamp the token lifecycle at mint time.
       expiresAt: paymentTokenExpiry(),
-      instance: { connect: { id: data.instanceId } },
-    },
-  });
+    })
+    .returning();
+  return rows[0]!;
 }
+
+/** The nested instance context Prisma's include used to hang off the row. */
+export type PaymentInfoWithInstance = PaymentInfo & {
+  instance: {
+    id: string;
+    currentState: string;
+    creator: { name: string; email: string };
+    workflowVersion: {
+      nodeGraph: JsonValue;
+      workflow: { campaign: { brand: string } | null };
+    };
+  };
+};
 
 /** Resolve a payout token back to its PaymentInfo row (with the instance +
  *  creator, so the hosted page can greet the creator by name). The workflow
@@ -59,45 +86,55 @@ export async function createPaymentInfo(data: {
  *  render the shipping-address section. Null when the token is unknown. */
 export async function findPaymentInfoByToken(
   token: string,
-): Promise<
-  | (PaymentInfo & {
-      instance: {
-        id: string;
-        currentState: string;
-        creator: { name: string; email: string };
-        workflowVersion: {
-          nodeGraph: Prisma.JsonValue;
-          workflow: { campaign: { brand: string } | null };
-        };
-      };
+): Promise<PaymentInfoWithInstance | null> {
+  const rows = await db
+    .select({
+      row: paymentInfo,
+      instanceId: executionInstances.id,
+      currentState: executionInstances.currentState,
+      creatorName: creators.name,
+      creatorEmail: creators.email,
+      nodeGraph: workflowVersions.nodeGraph,
+      brand: campaigns.brand,
     })
-  | null
-> {
-  return prisma.paymentInfo.findUnique({
-    where: { token },
-    include: {
-      instance: {
-        select: {
-          id: true,
-          currentState: true,
-          creator: { select: { name: true, email: true } },
-          workflowVersion: {
-            select: {
-              nodeGraph: true,
-              workflow: { select: { campaign: { select: { brand: true } } } },
-            },
-          },
-        },
+    .from(paymentInfo)
+    .innerJoin(executionInstances, eq(paymentInfo.instanceId, executionInstances.id))
+    .innerJoin(creators, eq(executionInstances.creatorId, creators.id))
+    .innerJoin(
+      workflowVersions,
+      eq(executionInstances.workflowVersionId, workflowVersions.id),
+    )
+    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+    .leftJoin(campaigns, eq(workflows.campaignId, campaigns.id))
+    .where(eq(paymentInfo.token, token))
+    .limit(1);
+
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...r.row,
+    instance: {
+      id: r.instanceId,
+      currentState: r.currentState,
+      creator: { name: r.creatorName, email: r.creatorEmail },
+      workflowVersion: {
+        nodeGraph: r.nodeGraph,
+        workflow: { campaign: r.brand === null ? null : { brand: r.brand } },
       },
     },
-  }) as never;
+  };
 }
 
 /** The PaymentInfo row for an instance, if one exists. */
 export async function findPaymentInfoByInstance(
   instanceId: string,
 ): Promise<PaymentInfo | null> {
-  return prisma.paymentInfo.findUnique({ where: { instanceId } });
+  const rows = await db
+    .select()
+    .from(paymentInfo)
+    .where(eq(paymentInfo.instanceId, instanceId))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /**
@@ -114,12 +151,12 @@ export async function markPaymentReceived(
     accountIdentifier: string;
     country?: string | null;
     notes?: string | null;
-    extra?: Prisma.InputJsonValue;
+    extra?: InputJsonValue;
   },
 ): Promise<PaymentInfo> {
-  return prisma.paymentInfo.update({
-    where: { instanceId },
-    data: {
+  const rows = await db
+    .update(paymentInfo)
+    .set({
       status: "PAYMENT_RECEIVED",
       method: data.method,
       accountIdentifier: data.accountIdentifier,
@@ -127,6 +164,13 @@ export async function markPaymentReceived(
       notes: data.notes ?? null,
       ...(data.extra !== undefined ? { extra: data.extra } : {}),
       submittedAt: new Date(),
-    },
-  });
+    })
+    .where(eq(paymentInfo.instanceId, instanceId))
+    .returning();
+  const updated = rows[0];
+  if (!updated) {
+    // Prisma threw P2025 here; the Payment Info node created the row earlier.
+    throw new Error(`PaymentInfo for instance ${instanceId} not found`);
+  }
+  return updated;
 }

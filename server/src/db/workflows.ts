@@ -1,29 +1,47 @@
-import type { Workflow, WorkflowVersion, Prisma } from "@prisma/client";
-import { prisma } from "./client.js";
+import { asc, desc, eq } from "drizzle-orm";
+import { db } from "./drizzle.js";
+import {
+  workflows,
+  workflowVersions,
+  type Workflow,
+  type WorkflowInsert,
+  type WorkflowVersion,
+  type WorkflowVersionInsert,
+} from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
 
 export async function findWorkflowById(id: string): Promise<Workflow | null> {
-  return prisma.workflow.findUnique({ where: { id } });
+  const rows = await db.select().from(workflows).where(eq(workflows.id, id)).limit(1);
+  return rows[0] ?? null;
 }
 
 export async function listWorkflows(): Promise<Workflow[]> {
-  return prisma.workflow.findMany({ orderBy: { createdAt: "desc" } });
+  return db.select().from(workflows).orderBy(desc(workflows.createdAt));
 }
 
-export async function createWorkflow(
-  data: Prisma.WorkflowCreateInput,
-): Promise<Workflow> {
-  return prisma.workflow.create({ data });
+export async function createWorkflow(data: WorkflowInsert): Promise<Workflow> {
+  const rows = await db.insert(workflows).values(data).returning();
+  return rows[0]!;
 }
 
 export async function updateWorkflow(
   id: string,
-  data: Prisma.WorkflowUpdateInput,
+  data: Partial<WorkflowInsert>,
 ): Promise<Workflow> {
-  return prisma.workflow.update({ where: { id }, data });
+  const rows = await db
+    .update(workflows)
+    .set(data)
+    .where(eq(workflows.id, id))
+    .returning();
+  const updated = rows[0];
+  if (!updated) {
+    // Prisma threw P2025 here; callers resolve the workflow first.
+    throw new Error(`Workflow ${id} not found`);
+  }
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -31,29 +49,39 @@ export async function updateWorkflow(
 // ---------------------------------------------------------------------------
 
 export async function findVersionById(id: string): Promise<WorkflowVersion | null> {
-  return prisma.workflowVersion.findUnique({ where: { id } });
+  const rows = await db
+    .select()
+    .from(workflowVersions)
+    .where(eq(workflowVersions.id, id))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function findLatestVersion(
   workflowId: string,
 ): Promise<WorkflowVersion | null> {
-  return prisma.workflowVersion.findFirst({
-    where: { workflowId },
-    orderBy: { version: "desc" },
-  });
+  const rows = await db
+    .select()
+    .from(workflowVersions)
+    .where(eq(workflowVersions.workflowId, workflowId))
+    .orderBy(desc(workflowVersions.version))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 export async function listVersions(workflowId: string): Promise<WorkflowVersion[]> {
-  return prisma.workflowVersion.findMany({
-    where: { workflowId },
-    orderBy: { version: "asc" },
-  });
+  return db
+    .select()
+    .from(workflowVersions)
+    .where(eq(workflowVersions.workflowId, workflowId))
+    .orderBy(asc(workflowVersions.version));
 }
 
 export async function createVersion(
-  data: Prisma.WorkflowVersionCreateInput,
+  data: WorkflowVersionInsert,
 ): Promise<WorkflowVersion> {
-  return prisma.workflowVersion.create({ data });
+  const rows = await db.insert(workflowVersions).values(data).returning();
+  return rows[0]!;
 }
 
 /** Compute the next version number for a workflow. */
