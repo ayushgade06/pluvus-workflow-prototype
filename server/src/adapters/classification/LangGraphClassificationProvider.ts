@@ -2,6 +2,7 @@ import type { ClassificationProvider } from "./ClassificationProvider.js";
 import type { ClassificationRequest, ClassificationResponse, ReplyIntentValue } from "./types.js";
 import { agentBaseUrl, agentPostJson, classifyTimeoutMs } from "../agentServiceClient.js";
 import { replyIntentEnum } from "../../db/schema.js";
+import { recordAgentLlmUsage } from "../../observability/llmUsage.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph classification provider
@@ -44,6 +45,12 @@ export class LangGraphClassificationProvider implements ClassificationProvider {
       { message: req.message },
       { timeoutMs: classifyTimeoutMs() },
     );
+
+    // HARD-O1: persist the token/latency/cost telemetry this response carries
+    // (fire-and-forget; attributed to the instance via the runtime's ALS scope).
+    // Before the malformed-response check on purpose — a rejected response still
+    // consumed tokens.
+    recordAgentLlmUsage("classify", data);
 
     const intent = data["intent"];
     const confidence = data["confidence"];

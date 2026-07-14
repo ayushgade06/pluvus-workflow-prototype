@@ -26,12 +26,15 @@ import { isTerminal } from "../engine/stateMachine.js";
 import { reconcileStuckInstances, type ReconciliationDeps } from "./reconciliation.js";
 import type { NodeExecutionJobData } from "../workers/jobs.js";
 
-// The WAITING states are deliberately excluded from the sweep (the due poller
-// covers AWAITING_REPLY/FOLLOWED_UP; REWARD_PENDING/PAYMENT_PENDING are parked on
-// an external reply/form). Re-enqueuing those would spam, not recover.
+// The genuinely-WAITING states are deliberately excluded from the sweep (the due
+// poller covers AWAITING_REPLY; REWARD_PENDING/PAYMENT_PENDING are parked on an
+// external reply/form). Re-enqueuing those would spam, not recover.
+//
+// W-2: FOLLOWED_UP is NOT in this list anymore — it is transient (committed with
+// dueAt=null and auto-chained back to AWAITING_REPLY), so the due poller cannot
+// recover a lost auto-chain enqueue and the sweep must. See RECONCILE_STATES.
 const WAITING_STATES: InstanceState[] = [
   "AWAITING_REPLY",
-  "FOLLOWED_UP",
   "REWARD_PENDING",
   "PAYMENT_PENDING",
 ];
@@ -44,6 +47,14 @@ test("H8: RECONCILE_STATES includes NEGOTIATING and REPLY_RECEIVED (the flagged 
   assert.ok(
     RECONCILE_STATES.includes("REPLY_RECEIVED"),
     "a reply-received instance stranded (CRITICAL-6 path) must be recoverable",
+  );
+});
+
+test("W-2: RECONCILE_STATES includes FOLLOWED_UP (transient, dueAt=null, no other recovery)", () => {
+  assert.ok(
+    RECONCILE_STATES.includes("FOLLOWED_UP"),
+    "FOLLOWED_UP is committed with dueAt=null and auto-chained; a lost enqueue " +
+      "can't be recovered by the due poller (needs dueAt<=now), so the sweep must",
   );
 });
 

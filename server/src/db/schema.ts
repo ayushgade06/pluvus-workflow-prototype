@@ -433,6 +433,43 @@ export const paymentInfo = pgTable(
   ],
 );
 
+// HARD-O1: one row per LLM call the agent service made on behalf of a workflow
+// instance — the durable token/latency/cost telemetry the in-process agent ring
+// buffer cannot provide. Rows are written best-effort by the observability sink
+// (llmUsage.ts) from the `llmUsage` block each agent response carries; a lost
+// row degrades reporting, never the workflow, so there is no FK-cascade or
+// NOT NULL coupling beyond the instance reference. instanceId is nullable:
+// calls made outside an instance step (harnesses, ad-hoc API use) still count
+// toward totals. Token columns are nullable — a provider that reports no
+// usage_metadata stays "unreported", distinct from 0.
+export const llmCalls = pgTable(
+  "LlmCall",
+  {
+    id: cuidId("id"),
+    instanceId: text("instanceId").references(() => executionInstances.id),
+    // Which agent path made the call: "classify" | "negotiate" | "draft".
+    role: text("role").notNull(),
+    // Provider-qualified model label (e.g. "anthropic:claude-opus-4-8").
+    model: text("model").notNull(),
+    promptVersion: text("promptVersion"),
+    latencyMs: doublePrecision("latencyMs").notNull(),
+    inputTokens: integer("inputTokens"),
+    outputTokens: integer("outputTokens"),
+    totalTokens: integer("totalTokens"),
+    estCostUsd: doublePrecision("estCostUsd"),
+    ok: boolean("ok").notNull().default(true),
+    errorKind: text("errorKind"),
+    createdAt: tsNow("createdAt"),
+  },
+  (table) => [
+    index("LlmCall_instanceId_idx").on(table.instanceId),
+    index("LlmCall_createdAt_idx").on(table.createdAt),
+  ],
+);
+
+/** The agent paths that produce LLM calls (LlmCall.role values). */
+export type LlmCallRole = "classify" | "negotiate" | "draft";
+
 // ---------------------------------------------------------------------------
 // drizzle-zod insert-schema companions (parent Pluvus convention)
 // ---------------------------------------------------------------------------
@@ -493,6 +530,7 @@ export type Event = typeof events.$inferSelect;
 export type OutboxJob = typeof outboxJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
+export type LlmCall = typeof llmCalls.$inferSelect;
 
 export type InsertCampaign = z.infer<typeof insertCampaignSchema>;
 export type InsertWorkflow = z.infer<typeof insertWorkflowSchema>;
@@ -521,3 +559,4 @@ export type EventInsert = typeof events.$inferInsert;
 export type OutboxJobInsert = typeof outboxJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
+export type LlmCallInsert = typeof llmCalls.$inferInsert;

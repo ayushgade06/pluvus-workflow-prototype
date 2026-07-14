@@ -28,7 +28,7 @@ from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.topic_gate import detect_escalation_topic
 from app.structured import StructuredOutputError, invoke_structured
-from app.telemetry import set_active_prompt_version
+from app.telemetry import capture_llm_calls, set_active_prompt_version, usage_payload
 
 router = APIRouter()
 logger = logging.getLogger("agent.classify")
@@ -60,6 +60,11 @@ class ClassifyResponse(BaseModel):
     # intent/confidence, and the server uses this as the escalation reason for the
     # Manual Queue. None on the normal path.
     escalationReason: str | None = None
+    # HARD-O1: token/latency/cost telemetry for every LLM call this request made
+    # ({calls, totals} — see telemetry.usage_payload). The TS server persists it
+    # attributed to the instance; a deterministic-gate classification carries
+    # zero calls. None only for old/other callers that bypass the route.
+    llmUsage: dict | None = None
 
 
 class _ClassifyLLMOutput(BaseModel):
@@ -286,7 +291,13 @@ def classify_message(message: str) -> ClassifyResponse:
 )
 def classify(req: ClassifyRequest) -> ClassifyResponse:
     try:
-        return classify_message(req.message)
+        # HARD-O1: capture every LLM call made while serving THIS request so the
+        # response carries its own token/latency/cost usage across the HTTP seam
+        # (the server persists it attributed to the workflow instance).
+        with capture_llm_calls() as calls:
+            result = classify_message(req.message)
+        result.llmUsage = usage_payload(calls)
+        return result
     except Exception as exc:
         # EASY-S1: log the real error server-side (with any raw preview) but return
         # a GENERIC detail to the client — the exception text can carry model output

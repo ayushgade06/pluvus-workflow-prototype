@@ -173,6 +173,9 @@ export interface IAgentProvider {
       // earlier unanswered question rather than dropping it.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // Q3 (founder, autonomous launch): true on the LAST negotiation round so
+      // the offer email states finality to the creator.
+      isFinalRound?: boolean;
     },
   ): Promise<EmailDraft | null>;
 }
@@ -360,6 +363,7 @@ export function mapNegotiationResponse(
     pushedFixedTerms?: string[];
     creatorRequestedRate?: number;
     escalationReason?: string;
+    isFinalRound?: boolean;
   },
   round: number,
 ): NegotiateResult {
@@ -379,6 +383,10 @@ export function mapNegotiationResponse(
     ...(typeof resp.creatorRequestedRate === "number" && Number.isFinite(resp.creatorRequestedRate)
       ? { creatorRequestedRate: resp.creatorRequestedRate }
       : {}),
+    // Q3 (founder, autonomous launch): the final-round flag rides along on every
+    // outcome so the offer branches (accept/counter/present_offer) can thread it
+    // into /draft. Only spread when true so non-final turns leave it undefined.
+    ...(resp.isFinalRound === true ? { isFinalRound: true as const } : {}),
   };
 
   switch (resp.action) {

@@ -53,7 +53,7 @@ from app.injection import (
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.structured import invoke_structured, StructuredOutputError
-from app.telemetry import set_active_prompt_version
+from app.telemetry import capture_llm_calls, set_active_prompt_version, usage_payload
 from app.topic_gate import detect_escalation_topic
 
 logger = logging.getLogger("agent.negotiate")
@@ -230,6 +230,21 @@ class NegotiateResponse(BaseModel):
     # APPROVE records) — the TS regex is demoted to copy acknowledgment. None
     # when the creator named no single figure.
     creatorRequestedRate: float | None = None
+    # Q3 (founder, autonomous launch): True when THIS is the last negotiation round
+    # the executor will run (round + 1 >= maxRounds; unlimited when maxRounds <= 0).
+    # The executor threads it into the /draft call so the SENT email states finality
+    # to the creator ("this is our final rate — we can't negotiate further"). It is
+    # the outbound-facing counterpart to the internal `is_final_round` decision flag
+    # (which only makes the model close rather than counter). Default False keeps the
+    # wire response backward-compatible; rules/LangGraph paths leave it False unless
+    # explicitly set. A pre-LLM max-rounds early return is already terminal (the
+    # executor auto-rejects), so it does not set this.
+    isFinalRound: bool = False
+    # HARD-O1: token/latency/cost telemetry for every LLM call this request made
+    # ({calls, totals} — see telemetry.usage_payload). Persisted by the TS server
+    # attributed to the instance. A pre-LLM early return (max-rounds) carries
+    # zero calls.
+    llmUsage: dict | None = None
 
 
 class _NegotiateExtractionOutput(BaseModel):
@@ -389,11 +404,21 @@ class DraftRequest(BaseModel):
     # outstanding. The executor computes the diff; the prompt folds these into the
     # must-answer checklist.
     openQuestions: list[str] = []
+    # Q3 (founder, autonomous launch): True when this is the LAST negotiation round
+    # (threaded from the /negotiate response). When set, the offer email states
+    # finality to the creator — "this is our final rate; we can't negotiate further"
+    # — so a reject/no-reply leads to the auto-close the executor already does, and
+    # the creator is not left expecting another round. Default False (all non-final
+    # turns and every non-offer purpose render exactly as before).
+    isFinalRound: bool = False
 
 
 class DraftResponse(BaseModel):
     subject: str
     body: str
+    # HARD-O1: token/latency/cost telemetry for every LLM call this request made
+    # (see NegotiateResponse.llmUsage).
+    llmUsage: dict | None = None
 
 
 class _DraftLLMOutput(BaseModel):
@@ -1615,6 +1640,10 @@ def _llm_negotiate_decision(
     resp.creatorRequestedRate = _validate_extracted_rate(
         parsed.creatorRateMentioned, req.creatorReply
     )
+    # Q3: surface finality to the executor so the SENT email can tell the creator
+    # this is the last round. Distinct from the internal `is_final_round` decision
+    # flag (close-not-counter) — this one is outbound-facing.
+    resp.isFinalRound = is_final_round
     return resp
 
 
@@ -2003,6 +2032,8 @@ def _rules_negotiate(
     resp.pushedFixedTerms = _normalize_pushed_terms(parsed.pushedFixedTerms)
     # MED-N3: the validated creator ask, same contract as the llm path.
     resp.creatorRequestedRate = creator_rate
+    # Q3: surface finality to the executor (same contract as the llm path).
+    resp.isFinalRound = is_final_round
     return resp
 
 
@@ -2217,7 +2248,7 @@ Formatting (REQUIRED — a well-structured, multi-paragraph email, NOT one block
   never a single run-on paragraph.
 
 Rules (strictly enforced):
-{fee_rule}{commission_guard}{pushed_terms_guard}- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
+{fee_rule}{commission_guard}{pushed_terms_guard}{final_offer_rule}- This is an OFFER we are proposing, NOT a closed deal. The creator has not yet
   accepted these terms. NEVER write "as agreed", "agreed", "confirmed", "as
   discussed", or any wording implying the fee/terms are already settled. Present
   the fee as our proposal, and invite the creator to confirm.
@@ -2810,6 +2841,29 @@ def _build_offer_prompt(
     _points = [g for g in (base_fee_goal, deal_goal, deliverables_goal, fixed_terms_goal) if g]
     numbered_points = "".join(f"{i}. {g}" for i, g in enumerate(_points, start=1))
 
+    # Q3 (founder, autonomous launch): on the FINAL round, the email must tell the
+    # creator plainly that this is our best-and-final rate and no further
+    # negotiation is possible — so a decline/no-reply cleanly ends the conversation
+    # (the executor auto-rejects + sends a close email) and the creator is not left
+    # expecting another counter. Only meaningful with a concrete rate on the table;
+    # a rate-less final turn keeps the honest-defer copy and adds no false finality.
+    # Rendered as a hard Rules-section line (the model can't drop it) rather than a
+    # soft goal, and it overrides the standing "invite them to confirm or ask
+    # questions" CTA above with a take-it-or-leave-it framing.
+    if req.isFinalRound and has_rate:
+        final_offer_rule = (
+            f"- This is our FINAL round of negotiation. The email MUST state clearly "
+            f"and warmly that {offer_rate} is our best and final offer for this "
+            f"campaign and that we are unable to negotiate the fee any further. Say "
+            f"this plainly (a phrase like \"this is our final offer\" or \"we're "
+            f"unable to go higher\"), then invite the creator to confirm if it works "
+            f"for them. Do NOT promise, hint at, or invite further back-and-forth on "
+            f"the fee, and do NOT ask them to counter — the fee is fixed at "
+            f"{offer_rate} now. Keep the tone friendly, not cold or ultimatum-like.\n"
+        )
+    else:
+        final_offer_rule = ""
+
     extra_parts: list[str] = []
     # HARD-N2: prior conversation FIRST (oldest→newest) so the model sees the arc
     # before the latest reply and this turn's copy stays consistent with it.
@@ -2850,6 +2904,7 @@ def _build_offer_prompt(
         deliverables_bullet_hint=deliverables_bullet_hint,
         brand_goal=brand_goal,
         pushed_terms_guard=pushed_terms_guard,
+        final_offer_rule=final_offer_rule,
         extra="\n".join(extra_parts),
     )
 
@@ -3457,9 +3512,15 @@ def negotiate(req: NegotiateRequest) -> NegotiateResponse:
         return NegotiateResponse(
             action="ESCALATE",
             reasoning=f"Max rounds ({req.maxRounds}) reached",
+            llmUsage=usage_payload([]),
         )
     try:
-        return _langgraph_negotiate(req)
+        # HARD-O1: capture every LLM call made while serving THIS request so the
+        # response carries its own token/latency/cost usage across the HTTP seam.
+        with capture_llm_calls() as calls:
+            result = _langgraph_negotiate(req)
+        result.llmUsage = usage_payload(calls)
+        return result
     except Exception as exc:
         # EASY-S1: generic client detail; the real error (which can carry model
         # output — a quoted rate, a raw-response preview) is logged server-side only.
@@ -3474,7 +3535,12 @@ def negotiate(req: NegotiateRequest) -> NegotiateResponse:
 )
 def draft(req: DraftRequest) -> DraftResponse:
     try:
-        return _langgraph_draft(req)
+        # HARD-O1: capture every LLM call made while serving THIS request so the
+        # response carries its own token/latency/cost usage across the HTTP seam.
+        with capture_llm_calls() as calls:
+            result = _langgraph_draft(req)
+        result.llmUsage = usage_payload(calls)
+        return result
     except Exception as exc:
         # EASY-S1: generic client detail; real error logged server-side only.
         logger.exception("draft failed")

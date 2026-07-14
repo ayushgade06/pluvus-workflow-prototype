@@ -143,6 +143,53 @@ export interface InstanceDetail {
   messages: MessageDTO[];
   events: EventDTO[];
   agentDecisions: AgentDecisionDTO[];
+  llmUsage: {
+    totals: LlmUsageTotals;
+    calls: LlmCallDTO[];
+  };
+}
+
+// ---- LLM usage (HARD-O1) ----
+
+export type LlmCallRole = "classify" | "negotiate" | "draft";
+
+export interface LlmCallDTO {
+  id: string;
+  role: LlmCallRole;
+  model: string;
+  promptVersion: string | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  estCostUsd: number | null;
+  ok: boolean;
+  errorKind: string | null;
+  createdAt: string;
+}
+
+export interface LlmUsageTotals {
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estCostUsd: number;
+  avgLatencyMs: number | null;
+}
+
+export interface LlmUsageBreakdownEntry {
+  key: string;
+  totals: LlmUsageTotals;
+}
+
+export interface LlmUsageSummary {
+  totals: LlmUsageTotals;
+  last24h: LlmUsageTotals;
+  byRole: LlmUsageBreakdownEntry[];
+  byModel: LlmUsageBreakdownEntry[];
+  recent: LlmCallDTO[];
+  generatedAt: string;
 }
 
 // ---- timeline ----

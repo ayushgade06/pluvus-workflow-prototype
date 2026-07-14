@@ -15,8 +15,9 @@ import { Timeline } from "./Timeline";
 import { MessageThread } from "./MessageThread";
 import { AgentDecisions } from "./AgentDecisions";
 import { LogsTrace } from "./LogsTrace";
+import { InstanceLlmUsage } from "./LlmUsagePanel";
 
-type Tab = "timeline" | "messages" | "decisions" | "logs";
+type Tab = "timeline" | "messages" | "decisions" | "usage" | "logs";
 
 interface Props {
   instanceId: string;
@@ -100,6 +101,7 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
         <TabButton label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} count={timeline.data?.entries.length} />
         <TabButton label="Messages" active={tab === "messages"} onClick={() => setTab("messages")} count={d?.messages.length} />
         <TabButton label="AI Decisions" active={tab === "decisions"} onClick={() => setTab("decisions")} count={d?.agentDecisions.length} />
+        <TabButton label="AI Usage" active={tab === "usage"} onClick={() => setTab("usage")} count={d?.llmUsage?.calls.length} />
         <TabButton label="Logs" active={tab === "logs"} onClick={() => setTab("logs")} count={logs.data?.trace.length} />
       </div>
 
@@ -121,6 +123,22 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
           <>
             <SectionTitle>Agent Decisions</SectionTitle>
             {detail.isLoading ? <Spinner /> : <AgentDecisions decisions={d?.agentDecisions ?? []} />}
+          </>
+        )}
+        {tab === "usage" && (
+          <>
+            <SectionTitle>AI Usage</SectionTitle>
+            <p style={{ fontSize: 11, color: colors.textDim, margin: "0 0 12px", lineHeight: 1.4 }}>
+              Every LLM call made on behalf of this creator — tokens, estimated cost, and latency,
+              per classify / negotiate / draft step. "—" means the provider reported no token usage.
+            </p>
+            {detail.isLoading ? (
+              <Spinner />
+            ) : d?.llmUsage ? (
+              <InstanceLlmUsage totals={d.llmUsage.totals} calls={d.llmUsage.calls} />
+            ) : (
+              <Empty>No usage data.</Empty>
+            )}
           </>
         )}
         {tab === "logs" && (

@@ -442,7 +442,7 @@ export async function executeNegotiation(
   // feeds the MONEY path (context.creatorRate on a brand decision, which a brand
   // APPROVE records as the deal rate). The regex remains a fallback for copy
   // acknowledgment and guard allowlisting only.
-  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason } =
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound } =
     await agent.negotiate(instance.negotiationRound, config, creatorReply, priorContext);
 
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
@@ -717,6 +717,12 @@ export async function executeNegotiation(
         // every question and acknowledges any pushed fixed term (Case-10 gap).
         ...(creatorQuestions?.length ? { creatorQuestions } : {}),
         ...(pushedFixedTerms?.length ? { pushedFixedTerms } : {}),
+        // Q3 (founder, autonomous launch): on the LAST round the counter email
+        // states finality ("this is our final rate; no further negotiation"). A
+        // counter IS the offer the creator can accept or decline; a decline/no-
+        // reply then leads to the auto-close the executor already does, so telling
+        // them it's final is essential — otherwise they expect another round.
+        ...(isFinalRound ? { isFinalRound: true } : {}),
         // HARD-N2: conversation transcript + earlier-round unanswered questions.
         ...draftHistoryExtra,
       };

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import type { RequestHandler } from "express";
 import { Router } from "express";
 import {
   getNodeExecutionQueue,
@@ -9,6 +10,41 @@ import {
 import { findInstanceById } from "../db/index.js";
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// W-4: gate the injection (mutation) endpoints.
+// ---------------------------------------------------------------------------
+// The POST routes below enqueue REAL node-execution / inbound-email jobs that
+// drive the live state machine — including `mockIntent`, which can fabricate a
+// creator's "acceptance" and forge money-path inputs. Unlike the read-only GET
+// diagnostics on this router, these must NOT be reachable on an exposed prod
+// port. They are compiled to a 404 unless the process is running tests OR an
+// operator has explicitly opted in with ENABLE_QUEUE_INJECTION=true (for a
+// trusted local dev / harness box). A 404 (not 403) keeps the surface
+// undiscoverable in production.
+// Pure so it can be unit-tested without touching a live process.env / HTTP.
+export function queueInjectionAllowed(
+  nodeEnv: string | undefined,
+  enableFlag: string | undefined,
+): boolean {
+  if ((nodeEnv ?? "").toLowerCase() === "test") return true;
+  return (enableFlag ?? "").toLowerCase() === "true";
+}
+
+function queueInjectionEnabled(): boolean {
+  return queueInjectionAllowed(
+    process.env["NODE_ENV"],
+    process.env["ENABLE_QUEUE_INJECTION"],
+  );
+}
+
+const requireInjectionEnabled: RequestHandler = (_req, res, next) => {
+  if (!queueInjectionEnabled()) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  next();
+};
 
 // ---------------------------------------------------------------------------
 // GET /queues/health
@@ -100,8 +136,9 @@ router.get("/jobs", async (req, res) => {
 // Manually enqueue a node-execution job (for testing / harness use).
 //
 // Body: { instanceId: string, triggerRef?: string }
+// W-4: injection endpoint — gated to test / opt-in dev (see requireInjectionEnabled).
 
-router.post("/node-execution", async (req, res) => {
+router.post("/node-execution", requireInjectionEnabled, async (req, res) => {
   const { instanceId, triggerRef } = req.body as {
     instanceId?: string;
     triggerRef?: string;
@@ -146,8 +183,11 @@ router.post("/node-execution", async (req, res) => {
 //   mockIntent?: "POSITIVE" | "NEGATIVE" | "QUESTION" | "OPT_OUT",
 //   threadId?: string,
 // }
+// W-4: injection endpoint — this one can force a `mockIntent` (a fabricated
+// creator acceptance), so it is the highest-risk surface. Gated to test / opt-in
+// dev (see requireInjectionEnabled).
 
-router.post("/inbound-email", async (req, res) => {
+router.post("/inbound-email", requireInjectionEnabled, async (req, res) => {
   const {
     instanceId,
     subject = "Re: Collaboration opportunity",

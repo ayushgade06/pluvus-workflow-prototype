@@ -7,12 +7,13 @@
 // Phase 9 is read-only: nothing here mutates execution state. The only reads
 // that touch the engine's tables are SELECTs.
 
-import { and, asc, count, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db/drizzle.js";
 import {
   creators,
   events as eventsTable,
   executionInstances,
+  llmCalls as llmCallsTable,
   messages as messagesTable,
   workflows,
   workflowVersions,
@@ -20,6 +21,8 @@ import {
   type ExecutionInstance,
   type InstanceState,
   type JsonValue,
+  type LlmCall,
+  type LlmCallRole,
   type Message,
 } from "../db/schema.js";
 import {
@@ -38,6 +41,10 @@ import {
   type TimelineEntryDTO,
   type LogsDTO,
   type LogEntryDTO,
+  type LlmCallDTO,
+  type LlmUsageTotalsDTO,
+  type LlmUsageBreakdownEntryDTO,
+  type LlmUsageSummaryDTO,
 } from "./dto.js";
 
 // An instance in a waiting state is "stuck" if its dueAt passed more than this
@@ -372,7 +379,7 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
     .limit(1);
   const versionInfo = versionRows[0] ?? null;
 
-  const [instMessages, instEvents] = await Promise.all([
+  const [instMessages, instEvents, instLlmCalls] = await Promise.all([
     db
       .select()
       .from(messagesTable)
@@ -383,6 +390,11 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
       .from(eventsTable)
       .where(eq(eventsTable.instanceId, id))
       .orderBy(asc(eventsTable.occurredAt)),
+    db
+      .select()
+      .from(llmCallsTable)
+      .where(eq(llmCallsTable.instanceId, id))
+      .orderBy(asc(llmCallsTable.createdAt)),
   ]);
 
   // Attribute each outbound message to a negotiation round, when discoverable
@@ -432,6 +444,10 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
     ),
     events: instEvents.map(mapEvent),
     agentDecisions: extractAgentDecisions(instEvents),
+    llmUsage: {
+      totals: llmTotalsFromCalls(instLlmCalls),
+      calls: instLlmCalls.map(mapLlmCall),
+    },
   };
 }
 
@@ -546,4 +562,139 @@ export async function getLogs(id: string): Promise<LogsDTO | null> {
   });
 
   return { instanceId: id, trace };
+}
+
+// ---------------------------------------------------------------------------
+// LLM usage (HARD-O1)
+// ---------------------------------------------------------------------------
+// Aggregates over the LlmCall table — the durable token/latency/cost telemetry
+// the agent's in-process ring buffer cannot provide. Totals are computed in
+// SQL (never a truncated in-memory scan) so they stay correct as the table
+// grows; only the `recent` list is bounded.
+
+const RECENT_LLM_CALLS_LIMIT = 50;
+
+function mapLlmCall(c: LlmCall): LlmCallDTO {
+  return {
+    id: c.id,
+    role: c.role as LlmCallRole,
+    model: c.model,
+    promptVersion: c.promptVersion,
+    latencyMs: c.latencyMs,
+    inputTokens: c.inputTokens,
+    outputTokens: c.outputTokens,
+    totalTokens: c.totalTokens,
+    estCostUsd: c.estCostUsd,
+    ok: c.ok,
+    errorKind: c.errorKind,
+    createdAt: c.createdAt.toISOString(),
+  };
+}
+
+/** In-memory totals for a small, already-loaded set (one instance's calls). */
+function llmTotalsFromCalls(calls: LlmCall[]): LlmUsageTotalsDTO {
+  const n = calls.length;
+  return {
+    calls: n,
+    errors: calls.filter((c) => !c.ok).length,
+    inputTokens: calls.reduce((a, c) => a + (c.inputTokens ?? 0), 0),
+    outputTokens: calls.reduce((a, c) => a + (c.outputTokens ?? 0), 0),
+    totalTokens: calls.reduce((a, c) => a + (c.totalTokens ?? 0), 0),
+    estCostUsd: round6(calls.reduce((a, c) => a + (c.estCostUsd ?? 0), 0)),
+    avgLatencyMs: n > 0 ? Math.round(calls.reduce((a, c) => a + c.latencyMs, 0) / n) : null,
+  };
+}
+
+function round6(v: number): number {
+  return Math.round(v * 1e6) / 1e6;
+}
+
+// The SQL-side aggregate selection shared by the totals / windowed / grouped
+// queries. Sums coalesce to 0 (unreported usage counts as 0 toward totals);
+// avg stays null when there are no rows.
+function llmTotalsSelection() {
+  return {
+    calls: count(),
+    errors: sql<number>`count(*) filter (where ${llmCallsTable.ok} = false)`.mapWith(Number),
+    inputTokens: sql<number>`coalesce(sum(${llmCallsTable.inputTokens}), 0)`.mapWith(Number),
+    outputTokens: sql<number>`coalesce(sum(${llmCallsTable.outputTokens}), 0)`.mapWith(Number),
+    totalTokens: sql<number>`coalesce(sum(${llmCallsTable.totalTokens}), 0)`.mapWith(Number),
+    estCostUsd: sql<number>`coalesce(sum(${llmCallsTable.estCostUsd}), 0)`.mapWith(Number),
+    avgLatencyMs: sql<number | null>`avg(${llmCallsTable.latencyMs})`,
+  };
+}
+
+type LlmTotalsRow = {
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estCostUsd: number;
+  avgLatencyMs: number | string | null;
+};
+
+function toTotalsDTO(row: LlmTotalsRow | undefined): LlmUsageTotalsDTO {
+  if (!row) {
+    return {
+      calls: 0,
+      errors: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      estCostUsd: 0,
+      avgLatencyMs: null,
+    };
+  }
+  // avg() arrives as a numeric string from the driver; normalize + round.
+  const avg = row.avgLatencyMs === null ? null : Math.round(Number(row.avgLatencyMs));
+  return {
+    calls: row.calls,
+    errors: row.errors,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    totalTokens: row.totalTokens,
+    estCostUsd: round6(row.estCostUsd),
+    avgLatencyMs: avg,
+  };
+}
+
+export async function getLlmUsage(): Promise<LlmUsageSummaryDTO> {
+  const now = Date.now();
+  const dayAgo = new Date(now - 24 * 60 * 60 * 1000);
+
+  const [allRows, dayRows, roleRows, modelRows, recentRows] = await Promise.all([
+    db.select(llmTotalsSelection()).from(llmCallsTable),
+    db
+      .select(llmTotalsSelection())
+      .from(llmCallsTable)
+      .where(gte(llmCallsTable.createdAt, dayAgo)),
+    db
+      .select({ key: llmCallsTable.role, ...llmTotalsSelection() })
+      .from(llmCallsTable)
+      .groupBy(llmCallsTable.role),
+    db
+      .select({ key: llmCallsTable.model, ...llmTotalsSelection() })
+      .from(llmCallsTable)
+      .groupBy(llmCallsTable.model),
+    db
+      .select()
+      .from(llmCallsTable)
+      .orderBy(desc(llmCallsTable.createdAt))
+      .limit(RECENT_LLM_CALLS_LIMIT),
+  ]);
+
+  const breakdown = (rows: Array<LlmTotalsRow & { key: string }>): LlmUsageBreakdownEntryDTO[] =>
+    rows
+      .map((r) => ({ key: r.key, totals: toTotalsDTO(r) }))
+      .sort((a, b) => b.totals.calls - a.totals.calls);
+
+  return {
+    totals: toTotalsDTO(allRows[0]),
+    last24h: toTotalsDTO(dayRows[0]),
+    byRole: breakdown(roleRows),
+    byModel: breakdown(modelRows),
+    recent: recentRows.map(mapLlmCall),
+    generatedAt: new Date(now).toISOString(),
+  };
 }

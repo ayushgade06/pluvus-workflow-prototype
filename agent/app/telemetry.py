@@ -29,7 +29,10 @@ from __future__ import annotations
 import logging
 import os
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
+from typing import Iterator
 
 logger = logging.getLogger("agent.telemetry")
 
@@ -133,10 +136,14 @@ def extract_usage(result: object) -> tuple[int | None, int | None, int | None]:
 
 def emit_llm_metric(record: LLMCallRecord) -> None:
     """The SINGLE sink for an instrumented LLM call. Today it logs a structured
-    line and appends to the in-process ring buffer; wire an OTel/Prometheus
+    line, appends to the in-process ring buffer, and hands the record to any
+    active per-request capture (see capture_llm_calls); wire an OTel/Prometheus
     exporter HERE to ship the same record to a real backend (the acceptance-
     criterion infra) without touching any call site."""
     _recent.append(record)
+    captured = _active_capture.get()
+    if captured is not None:
+        captured.append(record)
     # Structured, grep-/parse-friendly. Keep keys stable — dashboards key on them.
     logger.info(
         "llm_call model=%s promptVersion=%s latency_ms=%.0f input_tokens=%s "
@@ -185,19 +192,67 @@ def record_llm_call(
 # The LLM layer (llm.py) doesn't know which prompt is being run — the routes do.
 # A route sets the active prompt version for the duration of a call so the
 # telemetry record can be stamped with it without threading the string through
-# every function signature. Simple module-global (the agent handles one request
-# per thread at the invoke seam); a real async deployment would use ContextVar.
+# every function signature. A ContextVar (not a module global): FastAPI runs
+# sync endpoints on a threadpool, so concurrent requests would cross-stamp each
+# other's prompt version through a shared global. record_llm_call runs on the
+# request's own thread (the executor in structured.py only bounds model.invoke),
+# so the request context is visible everywhere a record is emitted.
 
-_active_prompt_version: str | None = None
+_active_prompt_version: ContextVar[str | None] = ContextVar(
+    "llm_prompt_version", default=None
+)
 
 
 def set_active_prompt_version(version: str | None) -> None:
-    global _active_prompt_version
-    _active_prompt_version = version
+    _active_prompt_version.set(version)
 
 
 def get_active_prompt_version() -> str | None:
-    return _active_prompt_version
+    return _active_prompt_version.get()
+
+
+# ---------------------------------------------------------------------------
+# Per-request usage capture (usage crosses the HTTP seam to the caller)
+# ---------------------------------------------------------------------------
+# The ring buffer is process-wide and ephemeral — it cannot answer "what did
+# THIS request cost" and dies with the process. capture_llm_calls() gives a
+# route a request-scoped list that every record emitted during the request is
+# appended to (including failed candidates and repair retries), which the route
+# then returns to the TS server as the response's `llmUsage` block. ContextVar
+# keeps concurrent requests' captures isolated.
+
+_active_capture: ContextVar["list[LLMCallRecord] | None"] = ContextVar(
+    "llm_usage_capture", default=None
+)
+
+
+@contextmanager
+def capture_llm_calls() -> Iterator[list[LLMCallRecord]]:
+    """Collect every LLMCallRecord emitted while the context is active."""
+    records: list[LLMCallRecord] = []
+    token = _active_capture.set(records)
+    try:
+        yield records
+    finally:
+        _active_capture.reset(token)
+
+
+def usage_payload(records: list[LLMCallRecord]) -> dict:
+    """Shape a capture into the wire `llmUsage` block: per-call records plus
+    request totals. Token totals treat providers that reported no usage as 0;
+    `calls` carries the per-call None so "unreported" stays distinguishable."""
+    return {
+        "calls": [asdict(r) for r in records],
+        "totals": {
+            "calls": len(records),
+            "inputTokens": sum(r.input_tokens or 0 for r in records),
+            "outputTokens": sum(r.output_tokens or 0 for r in records),
+            "totalTokens": sum(r.total_tokens or 0 for r in records),
+            "estCostUsd": round(sum(r.est_cost_usd or 0.0 for r in records), 6),
+            "latencyMs": round(sum(r.latency_ms for r in records), 1),
+            "errors": sum(1 for r in records if not r.ok),
+        },
+    }
 
 
 def recent_records() -> list[dict]:

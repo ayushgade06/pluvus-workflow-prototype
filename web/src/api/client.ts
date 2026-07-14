@@ -13,6 +13,7 @@ import type {
   Timeline,
   Logs,
   InstanceState,
+  LlmUsageSummary,
 } from "./types";
 
 const BASE = "/api/observability";
@@ -42,6 +43,14 @@ export function useWorkflowSummary() {
   return useQuery({
     queryKey: ["workflow-summary"],
     queryFn: () => getJson<WorkflowSummary>(`${BASE}/workflow`),
+    refetchInterval: POLL_INTERVAL_MS,
+  });
+}
+
+export function useLlmUsage() {
+  return useQuery({
+    queryKey: ["llm-usage"],
+    queryFn: () => getJson<LlmUsageSummary>(`${BASE}/llm`),
     refetchInterval: POLL_INTERVAL_MS,
   });
 }

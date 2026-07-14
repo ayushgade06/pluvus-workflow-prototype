@@ -7,6 +7,7 @@ import type {
   DraftResponse,
 } from "./types.js";
 import { agentBaseUrl, agentPostJson } from "../agentServiceClient.js";
+import { recordAgentLlmUsage } from "../../observability/llmUsage.js";
 
 // ---------------------------------------------------------------------------
 // LangGraph negotiation provider
@@ -31,6 +32,12 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
 
   async negotiate(req: NegotiationRequest): Promise<NegotiationResponse> {
     const data = await agentPostJson(this.baseUrl, "/negotiate", req);
+
+    // HARD-O1: persist the token/latency/cost telemetry this response carries
+    // (fire-and-forget; attributed to the instance via the runtime's ALS scope).
+    // Before the malformed-response check on purpose — a rejected response still
+    // consumed tokens.
+    recordAgentLlmUsage("negotiate", data);
 
     if (!isValidAction(data["action"])) {
       throw new Error(
@@ -87,11 +94,20 @@ export class LangGraphNegotiationProvider implements NegotiationProvider {
     if (typeof data["escalationReason"] === "string" && data["escalationReason"]) {
       response.escalationReason = data["escalationReason"];
     }
+    // Q3 (founder, autonomous launch): carry the final-round flag across the seam.
+    // Same field-by-field caveat — uncopied means the offer email never learns it
+    // is the last round and can't state finality to the creator.
+    if (data["isFinalRound"] === true) {
+      response.isFinalRound = true;
+    }
     return response;
   }
 
   async draft(req: DraftRequest): Promise<DraftResponse> {
     const data = await agentPostJson(this.baseUrl, "/draft", req);
+
+    // HARD-O1: persist this response's LLM telemetry (see negotiate above).
+    recordAgentLlmUsage("draft", data);
 
     if (typeof data["subject"] !== "string" || typeof data["body"] !== "string") {
       throw new Error(

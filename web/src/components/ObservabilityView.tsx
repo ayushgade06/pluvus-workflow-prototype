@@ -10,6 +10,7 @@ import type { InstanceState, WorkflowNodeSummary } from "../api/types";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { NodeDrilldown } from "./NodeDrilldown";
 import { InstanceInspector } from "./InstanceInspector";
+import { LlmUsageStrip } from "./LlmUsagePanel";
 import { EmptyState } from "./ds";
 import { colors, font, formatTimestamp } from "../theme";
 
@@ -37,6 +38,7 @@ export default function ObservabilityView() {
         fetching={summary.isFetching}
         error={summary.isError ? (summary.error as Error)?.message : null}
       />
+      <LlmUsageStrip />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <div style={{ flex: 1, minWidth: 0, position: "relative" }}>
           {summary.isLoading ? (

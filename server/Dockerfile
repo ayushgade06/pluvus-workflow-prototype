@@ -12,8 +12,9 @@ COPY server/package.json ./server/
 RUN npm ci --workspace server --include-workspace-root
 
 COPY server ./server
-RUN npm run build --workspace server \
-  && npm run db:generate --workspace server
+# M1 removed Prisma — there is no `db:generate` script anymore; `npm run build`
+# (tsc) is the whole build. The Drizzle client is code, not a generated artifact.
+RUN npm run build --workspace server
 
 FROM node:20-alpine AS runtime
 WORKDIR /app
@@ -22,6 +23,11 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server/node_modules ./server/node_modules
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/server/package.json ./server/
+# The migration SQL is still owned by prisma/migrations/ (the Prisma *runtime* is
+# gone; the .sql files remain the live-Neon schema source). Ship them + the
+# apply-migration.ts runner so a deploy can run migrations from this same image
+# (`npx tsx prisma/apply-migration.ts prisma/migrations/<dir>/migration.sql`).
+COPY --from=build /app/server/prisma ./server/prisma
 # The shared classifier spec (MED-A2) is read at runtime from <repo>/shared.
 COPY shared ./shared
 

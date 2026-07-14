@@ -10,11 +10,23 @@ dependencies = [
     "python-dotenv>=1.0.1",
 ]
 
-# LLM provider is selected at runtime by LLM_PROVIDER (anthropic | ollama); see app/llm.py.
+# LLM provider is selected at runtime by LLM_PROVIDER (openrouter | anthropic |
+# deepseek | ollama); see app/llm.py.
 [project.optional-dependencies]
-# Prod (Anthropic / Claude) — LLM_PROVIDER=anthropic (default). Install with: pip install -e ".[ai]"
+# HOSTED PROD (OpenRouter) — LLM_PROVIDER=openrouter. ONE key gateway → Claude
+# Opus (decisions) + DeepSeek (copy), per-role via OPENROUTER_MODEL_<ROLE>. This
+# is the production install. OpenRouter is OpenAI-compatible → langchain-openai.
+#   pip install -e ".[ai]"
 ai = [
     "langgraph>=0.1.0",
+    "langchain-openai>=0.2.0",
+]
+# Direct-provider variant (skip the OpenRouter gateway) — LLM_PROVIDER=anthropic
+# and/or =deepseek. langchain-anthropic backs Claude-direct; DeepSeek-direct rides
+# langchain-openai. Install with: pip install -e ".[ai-direct]"
+ai-direct = [
+    "langgraph>=0.1.0",
+    "langchain-openai>=0.2.0",
     "langchain-anthropic>=0.3.0",
 ]
 # Local dev (Ollama / Qwen) — LLM_PROVIDER=ollama. Install with: pip install -e ".[ai-ollama]"
@@ -28,6 +40,17 @@ dev = [
     "ruff>=0.4.0",
 ]
 
+# W-5: the repo is a flat layout with TWO importable top-level packages (app —
+# the FastAPI service uvicorn runs as app.main — and eval — the eval harness).
+# setuptools' auto-discovery refuses to guess between multiple flat-layout
+# packages and errored `pip install -e .` even after the build-backend fix, so
+# declare them explicitly. `tests/` is intentionally excluded (not a shipped
+# package). Add new top-level packages here if the layout grows.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "eval*"]
+exclude = ["tests*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -37,4 +60,7 @@ select = ["E", "F", "I"]
 
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+# W-5: was "setuptools.backends.legacy:build" — not a real backend, so
+# `pip install -e .` failed on any fresh env. The correct PEP 517 backend string
+# for setuptools is "setuptools.build_meta".
+build-backend = "setuptools.build_meta"

@@ -95,6 +95,11 @@ export interface NegotiationResponse {
    *  topic reason code (e.g. legal_or_contract). Threaded to the executor so the
    *  MANUAL_REVIEW carries the specific reason. Absent for a normal escalate. */
   escalationReason?: string;
+  /** Q3 (founder, autonomous launch): true when this is the LAST negotiation
+   *  round. Threaded to the executor → /draft so the offer email tells the creator
+   *  this is our final rate and no further negotiation is possible. Absent/false
+   *  on every non-final turn. */
+  isFinalRound?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +157,10 @@ export interface DraftRequest {
    *  rounds that our prior emails never answered, re-surfaced so they aren't
    *  silently dropped. Distinct from creatorQuestions (this turn's asks). */
   openQuestions?: string[] | undefined;
+  /** Q3 (founder, autonomous launch): true on the LAST negotiation round so the
+   *  offer copy states finality ("this is our final rate; no further negotiation").
+   *  Default/absent on every non-final turn (copy renders exactly as before). */
+  isFinalRound?: boolean | undefined;
 }
 
 /** HARD-N2: one turn of the threaded /draft conversation. `role` is "us" for a

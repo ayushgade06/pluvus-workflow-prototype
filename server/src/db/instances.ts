@@ -171,17 +171,29 @@ export async function listDueInstances(
 
 // HARD-R1: the TRANSIENT non-terminal states — ones a crash/Redis blip between an
 // OCC commit and the follow-on enqueue can strand invisibly. These are the states
-// the reconciliation sweep re-enqueues. Deliberately EXCLUDES the legitimate
-// WAITING states (AWAITING_REPLY/FOLLOWED_UP — covered by the due poller;
-// REWARD_PENDING/PAYMENT_PENDING — parked on an external reply/form):
+// the reconciliation sweep re-enqueues. Deliberately EXCLUDES the genuinely
+// WAITING states (AWAITING_REPLY — always carries a future dueAt, covered by the
+// due poller; REWARD_PENDING/PAYMENT_PENDING — parked on an external reply/form):
 // re-enqueuing those would spam, not recover.
+//
+// W-2: FOLLOWED_UP is INCLUDED. It looks like a waiting state but is actually
+// transient: executeFollowUp commits FOLLOWED_UP with dueAt=null and relies on the
+// auto-chain enqueue to reschedule it straight back to AWAITING_REPLY (Case 2 in
+// followUp.ts — a pure reschedule, no send, safe to re-run). If that enqueue is
+// lost (crash/Redis blip), the due poller CANNOT recover it (its WHERE requires
+// dueAt <= now, and dueAt is null) — so this was the one stranding mode with NO
+// recovery. The sweep only re-enqueues rows whose updatedAt is past the stale
+// window, so a FOLLOWED_UP instance that auto-chains normally (within one job
+// cycle) is never swept; only a genuinely-stuck one is.
+//
 // Exported so the H8 reconciliation-coverage test can assert the selection set
 // directly — specifically that NEGOTIATING and REPLY_RECEIVED are recovered (the
-// review flagged sweep coverage of those two as unverified) and that the WAITING
-// states are NOT swept. The DB query below is the only consumer.
+// review flagged sweep coverage of those two as unverified) and that the true
+// WAITING states are NOT swept. The DB query below is the only consumer.
 export const RECONCILE_STATES: InstanceState[] = [
   "ENROLLED",
   "OUTREACH_SENT",
+  "FOLLOWED_UP",
   "REPLY_RECEIVED",
   "NEGOTIATING",
   "ACCEPTED",

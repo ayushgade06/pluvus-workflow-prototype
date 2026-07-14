@@ -79,6 +79,107 @@ def test_summary_aggregates_the_buffer():
     assert "latency_ms_p50" in s and "est_cost_usd" in s
 
 
+def test_capture_llm_calls_collects_only_scoped_records():
+    # Records emitted inside the capture land in the scoped list; records
+    # emitted outside do not.
+    telemetry.record_llm_call(model="ollama:outside", latency_ms=1, result=None, ok=True)
+    with telemetry.capture_llm_calls() as calls:
+        telemetry.record_llm_call(model="ollama:inside", latency_ms=2, result=None, ok=True)
+        telemetry.record_llm_call(
+            model="ollama:inside", latency_ms=3, result=None, ok=False, error_kind="Boom"
+        )
+    telemetry.record_llm_call(model="ollama:after", latency_ms=4, result=None, ok=True)
+    assert [c.model for c in calls] == ["ollama:inside", "ollama:inside"]
+
+
+def test_capture_is_isolated_across_contexts():
+    # Two captures running in different contexts (as concurrent requests would)
+    # must not see each other's records. contextvars.copy_context simulates the
+    # per-request context isolation FastAPI provides.
+    import contextvars
+
+    seen: dict[str, list[str]] = {}
+
+    def request(name: str) -> None:
+        with telemetry.capture_llm_calls() as calls:
+            telemetry.record_llm_call(model=f"ollama:{name}", latency_ms=1, result=None, ok=True)
+            seen[name] = [c.model for c in calls]
+
+    contextvars.copy_context().run(request, "a")
+    contextvars.copy_context().run(request, "b")
+    assert seen == {"a": ["ollama:a"], "b": ["ollama:b"]}
+
+
+def test_usage_payload_shapes_calls_and_totals():
+    with telemetry.capture_llm_calls() as calls:
+        telemetry.record_llm_call(
+            model="anthropic:claude-opus-4-8",
+            latency_ms=100.0,
+            result=_FakeMsg("{}", {"input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200}),
+            prompt_version="offer-v1.4",
+            ok=True,
+        )
+        telemetry.record_llm_call(
+            model="anthropic:claude-opus-4-8", latency_ms=50.0, result=None, ok=False, error_kind="Boom"
+        )
+    payload = telemetry.usage_payload(calls)
+    assert len(payload["calls"]) == 2
+    # snake_case wire keys (the TS sink parses these exact names).
+    assert payload["calls"][0]["input_tokens"] == 1000
+    assert payload["calls"][0]["prompt_version"] == "offer-v1.4"
+    t = payload["totals"]
+    assert t["calls"] == 2
+    assert t["inputTokens"] == 1000
+    assert t["outputTokens"] == 200
+    assert t["totalTokens"] == 1200
+    assert t["latencyMs"] == 150.0
+    assert t["errors"] == 1
+    assert t["estCostUsd"] > 0
+
+
+def test_usage_payload_empty_capture():
+    payload = telemetry.usage_payload([])
+    assert payload["calls"] == []
+    assert payload["totals"]["calls"] == 0
+    assert payload["totals"]["estCostUsd"] == 0.0
+
+
+def test_classify_route_returns_llm_usage(monkeypatch):
+    # The route response must carry the llmUsage block (calls + totals) so the
+    # TS server can persist token/cost telemetry attributed to the instance.
+    from app.routes import classify as classify_mod
+
+    class _Model:
+        def invoke(self, _prompt):
+            return _FakeMsg(
+                '{"intent": "POSITIVE", "confidence": 0.9, "reasoning": "keen"}',
+                {"input_tokens": 20, "output_tokens": 8, "total_tokens": 28},
+            )
+
+    monkeypatch.setenv("LLM_INVOKE_TIMEOUT_SECONDS", "0")
+    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0, **_kw: _Model())
+
+    resp = classify_mod.classify(classify_mod.ClassifyRequest(message="I'd love to collaborate!"))
+    assert resp.intent == "POSITIVE"
+    assert resp.llmUsage is not None
+    assert resp.llmUsage["totals"]["calls"] == 1
+    assert resp.llmUsage["totals"]["totalTokens"] == 28
+
+
+def test_classify_route_deterministic_gate_reports_zero_calls(monkeypatch):
+    # A deterministic-gate classification (opt-out keyword, no LLM) still carries
+    # an llmUsage block — with zero calls — so the server sink sees a consistent
+    # shape on every response.
+    from app.routes import classify as classify_mod
+
+    resp = classify_mod.classify(
+        classify_mod.ClassifyRequest(message="unsubscribe me please, stop emailing")
+    )
+    assert resp.intent == "OPT_OUT"
+    assert resp.llmUsage is not None
+    assert resp.llmUsage["totals"]["calls"] == 0
+
+
 def test_invoke_seam_emits_a_record(monkeypatch):
     # Drive the real structured._invoke_with_timeout direct path with a fake model
     # and assert a telemetry record is emitted, stamped with the active version.

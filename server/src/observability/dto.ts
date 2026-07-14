@@ -9,6 +9,7 @@
 import type {
   InstanceState,
   EventType,
+  LlmCallRole,
   MessageDirection,
   ReplyIntent,
 } from "../db/schema.js";
@@ -165,6 +166,34 @@ export interface AgentDecisionDTO {
   messageId: string | null;
 }
 
+// One persisted LLM call (from the LlmCall table). Token fields are null when
+// the provider reported no usage — distinct from 0.
+export interface LlmCallDTO {
+  id: string;
+  role: LlmCallRole;
+  model: string;
+  promptVersion: string | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  estCostUsd: number | null;
+  ok: boolean;
+  errorKind: string | null;
+  createdAt: string;
+}
+
+// Aggregate over a set of LLM calls. Token/cost sums treat unreported as 0.
+export interface LlmUsageTotalsDTO {
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estCostUsd: number;
+  avgLatencyMs: number | null;
+}
+
 export interface InstanceDetailDTO {
   instance: {
     instanceId: string;
@@ -193,6 +222,33 @@ export interface InstanceDetailDTO {
   messages: MessageDTO[];
   events: EventDTO[];
   agentDecisions: AgentDecisionDTO[];
+  /** HARD-O1: this instance's LLM spend — per-call rows + totals. */
+  llmUsage: {
+    totals: LlmUsageTotalsDTO;
+    calls: LlmCallDTO[];
+  };
+}
+
+// ---------------------------------------------------------------------------
+// LLM usage (GET /observability/llm) — HARD-O1
+// ---------------------------------------------------------------------------
+
+export interface LlmUsageBreakdownEntryDTO {
+  /** The group key: a role ("classify" | ...) or a model label. */
+  key: string;
+  totals: LlmUsageTotalsDTO;
+}
+
+export interface LlmUsageSummaryDTO {
+  /** All-time totals across every persisted call. */
+  totals: LlmUsageTotalsDTO;
+  /** Totals over the trailing 24 hours. */
+  last24h: LlmUsageTotalsDTO;
+  byRole: LlmUsageBreakdownEntryDTO[];
+  byModel: LlmUsageBreakdownEntryDTO[];
+  /** Most recent calls, newest first. */
+  recent: LlmCallDTO[];
+  generatedAt: string;
 }
 
 // ---------------------------------------------------------------------------

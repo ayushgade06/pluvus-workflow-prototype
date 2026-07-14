@@ -278,6 +278,9 @@ export class AgentProviderAdapter implements IAgentProvider {
       // HARD-N2: prior conversation (both sides) + answered-questions ledger.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // Q3 (founder, autonomous launch): true on the LAST negotiation round so
+      // the offer email states finality to the creator.
+      isFinalRound?: boolean;
     },
   ): Promise<EmailDraft | null> {
     const request = {
@@ -306,6 +309,9 @@ export class AgentProviderAdapter implements IAgentProvider {
       // unanswered question rather than dropping it.
       history: extra?.history,
       openQuestions: extra?.openQuestions,
+      // Q3 (founder, autonomous launch): forward the final-round flag so the
+      // Python offer prompt renders the "this is our final rate" copy.
+      isFinalRound: extra?.isFinalRound,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

@@ -11,7 +11,19 @@ pypdf>=4.0.0
 # AI — LangGraph (provider-agnostic orchestration)
 langgraph>=0.1.0
 
-# AI — prod (Anthropic / Claude). Used when LLM_PROVIDER=anthropic (default).
+# AI — HOSTED PROD (OpenRouter). W-5: the production plan is OpenRouter-ONLY — a
+# single OPENROUTER_API_KEY gateway that serves BOTH Claude Opus (money/decision
+# path) and DeepSeek (drafting/copy), chosen per role by OPENROUTER_MODEL_<ROLE>.
+# OpenRouter is OpenAI-compatible, so app/llm.py's `openrouter` provider rides
+# langchain-openai's ChatOpenAI. This import was previously undeclared, so the
+# accepted plan broke on any fresh environment (it only worked where the package
+# happened to be present transitively). It is a REQUIRED runtime dep now.
+langchain-openai>=0.2.0
+
+# AI — direct-provider fallbacks (used only if you switch OFF OpenRouter to
+# LLM_PROVIDER=anthropic / =deepseek). Kept so flipping providers needs no
+# reinstall. langchain-anthropic backs LLM_PROVIDER=anthropic; the DeepSeek-direct
+# path also rides langchain-openai (declared above).
 langchain-anthropic>=0.3.0
 
 # AI — local dev (Ollama / Qwen). Used when LLM_PROVIDER=ollama.

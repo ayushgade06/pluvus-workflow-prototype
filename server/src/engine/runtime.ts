@@ -20,6 +20,7 @@ import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
 import { logTransition, type TransitionSource } from "../observability/logger.js";
+import { runWithLlmAttribution } from "../observability/llmUsage.js";
 import { notifyBrandOfEscalation } from "../notifications/escalation.js";
 import {
   executeImportCreatorList,
@@ -193,8 +194,13 @@ export class WorkflowRuntime {
       );
     }
 
-    // Dispatch to the correct executor
-    const result = await this.dispatch(ctx, opts?.phase);
+    // Dispatch to the correct executor. Every agent (LLM) call an executor
+    // makes flows through this frame, so scoping the LLM-usage attribution
+    // here stamps the instanceId onto the persisted telemetry (HARD-O1)
+    // without threading an id through IAgentProvider and every executor.
+    const result = await runWithLlmAttribution(instanceId, () =>
+      this.dispatch(ctx, opts?.phase),
+    );
 
     // Validate the proposed transition
     assertTransition(instance.currentState, result.nextState);
@@ -363,10 +369,16 @@ export class WorkflowRuntime {
       receivedAt: now,
     });
 
-    // Transition to REPLY_RECEIVED — OCC: only succeeds if state hasn't changed
+    // Transition to REPLY_RECEIVED — OCC: only succeeds if state hasn't changed.
+    // W-3: clear the outreach/follow-up-era dueAt. A reply ENDS the wait it was
+    // scheduling for; leaving it set means a stale dueAt lapses later and the due
+    // poller enqueues a spurious job against whatever node the instance has since
+    // moved to (e.g. a NEGOTIATION-node AWAITING_REPLY → "expects NEGOTIATING
+    // state" crash loop). The reply path owns its own scheduling from here on.
     const updatedForReply = await updateInstanceStateConditional(instanceId, instance.currentState, {
       currentState: "REPLY_RECEIVED",
       currentNodeId: replyNode?.id ?? "node-reply-detection",
+      dueAt: null,
     });
     if (!updatedForReply) {
       throw new StaleInstanceError(instanceId, instance.currentState);

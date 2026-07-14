@@ -35,6 +35,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install fastapi "uvicorn[standard]" httpx python-dotenv pydantic pytest pytest-asyncio
           pip install "langgraph>=0.1.0" "langchain-ollama>=0.2.0"
+          # W-5: the hosted prod path is OpenRouter (Opus + DeepSeek on one key),
+          # which rides langchain-openai's ChatOpenAI. Its unit tests
+          # (test_llm_failover.py) construct the openrouter provider, so the package
+          # must be present for the "missing key" test to raise the RIGHT error
+          # (OPENROUTER_API_KEY, not a missing-import error). Install it in CI so the
+          # accepted provider is actually exercised offline.
+          pip install "langchain-openai>=0.2.0"
           # HARD-K1: pypdf is used by the brief-parser (app/brief.py) + its tests.
           pip install "pypdf>=4.0.0"
 
@@ -74,12 +81,24 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        # Prisma client is generated on install; the unit tests are pure logic and
-        # run under NODE_ENV=test (providers stay on mock — no agent-service HTTP).
+        # M1 removed Prisma — no client-generation step. The unit tests are pure
+        # logic and run under NODE_ENV=test (providers stay on mock — no
+        # agent-service HTTP). Drizzle is plain code; nothing to codegen.
         run: npm ci --workspaces --include-workspace-root
-
-      - name: Generate Prisma client
-        run: npx prisma generate
 
       - name: Run server unit tests
         run: npm test
+
+  docker-build:
+    name: Docker image build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # W-1: the committed image previously failed to build (a dead
+      # `npm run db:generate` line survived the Prisma removal) and CI never
+      # exercised `docker build`, so the rot went unnoticed. This job builds the
+      # server image on every push/PR so a broken Dockerfile fails the build
+      # structurally rather than at deploy time.
+      - name: Build server image
+        run: docker build -f server/Dockerfile -t pluvus-server:ci .

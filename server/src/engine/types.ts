@@ -113,6 +113,15 @@ export interface NegotiateResult {
    * "escalated". Undefined for a normal over-ceiling / unreadable-rate escalate.
    */
   escalationReason?: string;
+  /**
+   * Q3 (founder, autonomous launch): true when this is the LAST negotiation round
+   * (round + 1 >= maxRounds). The executor threads it into the /draft `extra` for
+   * the offer email so the SENT copy states finality to the creator ("this is our
+   * final rate — we can't negotiate further"), making the auto-close on a
+   * decline/no-reply expected rather than abrupt. Undefined/false on every
+   * non-final turn.
+   */
+  isFinalRound?: boolean;
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and

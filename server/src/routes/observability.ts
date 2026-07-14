@@ -5,6 +5,7 @@
 // (see observability/dto.ts) — no raw Prisma objects are serialized.
 //
 //   GET /observability/workflow        node/state counts + summary
+//   GET /observability/llm             LLM token/latency/cost usage (HARD-O1)
 //   GET /observability/instances       filter + search + paginate
 //   GET /observability/instances/:id   detail (messages, events, decisions)
 //   GET /observability/timeline/:id    chronological event stream
@@ -19,6 +20,7 @@ import {
   getInstanceDetail,
   getTimeline,
   getLogs,
+  getLlmUsage,
 } from "../observability/repository.js";
 import { WORKFLOW_STATE_ORDER, TERMINAL_STATES, WAITING_STATES } from "../observability/dto.js";
 
@@ -74,6 +76,22 @@ router.get("/metrics", async (_req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: "worker_metrics_failed", message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /observability/llm  (HARD-O1)
+// ---------------------------------------------------------------------------
+// Durable LLM token/latency/cost telemetry aggregated from the LlmCall table:
+// all-time + trailing-24h totals, per-role and per-model breakdowns, and the
+// most recent calls. Per-instance usage rides on the instance detail instead.
+
+router.get("/llm", async (_req, res) => {
+  try {
+    res.json(await getLlmUsage());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "llm_usage_failed", message });
   }
 });
 
