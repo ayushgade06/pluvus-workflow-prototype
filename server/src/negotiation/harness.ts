@@ -458,8 +458,16 @@ class LeakingNegotiationProvider implements NegotiationProvider {
 async function scenarioG(instanceId: string): Promise<void> {
   section("Scenario G: Output guard blocks ceiling-leaking draft → MANUAL_REVIEW");
 
+  // Drive to NEGOTIATING with a well-behaved provider. Since H4 the OUTREACH
+  // draft is guarded too, and this scenario's leaking draft() leaks on every
+  // purpose — driving with it gets (correctly) blocked at outreach and never
+  // reaches the negotiation turn this scenario targets.
+  await driveToNegotiating(
+    instanceId,
+    makeRuntime(new MockNegotiationProvider({ forceAction: "ACCEPT" })),
+  );
+
   const runtime = makeRuntime(new LeakingNegotiationProvider());
-  await driveToNegotiating(instanceId, runtime);
 
   const msgsBefore = (await listMessagesByInstance(instanceId)).length;
   await runtime.stepInstance(instanceId);

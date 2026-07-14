@@ -12,13 +12,9 @@
     "start:scheduler": "cross-env PROCESS_ROLE=scheduler node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "cross-env NODE_ENV=test tsx --test \"src/**/*.test.ts\"",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:migrate:deploy": "prisma migrate deploy",
+    "db:pull": "drizzle-kit pull",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/seed.demo.ts",
-    "db:studio": "prisma studio",
-    "db:reset": "prisma migrate reset",
     "harness": "cross-env NODE_ENV=production tsx --no-warnings src/engine/harness.ts",
     "harness:phase4": "cross-env NODE_ENV=production tsx --no-warnings src/workers/harness.ts",
     "harness:phase5": "cross-env NODE_ENV=production tsx --no-warnings src/scheduler/harness.ts",
@@ -31,9 +27,6 @@
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "@paralleldrive/cuid2": "^3.3.0",
-    "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.0.0",
-    "@types/pg": "^8.20.0",
     "bullmq": "^5.79.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.39.3",
@@ -42,7 +35,6 @@
     "ioredis": "^5.11.1",
     "multer": "^2.2.0",
     "nylas": "^8.3.0",
-    "pg": "^8.22.0",
     "redis": "^6.0.0",
     "ws": "^8.21.0",
     "zod": "^3.25.76"
@@ -55,11 +47,7 @@
     "@types/ws": "^8.18.1",
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.30.6",
-    "prisma": "^7.0.0",
     "tsx": "^4.15.5",
     "typescript": "^5.5.2"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
   }
 }
