@@ -81,6 +81,22 @@ def _price_table() -> dict[str, tuple[float, float]]:
         "deepseek:deepseek-chat": (0.00027, 0.0011),      # V3: $0.27 / $1.10 per MTok
         "deepseek:deepseek-reasoner": (0.00055, 0.00219), # R1: $0.55 / $2.19 per MTok
         "deepseek:": (0.00027, 0.0011),  # generic fallback for other DeepSeek models
+        # W-16: OpenRouter is the ACCEPTED hosted production path (one key, Opus
+        # for decisions + DeepSeek for drafting), and its labels carry the
+        # upstream id — `openrouter:anthropic/claude-opus-4.8` — so none of the
+        # prefixes above match and every paid call reported est_cost_usd=None.
+        # OpenRouter proxies at (approximately) upstream list prices; confirm
+        # current rates at openrouter.ai/models, override via LLM_PRICE_TABLE.
+        # NOTE OpenRouter ids use dots in versions (claude-opus-4.8) where the
+        # direct Anthropic ids above use dashes (claude-opus-4-8).
+        "openrouter:anthropic/claude-opus-4.8": (0.005, 0.025),
+        "openrouter:anthropic/claude-opus-4.7": (0.005, 0.025),
+        "openrouter:anthropic/claude-sonnet-4.6": (0.003, 0.015),
+        "openrouter:anthropic/claude-haiku-4.5": (0.001, 0.005),
+        "openrouter:anthropic/": (0.005, 0.025),  # other Claude models via OpenRouter
+        "openrouter:deepseek/deepseek-chat": (0.00027, 0.0011),  # matches -v3* ids too
+        "openrouter:deepseek/deepseek-r1": (0.00055, 0.00219),
+        "openrouter:deepseek/": (0.00027, 0.0011),  # other DeepSeek models via OpenRouter
     }
     raw = os.getenv("LLM_PRICE_TABLE", "").strip()
     if raw:

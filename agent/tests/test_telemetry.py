@@ -46,6 +46,26 @@ def test_cost_nonzero_for_anthropic_prefix():
     assert cost is not None and cost > 0
 
 
+def test_cost_nonzero_for_openrouter_production_models():
+    # W-16: the hosted production path is OpenRouter-only, and its labels carry
+    # the upstream id (dot-versioned). Both configured production models — Opus
+    # on the decision path, DeepSeek on the draft path — must cost-estimate, or
+    # the LlmCall pipeline is blind on the one paid path.
+    opus = telemetry._estimate_cost("openrouter:anthropic/claude-opus-4.8", 1000, 1000)
+    assert opus == 0.03  # exact per-1K rates ($5/$25 per MTok), not a fallback
+    draft = telemetry._estimate_cost("openrouter:deepseek/deepseek-chat-v3", 1000, 1000)
+    assert draft is not None and draft > 0  # prefix-matched via deepseek-chat
+
+
+def test_cost_openrouter_family_fallbacks():
+    # Unlisted models still estimate via their upstream-family prefix rather
+    # than silently reporting None.
+    assert telemetry._estimate_cost("openrouter:anthropic/claude-opus-5", 1000, 1000) is not None
+    assert telemetry._estimate_cost("openrouter:deepseek/deepseek-r1-0528", 1000, 1000) is not None
+    # A genuinely unknown upstream stays None — unknown ≠ free.
+    assert telemetry._estimate_cost("openrouter:mistralai/mistral-large", 1000, 1000) is None
+
+
 def test_record_llm_call_emits_and_buffers():
     before = len(telemetry.recent_records())
     rec = telemetry.record_llm_call(
