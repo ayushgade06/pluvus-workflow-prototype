@@ -1,7 +1,7 @@
 # Attribution & Payouts — Master Plan
 
 **Spec date:** 2026-07-15
-**Status:** Phase 1 BUILT · Phase 2 BUILT
+**Status:** Phase 1 BUILT · Phase 2 BUILT · Phase 3 BUILT
 **Phase files:** `phase-1-partnership.md` · `phase-2-attribution.md` · `phase-3-payouts.md` · `phase-4-dashboard.md`
 
 ---

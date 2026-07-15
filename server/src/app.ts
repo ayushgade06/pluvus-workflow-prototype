@@ -14,6 +14,8 @@ import uploadsRouter from "./routes/uploads.js";
 import trackingRouter from "./routes/tracking.js";
 import attributionRouter from "./routes/attribution.js";
 import partnershipsRouter from "./routes/partnerships.js";
+import payoutsRouter from "./routes/payouts.js";
+import payoutConfirmRouter from "./routes/payoutConfirm.js";
 
 // ---------------------------------------------------------------------------
 // Express app factory (HARD-A1)
@@ -71,6 +73,10 @@ export function createApp(): Express {
   app.use("/t", trackingRouter);
   app.use("/attribution", attributionRouter);
   app.use("/partnerships", partnershipsRouter);
+  // Phase 3 (Payout ledger) — brand-side payout actions + creator-facing
+  // confirm/dispute magic-link pages (GET renders, POST mutates — I-5).
+  app.use("/payouts", payoutsRouter);
+  app.use("/payout", payoutConfirmRouter);
 
   return app;
 }

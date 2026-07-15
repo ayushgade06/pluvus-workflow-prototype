@@ -162,6 +162,13 @@ export const eventTypeEnum = pgEnum("EventType", [
   "PARTNERSHIP_ACTIVATED",
   "CONVERSION_RECORDED",
   "CONVERSION_REFUNDED",
+  // Phase 3 (Payout ledger) — every ledger transition writes an instance event
+  // (I-7) so the observability inspector timeline is the single audit trail.
+  "PAYOUT_CREATED",
+  "PAYOUT_SENT",
+  "PAYOUT_CONFIRMED",
+  "PAYOUT_DISPUTED",
+  "PAYOUT_SETTLED",
 ]);
 
 export const workflowStatusEnum = pgEnum("WorkflowStatus", [
@@ -195,6 +202,23 @@ export const payoutMethodEnum = pgEnum("PayoutMethod", [
 
 export const partnershipStatusEnum = pgEnum("PartnershipStatus", ["ACTIVE", "PAUSED"]);
 
+// Phase 3 (Payout ledger) enums. Status machines ported from the parent
+// (Pluvus/shared/schema.ts:534): an obligation is minted PENDING and paid once;
+// a payout walks PENDING → SENT → (CONFIRMED | DISPUTED) → SETTLED.
+export const obligationStatusEnum = pgEnum("ObligationStatus", [
+  "PENDING",
+  "PAID",
+  "CANCELLED",
+]);
+export const payoutStatusEnum = pgEnum("PayoutStatus", [
+  "PENDING",
+  "SENT",
+  "CONFIRMED",
+  "DISPUTED",
+  "SETTLED",
+]);
+export const payoutTypeEnum = pgEnum("PayoutType", ["COMMISSION", "FIXED_FEE"]);
+
 // String-literal union types with the same names @prisma/client exported.
 export type InstanceState = (typeof instanceStateEnum.enumValues)[number];
 export type NodeType = (typeof nodeTypeEnum.enumValues)[number];
@@ -209,6 +233,9 @@ export type PaymentInfoStatus =
   (typeof paymentInfoStatusEnum.enumValues)[number];
 export type PayoutMethod = (typeof payoutMethodEnum.enumValues)[number];
 export type PartnershipStatus = (typeof partnershipStatusEnum.enumValues)[number];
+export type ObligationStatus = (typeof obligationStatusEnum.enumValues)[number];
+export type PayoutStatus = (typeof payoutStatusEnum.enumValues)[number];
+export type PayoutType = (typeof payoutTypeEnum.enumValues)[number];
 
 // ---------------------------------------------------------------------------
 // Definition models
@@ -551,6 +578,66 @@ export const conversions = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Payout ledger (Phase 3)
+// ---------------------------------------------------------------------------
+// The post-terminal money ledger, keyed off the completed instance's
+// Partnership. An Obligation is the fixed collaboration fee owed (minted at
+// partnership activation); a Payout is a concrete disbursement the brand records
+// as paid (commission-batch or fixed-fee). Money is integer cents (I-1); the
+// method/destination are COPIED from PaymentInfo at creation (I-2). Confirm
+// tokens are stored sha256-hashed only — the raw token lives solely in the email.
+
+export const obligations = pgTable(
+  "Obligation",
+  {
+    id: cuidId("id"),
+    partnershipId: text("partnershipId")
+      .notNull()
+      .references(() => partnerships.id),
+    description: text("description").notNull(), // "Agreed collaboration fee"
+    amountCents: integer("amountCents").notNull(),
+    status: obligationStatusEnum("status").notNull().default("PENDING"),
+    payoutId: text("payoutId"), // set when converted to a payout (I-4)
+    createdAt: tsNow("createdAt"),
+    paidAt: ts("paidAt"),
+  },
+  (table) => [index("Obligation_partnershipId_idx").on(table.partnershipId)],
+);
+
+export const payouts = pgTable(
+  "Payout",
+  {
+    id: cuidId("id"),
+    partnershipId: text("partnershipId")
+      .notNull()
+      .references(() => partnerships.id),
+    payoutType: payoutTypeEnum("payoutType").notNull(),
+    amountCents: integer("amountCents").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    status: payoutStatusEnum("status").notNull().default("PENDING"),
+    method: payoutMethodEnum("method"), // I-2: copied from PaymentInfo at creation
+    destination: text("destination"), // I-2: copied accountIdentifier (PayPal email)
+    reference: text("reference"), // PayPal txn id, set at mark-sent
+    note: text("note"),
+    conversionCount: integer("conversionCount").notNull().default(0),
+    confirmTokenHash: text("confirmTokenHash"), // sha256 hex — raw token never stored
+    confirmTokenExpiresAt: ts("confirmTokenExpiresAt"),
+    confirmIp: text("confirmIp"),
+    confirmUserAgent: text("confirmUserAgent"),
+    sentAt: ts("sentAt"),
+    confirmedAt: ts("confirmedAt"),
+    disputedAt: ts("disputedAt"),
+    settledAt: ts("settledAt"),
+    createdAt: tsNow("createdAt"),
+    updatedAt: tsUpdatedAt("updatedAt"),
+  },
+  (table) => [
+    index("Payout_partnershipId_idx").on(table.partnershipId),
+    index("Payout_status_idx").on(table.status),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // drizzle-zod insert-schema companions (parent Pluvus convention)
 // ---------------------------------------------------------------------------
 
@@ -608,6 +695,15 @@ export const insertConversionSchema = createInsertSchema(conversions).omit({
   id: true,
   attributedAt: true,
 });
+export const insertObligationSchema = createInsertSchema(obligations).omit({
+  id: true,
+  createdAt: true,
+});
+export const insertPayoutSchema = createInsertSchema(payouts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
 
 // ---------------------------------------------------------------------------
 // Inferred model types — same names @prisma/client exported
@@ -626,6 +722,8 @@ export type PaymentInfo = typeof paymentInfo.$inferSelect;
 export type Partnership = typeof partnerships.$inferSelect;
 export type Click = typeof clicks.$inferSelect;
 export type Conversion = typeof conversions.$inferSelect;
+export type Obligation = typeof obligations.$inferSelect;
+export type Payout = typeof payouts.$inferSelect;
 export type LlmCall = typeof llmCalls.$inferSelect;
 
 export type InsertCampaign = z.infer<typeof insertCampaignSchema>;
@@ -645,6 +743,8 @@ export type InsertPaymentInfo = z.infer<typeof insertPaymentInfoSchema>;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 export type InsertClick = z.infer<typeof insertClickSchema>;
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
+export type InsertObligation = z.infer<typeof insertObligationSchema>;
+export type InsertPayout = z.infer<typeof insertPayoutSchema>;
 
 // Raw insert types (what db.insert(...).values() accepts, ids/timestamps
 // optional because of the $defaultFn/default declarations above).
@@ -661,4 +761,6 @@ export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
 export type PartnershipInsert = typeof partnerships.$inferInsert;
 export type ClickInsert = typeof clicks.$inferInsert;
 export type ConversionInsert = typeof conversions.$inferInsert;
+export type ObligationInsert = typeof obligations.$inferInsert;
+export type PayoutInsert = typeof payouts.$inferInsert;
 export type LlmCallInsert = typeof llmCalls.$inferInsert;

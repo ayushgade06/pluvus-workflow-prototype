@@ -3,8 +3,10 @@ import {
   appendEvent,
   findPartnershipByInstance,
   createPartnership,
+  createObligation,
   generateReferralCode,
   listEventsByInstance,
+  listObligationsByPartnership,
 } from "../../db/index.js";
 import type { ExecutionContext } from "../types.js";
 import type { IEmailProvider } from "../providers.js";
@@ -42,6 +44,38 @@ export function buildTrackingLink(
   } catch {
     return null;
   }
+}
+
+/** Human-readable description stamped on the auto-minted fixed-fee obligation. */
+export const FEE_OBLIGATION_DESCRIPTION = "Agreed collaboration fee";
+
+/**
+ * Mint the fixed-fee Obligation for a partnership, at most once.
+ *
+ * A partnership has at most one auto-minted fee obligation (manual extras are
+ * Phase-4+ future work), so we check for any existing obligation first and no-op
+ * if one is present. A null/absent agreed fee mints nothing. Returns true when a
+ * row was created, false when it was a no-op (already present, or no fee).
+ * Shared by resolvePartnership (mint-time) and the backfill script.
+ */
+export async function mintFeeObligation(
+  partnershipId: string,
+  agreedFeeCents: number | null | undefined,
+): Promise<boolean> {
+  // No fee, or a zero/negative fee, owes nothing — mint no obligation. Guarding
+  // > 0 (not just null/undefined) stops a commission-only deal whose fixed fee
+  // resolved to 0 from minting a $0.00 payable obligation, which would later
+  // become a spurious "you've been paid $0.00" payout the creator must action.
+  if (agreedFeeCents === null || agreedFeeCents === undefined) return false;
+  if (!Number.isFinite(agreedFeeCents) || agreedFeeCents <= 0) return false;
+  const existing = await listObligationsByPartnership(partnershipId);
+  if (existing.length > 0) return false;
+  await createObligation({
+    partnershipId,
+    description: FEE_OBLIGATION_DESCRIPTION,
+    amountCents: agreedFeeCents,
+  });
+  return true;
 }
 
 /**
@@ -148,6 +182,16 @@ export async function resolvePartnership(
     });
   } catch (err) {
     console.error("[partnership] PARTNERSHIP_ACTIVATED event append failed (non-fatal)", err);
+  }
+
+  // Step 5.5: mint the fixed-fee Obligation (Phase 3). A partnership with an
+  // agreed fee owes it; the Obligation is the ledger row the brand later pays as
+  // a FIXED_FEE payout. Idempotent + non-fatal — a failed mint must never fail
+  // the payout submission (I-8), and a re-run must not create a second row.
+  try {
+    await mintFeeObligation(partnership.id, partnership.agreedFeeCents);
+  } catch (err) {
+    console.error("[partnership] fee obligation mint failed (non-fatal)", err);
   }
 
   // Step 6: send the welcome email (idempotent, I-6).

@@ -22,7 +22,8 @@
     "harness:phase7": "cross-env NODE_ENV=production tsx --no-warnings src/classification/harness.ts",
     "harness:phase8": "cross-env NODE_ENV=production tsx --no-warnings src/negotiation/harness.ts",
     "harness:phase9": "cross-env NODE_ENV=production tsx --no-warnings src/observability/harness.ts",
-    "harness:content-brief": "cross-env NODE_ENV=production tsx --no-warnings src/engine/contentBrief.harness.ts"
+    "harness:content-brief": "cross-env NODE_ENV=production tsx --no-warnings src/engine/contentBrief.harness.ts",
+    "harness:payouts": "cross-env NODE_ENV=production tsx --no-warnings src/engine/payouts.harness.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
