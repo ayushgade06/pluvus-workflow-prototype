@@ -8,4 +8,5 @@ export * from "./messages.js";
 export * from "./events.js";
 export * from "./brandNotifications.js";
 export * from "./paymentInfo.js";
+export * from "./partnerships.js";
 export * from "./llmCalls.js";

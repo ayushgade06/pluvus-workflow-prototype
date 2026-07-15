@@ -1,7 +1,7 @@
 import { Router, urlencoded } from "express";
 import type { Request, Response } from "express";
 import type { PayoutMethod } from "../db/schema.js";
-import { findPaymentInfoByToken, findInstanceById } from "../db/index.js";
+import { findPaymentInfoByToken, findInstanceById, findPartnershipByInstance } from "../db/index.js";
 import { WorkflowRuntime, StaleInstanceError } from "../engine/runtime.js";
 import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
@@ -326,7 +326,17 @@ router.post("/:token", async (req: Request, res: Response) => {
       console.error("[payment] content-brief enqueue error (non-fatal):", err);
     }
 
-    res.type("html").send(renderPaymentThankYouPage({ creatorName, brandName }));
+    // Phase 1: show the creator their tracking link immediately on the thank-you
+    // page (the welcome email also carries it). Non-fatal if lookup fails.
+    let trackingLink: string | null = null;
+    try {
+      const partnership = await findPartnershipByInstance(payment.instanceId);
+      trackingLink = partnership?.trackingLink ?? null;
+    } catch (err) {
+      console.error("[payment] partnership lookup for thank-you page (non-fatal):", err);
+    }
+
+    res.type("html").send(renderPaymentThankYouPage({ creatorName, brandName, trackingLink }));
   } catch (err) {
     console.error("[payment] post error:", err);
     res.status(500).type("html").send(renderPaymentInvalidPage());

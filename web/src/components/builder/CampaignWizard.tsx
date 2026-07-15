@@ -50,6 +50,8 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [shipsPhysicalProduct, setShipsPhysicalProduct] = useState(false);
   const [objective, setObjective] = useState("");
   const [notes, setNotes] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
+  const [hiddenParamKey, setHiddenParamKey] = useState("_from");
 
   // Step 2 selection
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateKey | null>(null);
@@ -65,9 +67,15 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const objId = useId();
   const notesId = useId();
   const wfNameId = useId();
+  const targetUrlId = useId();
+  const hiddenParamKeyId = useId();
 
   const notifyEmailInvalid =
     !!notifyEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyEmail.trim());
+
+  const targetUrlInvalid = !!targetUrl.trim() && (() => {
+    try { new URL(targetUrl.trim()); return false; } catch { return true; }
+  })();
 
   function handleStep1Next() {
     if (!name.trim()) {
@@ -80,6 +88,10 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
     }
     if (notifyEmailInvalid) {
       setError("Notification email must be a valid email address");
+      return;
+    }
+    if (targetUrlInvalid) {
+      setError("Product URL must be a valid URL (e.g. https://example.com/shop)");
       return;
     }
     setError(null);
@@ -112,6 +124,9 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
       if (shipsPhysicalProduct) campaignData.shipsPhysicalProduct = true;
       if (objective.trim()) campaignData.objective = objective.trim();
       if (notes.trim()) campaignData.notes = notes.trim();
+      if (targetUrl.trim()) campaignData.targetUrl = targetUrl.trim();
+      if (hiddenParamKey.trim() && hiddenParamKey.trim() !== "_from")
+        campaignData.hiddenParamKey = hiddenParamKey.trim();
       const campaign = await createCampaign(campaignData);
       const workflow = await createWorkflowForCampaign(campaign.id, {
         name: workflowName.trim(),
@@ -291,6 +306,34 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
                 rows={3}
               />
             </FormField>
+            <FormField
+              label="Product URL"
+              htmlFor={targetUrlId}
+              hint="The landing page creators link to. When set, each creator gets a unique tracked referral link with the tracking parameter appended. Leave empty for flat-fee collaborations without link tracking."
+            >
+              <Input
+                id={targetUrlId}
+                type="url"
+                value={targetUrl}
+                onChange={(e) => setTargetUrl(e.target.value)}
+                placeholder="e.g. https://example.com/shop"
+                invalid={targetUrlInvalid}
+              />
+            </FormField>
+            {targetUrl.trim() && (
+              <FormField
+                label="Tracking parameter"
+                htmlFor={hiddenParamKeyId}
+                hint="The query-string key appended to each creator's link (e.g. ?_from=casey_a1b2c3). Advanced — leave as the default unless your analytics tool expects a specific key."
+              >
+                <Input
+                  id={hiddenParamKeyId}
+                  value={hiddenParamKey}
+                  onChange={(e) => setHiddenParamKey(e.target.value)}
+                  placeholder="_from"
+                />
+              </FormField>
+            )}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>

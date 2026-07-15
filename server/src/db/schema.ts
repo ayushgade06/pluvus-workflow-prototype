@@ -32,6 +32,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -158,6 +159,7 @@ export const eventTypeEnum = pgEnum("EventType", [
   "PAYMENT_RECEIVED",
   "CONTENT_BRIEF_SENT",
   "PAYMENT_REPLY_UNRESOLVED",
+  "PARTNERSHIP_ACTIVATED",
 ]);
 
 export const workflowStatusEnum = pgEnum("WorkflowStatus", [
@@ -189,6 +191,8 @@ export const payoutMethodEnum = pgEnum("PayoutMethod", [
   "BANK_TRANSFER",
 ]);
 
+export const partnershipStatusEnum = pgEnum("PartnershipStatus", ["ACTIVE", "PAUSED"]);
+
 // String-literal union types with the same names @prisma/client exported.
 export type InstanceState = (typeof instanceStateEnum.enumValues)[number];
 export type NodeType = (typeof nodeTypeEnum.enumValues)[number];
@@ -202,6 +206,7 @@ export type BrandNotificationStatus =
 export type PaymentInfoStatus =
   (typeof paymentInfoStatusEnum.enumValues)[number];
 export type PayoutMethod = (typeof payoutMethodEnum.enumValues)[number];
+export type PartnershipStatus = (typeof partnershipStatusEnum.enumValues)[number];
 
 // ---------------------------------------------------------------------------
 // Definition models
@@ -223,6 +228,8 @@ export const campaigns = pgTable("Campaign", {
   exclusivity: text("exclusivity"),
   paymentTerms: text("paymentTerms"),
   attributionWindow: text("attributionWindow"),
+  targetUrl: text("targetUrl"),
+  hiddenParamKey: text("hiddenParamKey").notNull().default("_from"),
   createdAt: tsNow("createdAt"),
   updatedAt: tsUpdatedAt("updatedAt"),
 });
@@ -471,6 +478,33 @@ export const llmCalls = pgTable(
 export type LlmCallRole = "classify" | "negotiate" | "draft";
 
 // ---------------------------------------------------------------------------
+// Attribution & Payout ledger (Phase 1+)
+// ---------------------------------------------------------------------------
+
+export const partnerships = pgTable(
+  "Partnership",
+  {
+    id: cuidId("id"),
+    instanceId: text("instanceId").notNull().references(() => executionInstances.id),
+    campaignId: text("campaignId").references(() => campaigns.id),
+    creatorId: text("creatorId").notNull().references(() => creators.id),
+    referralCode: text("referralCode").notNull(),
+    trackingLink: text("trackingLink"),
+    commissionRate: real("commissionRate"),
+    agreedFeeCents: integer("agreedFeeCents"),
+    status: partnershipStatusEnum("status").notNull().default("ACTIVE"),
+    createdAt: tsNow("createdAt"),
+    updatedAt: tsUpdatedAt("updatedAt"),
+  },
+  (table) => [
+    uniqueIndex("Partnership_instanceId_key").on(table.instanceId),
+    uniqueIndex("Partnership_referralCode_key").on(table.referralCode),
+    index("Partnership_campaignId_idx").on(table.campaignId),
+    index("Partnership_creatorId_idx").on(table.creatorId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // drizzle-zod insert-schema companions (parent Pluvus convention)
 // ---------------------------------------------------------------------------
 
@@ -515,6 +549,11 @@ export const insertPaymentInfoSchema = createInsertSchema(paymentInfo).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
 
 // ---------------------------------------------------------------------------
 // Inferred model types — same names @prisma/client exported
@@ -530,6 +569,7 @@ export type Event = typeof events.$inferSelect;
 export type OutboxJob = typeof outboxJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
+export type Partnership = typeof partnerships.$inferSelect;
 export type LlmCall = typeof llmCalls.$inferSelect;
 
 export type InsertCampaign = z.infer<typeof insertCampaignSchema>;
@@ -546,6 +586,7 @@ export type InsertBrandNotification = z.infer<
   typeof insertBrandNotificationSchema
 >;
 export type InsertPaymentInfo = z.infer<typeof insertPaymentInfoSchema>;
+export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 
 // Raw insert types (what db.insert(...).values() accepts, ids/timestamps
 // optional because of the $defaultFn/default declarations above).
@@ -559,4 +600,5 @@ export type EventInsert = typeof events.$inferInsert;
 export type OutboxJobInsert = typeof outboxJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
+export type PartnershipInsert = typeof partnerships.$inferInsert;
 export type LlmCallInsert = typeof llmCalls.$inferInsert;

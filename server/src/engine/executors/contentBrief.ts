@@ -2,6 +2,7 @@ import type { JsonObject } from "../../db/schema.js";
 import { listEventsByInstance, findPaymentInfoByInstance } from "../../db/index.js";
 import type { ExecutionContext, NodeResult, EmailAttachment } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
+import { resolvePartnership } from "./partnership.js";
 import { readStoredFile } from "../../storage/localFileStorage.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderContentBriefEmail } from "./contentBriefEmail.js";
@@ -217,7 +218,7 @@ export async function executeContentBrief(
 
 export async function executeContentBriefSubmission(
   ctx: ExecutionContext,
-  _email: IEmailProvider,
+  email: IEmailProvider,
   _agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance, node } = ctx;
@@ -240,6 +241,14 @@ export async function executeContentBriefSubmission(
   }
 
   const briefFileName = str(config, "briefFileName") || "campaign-brief.pdf";
+
+  // Phase 1: mint (or reuse) the Partnership row and send the welcome email.
+  // Non-fatal — a failure here must not fail the payout submission.
+  try {
+    await resolvePartnership(ctx, email);
+  } catch (err) {
+    console.error("[contentBrief] resolvePartnership failed (non-fatal)", err);
+  }
 
   // Content Brief is the terminal node — the payout submission completes the run.
   return {

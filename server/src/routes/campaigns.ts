@@ -68,6 +68,8 @@ router.post("/", async (req: Request, res: Response) => {
     exclusivity,
     paymentTerms,
     attributionWindow,
+    targetUrl,
+    hiddenParamKey,
   } = req.body as {
     name?: string;
     brand?: string;
@@ -84,6 +86,8 @@ router.post("/", async (req: Request, res: Response) => {
     exclusivity?: string;
     paymentTerms?: string;
     attributionWindow?: string;
+    targetUrl?: string;
+    hiddenParamKey?: string;
   };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -121,6 +125,11 @@ router.post("/", async (req: Request, res: Response) => {
       paymentTerms: typeof paymentTerms === "string" ? paymentTerms.trim() || null : null,
       attributionWindow:
         typeof attributionWindow === "string" ? attributionWindow.trim() || null : null,
+      targetUrl: typeof targetUrl === "string" ? targetUrl.trim() || null : null,
+      hiddenParamKey:
+        typeof hiddenParamKey === "string" && hiddenParamKey.trim()
+          ? hiddenParamKey.trim()
+          : "_from",
     });
     res.status(201).json({
       id: campaign.id,
@@ -138,6 +147,8 @@ router.post("/", async (req: Request, res: Response) => {
       exclusivity: campaign.exclusivity,
       paymentTerms: campaign.paymentTerms,
       attributionWindow: campaign.attributionWindow,
+      targetUrl: campaign.targetUrl,
+      hiddenParamKey: campaign.hiddenParamKey,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {

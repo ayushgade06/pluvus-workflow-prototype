@@ -6,6 +6,7 @@ import {
   events,
   executionInstances,
   messages,
+  partnerships,
   paymentInfo,
   workflows,
   workflowVersions,
@@ -97,6 +98,9 @@ export async function deleteCampaign(id: string): Promise<void> {
           .delete(brandNotifications)
           .where(inArray(brandNotifications.instanceId, instanceIds));
         await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
+        await tx
+          .delete(partnerships)
+          .where(inArray(partnerships.instanceId, instanceIds));
         await tx
           .delete(executionInstances)
           .where(inArray(executionInstances.id, instanceIds));

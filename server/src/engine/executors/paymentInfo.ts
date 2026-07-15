@@ -12,6 +12,7 @@ import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { blockedByMissingBrand } from "./guardEscalation.js";
 import { nextNodeAfter } from "./graphNav.js";
+import { resolvePartnership } from "./partnership.js";
 
 // ---------------------------------------------------------------------------
 // Payment Info executor
@@ -135,7 +136,7 @@ export async function executePaymentInfo(
 
 export async function executePaymentSubmission(
   ctx: ExecutionContext,
-  _email: IEmailProvider,
+  email: IEmailProvider,
   _agent: IAgentProvider,
 ): Promise<NodeResult> {
   const { instance } = ctx;
@@ -161,6 +162,17 @@ export async function executePaymentSubmission(
   // stamp completedAt. Once a Content Brief node follows, nextNodeId points at it
   // and the state is a hand-off rather than a completion.
   const nextNodeId = nextNodeAfter(ctx);
+
+  // Phase 1: mint the Partnership when this is the terminal node (no Content Brief
+  // follows). Non-fatal — a failure must not fail the payout submission.
+  if (nextNodeId === null) {
+    try {
+      await resolvePartnership(ctx, email);
+    } catch (err) {
+      console.error("[paymentInfo] resolvePartnership failed (non-fatal)", err);
+    }
+  }
+
   return {
     nextState: "PAYMENT_RECEIVED",
     nextNodeId,

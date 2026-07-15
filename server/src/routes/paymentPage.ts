@@ -208,7 +208,19 @@ export function renderPaymentFormPage(input: PaymentFormPageInput): string {
 export function renderPaymentThankYouPage(input: {
   creatorName: string;
   brandName: string;
+  /** When set, show the creator's tracking link with a copy button. */
+  trackingLink?: string | null;
 }): string {
+  const linkSection = input.trackingLink
+    ? `
+      <div style="margin:16px 0 0;padding:14px;background:var(--panelAlt);border:1px solid var(--border);border-radius:8px;text-align:left;">
+        <div style="font-size:11.5px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px;">Your tracking link</div>
+        <div style="font-size:13px;color:var(--text);word-break:break-all;margin-bottom:8px;">${esc(input.trackingLink)}</div>
+        <button type="button" onclick="navigator.clipboard.writeText('${esc(input.trackingLink)}').then(()=>{this.textContent='Copied!';setTimeout(()=>{this.textContent='Copy link'},1500)})"
+          style="font-size:12.5px;padding:6px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;">Copy link</button>
+      </div>`
+    : "";
+
   const inner = `
     <div class="head">
       <div class="brand">${esc(input.brandName)}</div>
@@ -218,6 +230,7 @@ export function renderPaymentThankYouPage(input: {
       <div class="badge ok">✓</div>
       <p class="sub">Your payout information has been received, ${esc(input.creatorName)}.<br/>
       We'll be in touch shortly with your detailed campaign content brief.</p>
+      ${linkSection}
     </div>`;
   return shell("Payout Information Received", inner);
 }

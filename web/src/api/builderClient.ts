@@ -95,6 +95,8 @@ export function createCampaign(data: {
   timeline?: string;
   rewardDescription?: string;
   shipsPhysicalProduct?: boolean;
+  targetUrl?: string;
+  hiddenParamKey?: string;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }
