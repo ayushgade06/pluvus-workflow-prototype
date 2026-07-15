@@ -160,6 +160,8 @@ export const eventTypeEnum = pgEnum("EventType", [
   "CONTENT_BRIEF_SENT",
   "PAYMENT_REPLY_UNRESOLVED",
   "PARTNERSHIP_ACTIVATED",
+  "CONVERSION_RECORDED",
+  "CONVERSION_REFUNDED",
 ]);
 
 export const workflowStatusEnum = pgEnum("WorkflowStatus", [
@@ -505,6 +507,50 @@ export const partnerships = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Attribution tables (Phase 2)
+// ---------------------------------------------------------------------------
+
+export const clicks = pgTable(
+  "Click",
+  {
+    id: cuidId("id"),
+    partnershipId: text("partnershipId").notNull().references(() => partnerships.id),
+    referralCode: text("referralCode").notNull(),
+    ip: text("ip"),
+    userAgent: text("userAgent"),
+    referer: text("referer"),
+    clickedAt: tsNow("clickedAt"),
+  },
+  (table) => [
+    index("Click_partnershipId_idx").on(table.partnershipId),
+    index("Click_clickedAt_idx").on(table.clickedAt),
+  ],
+);
+
+export const conversions = pgTable(
+  "Conversion",
+  {
+    id: cuidId("id"),
+    partnershipId: text("partnershipId").references(() => partnerships.id),
+    referralCode: text("referralCode"),
+    externalId: text("externalId").notNull(),
+    valueCents: integer("valueCents").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    commissionCents: integer("commissionCents").notNull().default(0),
+    customerEmail: text("customerEmail"),
+    metadata: jsonb("metadata").$type<JsonValue>(),
+    payoutId: text("payoutId"),
+    refunded: boolean("refunded").notNull().default(false),
+    attributedAt: tsNow("attributedAt"),
+  },
+  (table) => [
+    uniqueIndex("Conversion_externalId_key").on(table.externalId),
+    index("Conversion_partnershipId_idx").on(table.partnershipId),
+    index("Conversion_payoutId_idx").on(table.payoutId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // drizzle-zod insert-schema companions (parent Pluvus convention)
 // ---------------------------------------------------------------------------
 
@@ -554,6 +600,14 @@ export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertClickSchema = createInsertSchema(clicks).omit({
+  id: true,
+  clickedAt: true,
+});
+export const insertConversionSchema = createInsertSchema(conversions).omit({
+  id: true,
+  attributedAt: true,
+});
 
 // ---------------------------------------------------------------------------
 // Inferred model types — same names @prisma/client exported
@@ -570,6 +624,8 @@ export type OutboxJob = typeof outboxJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
 export type Partnership = typeof partnerships.$inferSelect;
+export type Click = typeof clicks.$inferSelect;
+export type Conversion = typeof conversions.$inferSelect;
 export type LlmCall = typeof llmCalls.$inferSelect;
 
 export type InsertCampaign = z.infer<typeof insertCampaignSchema>;
@@ -587,6 +643,8 @@ export type InsertBrandNotification = z.infer<
 >;
 export type InsertPaymentInfo = z.infer<typeof insertPaymentInfoSchema>;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
+export type InsertClick = z.infer<typeof insertClickSchema>;
+export type InsertConversion = z.infer<typeof insertConversionSchema>;
 
 // Raw insert types (what db.insert(...).values() accepts, ids/timestamps
 // optional because of the $defaultFn/default declarations above).
@@ -601,4 +659,6 @@ export type OutboxJobInsert = typeof outboxJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
 export type PartnershipInsert = typeof partnerships.$inferInsert;
+export type ClickInsert = typeof clicks.$inferInsert;
+export type ConversionInsert = typeof conversions.$inferInsert;
 export type LlmCallInsert = typeof llmCalls.$inferInsert;

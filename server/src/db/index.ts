@@ -9,4 +9,6 @@ export * from "./events.js";
 export * from "./brandNotifications.js";
 export * from "./paymentInfo.js";
 export * from "./partnerships.js";
+export * from "./clicks.js";
+export * from "./conversions.js";
 export * from "./llmCalls.js";

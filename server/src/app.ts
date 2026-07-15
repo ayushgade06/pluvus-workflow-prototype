@@ -11,6 +11,9 @@ import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
 import paymentRouter from "./routes/payment.js";
 import uploadsRouter from "./routes/uploads.js";
+import trackingRouter from "./routes/tracking.js";
+import attributionRouter from "./routes/attribution.js";
+import partnershipsRouter from "./routes/partnerships.js";
 
 // ---------------------------------------------------------------------------
 // Express app factory (HARD-A1)
@@ -64,6 +67,10 @@ export function createApp(): Express {
   app.use("/payment", paymentRouter);
   // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)
   app.use("/uploads", uploadsRouter);
+  // Phase 2 (Attribution) — short-link redirect + conversion webhook + read API
+  app.use("/t", trackingRouter);
+  app.use("/attribution", attributionRouter);
+  app.use("/partnerships", partnershipsRouter);
 
   return app;
 }
