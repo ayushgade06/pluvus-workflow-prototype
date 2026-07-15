@@ -32,3 +32,10 @@ export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle({ client: pool, schema });
 
 export type Db = typeof db;
+
+// The transaction handle drizzle hands the `db.transaction(async (tx) => …)`
+// callback. Same query surface as `Db`, but its writes commit/rollback atomically
+// with the surrounding transaction. Callers that must group several statements
+// into one atomic unit (W-7: OCC state write + money-trail event append) accept a
+// `Db | DbTx` so the same helper works inside and outside a transaction.
+export type DbTx = Parameters<Parameters<Db["transaction"]>[0]>[0];

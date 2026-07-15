@@ -17,6 +17,7 @@ import type { InstanceState } from "../db/schema.js";
 import {
   getWorkflowSummary,
   listInstances,
+  listWorkflowOptions,
   getInstanceDetail,
   getTimeline,
   getLogs,
@@ -51,13 +52,35 @@ router.get("/meta", (_req, res) => {
 // GET /observability/workflow
 // ---------------------------------------------------------------------------
 
-router.get("/workflow", async (_req, res) => {
+router.get("/workflow", async (req, res) => {
   try {
-    const summary = await getWorkflowSummary();
+    // W-6: optional ?workflowVersionId scopes the summary to one campaign's
+    // version. Omitted → newest published version (unchanged default).
+    const versionId =
+      typeof req.query["workflowVersionId"] === "string"
+        ? req.query["workflowVersionId"]
+        : undefined;
+    const summary = await getWorkflowSummary(versionId);
     res.json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: "workflow_summary_failed", message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /observability/workflows  (W-6 workflow selector)
+// ---------------------------------------------------------------------------
+// One row per workflow that has a published version — id, name, latest version,
+// and live instance count — so the dashboard can offer a scope picker instead of
+// always showing the single newest-published workflow.
+
+router.get("/workflows", async (_req, res) => {
+  try {
+    res.json({ workflows: await listWorkflowOptions() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "workflow_options_failed", message });
   }
 });
 
@@ -109,12 +132,17 @@ router.get("/instances", async (req, res) => {
     const search = typeof req.query["search"] === "string" ? req.query["search"] : undefined;
     const page = req.query["page"] ? Number(req.query["page"]) : undefined;
     const pageSize = req.query["pageSize"] ? Number(req.query["pageSize"]) : undefined;
+    const workflowVersionId =
+      typeof req.query["workflowVersionId"] === "string"
+        ? req.query["workflowVersionId"]
+        : undefined;
 
     const result = await listInstances({
       ...(state ? { state } : {}),
       ...(search ? { search } : {}),
       ...(page && !Number.isNaN(page) ? { page } : {}),
       ...(pageSize && !Number.isNaN(pageSize) ? { pageSize } : {}),
+      ...(workflowVersionId ? { workflowVersionId } : {}),
     });
     res.json(result);
   } catch (err) {

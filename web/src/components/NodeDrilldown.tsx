@@ -15,14 +15,25 @@ type SortKey = "waiting" | "name" | "round" | "due";
 
 interface Props {
   state: InstanceState;
+  // W-6: scope the creator list to the same workflow version as the summary.
+  workflowVersionId?: string | null;
   selectedInstanceId: string | null;
   onSelectInstance: (id: string) => void;
 }
 
-export function NodeDrilldown({ state, selectedInstanceId, onSelectInstance }: Props) {
+export function NodeDrilldown({
+  state,
+  workflowVersionId,
+  selectedInstanceId,
+  onSelectInstance,
+}: Props) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("waiting");
-  const { data, isLoading, isError, error } = useInstances({ state, search: search || undefined });
+  const { data, isLoading, isError, error } = useInstances({
+    state,
+    search: search || undefined,
+    workflowVersionId,
+  });
 
   const items = useMemo(() => {
     const list = [...(data?.items ?? [])];

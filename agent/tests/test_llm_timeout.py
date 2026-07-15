@@ -121,3 +121,80 @@ def test_invoke_with_timeout_does_not_double_wrap_failover(monkeypatch):
     ok = SlowLLM(0.0, content='{"intent": "OK"}')
     chat = FailoverChat([("only", lambda _t: ok)], 0)
     assert _invoke_with_timeout(chat, "p") == '{"intent": "OK"}'
+
+
+# ---------------------------------------------------------------------------
+# W-9(a) — a saturated invoke pool must FAIL FAST, not block forever.
+#
+# future.cancel() is a no-op once a generation has started, so timed-out orphans
+# keep holding their pool threads. Before the capacity-semaphore fix, once the
+# pool filled with orphans the NEXT call blocked on .submit() BEFORE its budget
+# even started — hanging the worker and defeating the timeout. These tests prove
+# the new call now times out within roughly its own budget instead.
+# ---------------------------------------------------------------------------
+
+
+def test_saturated_pool_fails_fast_instead_of_blocking(monkeypatch):
+    import threading as _threading
+
+    from app.structured import invoke_model_bounded, _resize_invoke_pool_for_test
+
+    # Shrink the pool to 1 so a single hung generation saturates it.
+    _resize_invoke_pool_for_test(1)
+    try:
+        # A generation that "hangs" until we let it go — models an orphan that
+        # keeps its thread past the timeout.
+        release = _threading.Event()
+
+        class Hanger:
+            def invoke(self, _p):
+                release.wait(10)  # hang until released (or a hard 10s backstop)
+
+                class _R:
+                    content = "late"
+
+                return _R()
+
+        monkeypatch.setenv("LLM_INVOKE_TIMEOUT_SECONDS", "0.2")
+
+        # Fill the single slot with the hung generation on a background thread; it
+        # will time out (0.2s) but its thread stays busy (orphan) holding the permit.
+        def _saturate():
+            try:
+                invoke_model_bounded(Hanger(), "p")
+            except LLMTimeoutError:
+                pass
+
+        t = _threading.Thread(target=_saturate)
+        t.start()
+        time.sleep(0.35)  # let the first call time out and orphan its thread
+
+        # Now the pool is saturated by the orphan. A new call must fail fast —
+        # within ~its budget, NOT block until the orphan finishes (up to 10s).
+        start = time.perf_counter()
+        with pytest.raises(LLMTimeoutError):
+            invoke_model_bounded(SlowLLM(0.0, content='{"ok": true}'), "p")
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"saturated call blocked {elapsed:.2f}s — should fail fast"
+
+        # Cleanup: release the orphan so the thread can exit.
+        release.set()
+        t.join(timeout=5)
+    finally:
+        # Restore a normally-sized pool for any later tests in this process.
+        _resize_invoke_pool_for_test(16)
+
+
+def test_permit_is_returned_after_normal_completion(monkeypatch):
+    # A successful call must release its permit so capacity is not leaked — run
+    # more calls than the pool size, serially, and confirm they all succeed.
+    from app.structured import invoke_model_bounded, _resize_invoke_pool_for_test
+
+    _resize_invoke_pool_for_test(1)
+    try:
+        monkeypatch.setenv("LLM_INVOKE_TIMEOUT_SECONDS", "5")
+        for _ in range(5):
+            out = invoke_model_bounded(SlowLLM(0.0, content="ok"), "p")
+            assert out.content == "ok"
+    finally:
+        _resize_invoke_pool_for_test(16)

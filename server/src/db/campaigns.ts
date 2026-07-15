@@ -55,55 +55,63 @@ export async function updateCampaign(
 }
 
 export async function deleteCampaign(id: string): Promise<void> {
-  // Delete all dependent records first (cascade order)
-  const wfRows = await db
-    .select({ id: workflows.id })
-    .from(workflows)
-    .where(eq(workflows.campaignId, id));
-  const workflowIds = wfRows.map((w) => w.id);
+  // W-7: the whole cascade runs in ONE transaction. Previously each DELETE was a
+  // separate statement, so a crash partway through left orphaned rows (e.g.
+  // instances deleted but their workflow/campaign still present, or events
+  // deleted while the instances they belonged to survived) — an inconsistent
+  // graph that no later delete would clean up. Wrapping it means the campaign and
+  // every dependent row disappear together or not at all.
+  await db.transaction(async (tx) => {
+    // Delete all dependent records first (cascade order).
+    const wfRows = await tx
+      .select({ id: workflows.id })
+      .from(workflows)
+      .where(eq(workflows.campaignId, id));
+    const workflowIds = wfRows.map((w) => w.id);
 
-  if (workflowIds.length > 0) {
-    const versionRows = await db
-      .select({ id: workflowVersions.id })
-      .from(workflowVersions)
-      .where(inArray(workflowVersions.workflowId, workflowIds));
-    const versionIds = versionRows.map((v) => v.id);
-
-    const instanceRows =
-      versionIds.length > 0
-        ? await db
-            .select({ id: executionInstances.id })
-            .from(executionInstances)
-            .where(inArray(executionInstances.workflowVersionId, versionIds))
-        : [];
-    const instanceIds = instanceRows.map((i) => i.id);
-
-    if (instanceIds.length > 0) {
-      // Delete ALL rows that reference an instance before the instances
-      // themselves, or the executionInstances delete hits a foreign-key
-      // violation. Besides Event/Message, later phases added BrandNotification
-      // and PaymentInfo — each with an instanceId FK — so they must be cleaned up
-      // here too (omitting them was what broke campaign deletion).
-      await db.delete(events).where(inArray(events.instanceId, instanceIds));
-      await db.delete(messages).where(inArray(messages.instanceId, instanceIds));
-      await db
-        .delete(brandNotifications)
-        .where(inArray(brandNotifications.instanceId, instanceIds));
-      await db.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
-      await db
-        .delete(executionInstances)
-        .where(inArray(executionInstances.id, instanceIds));
-    }
-
-    if (versionIds.length > 0) {
-      await db
-        .delete(workflowVersions)
+    if (workflowIds.length > 0) {
+      const versionRows = await tx
+        .select({ id: workflowVersions.id })
+        .from(workflowVersions)
         .where(inArray(workflowVersions.workflowId, workflowIds));
-    }
-    await db.delete(workflows).where(inArray(workflows.id, workflowIds));
-  }
+      const versionIds = versionRows.map((v) => v.id);
 
-  await db.delete(campaigns).where(eq(campaigns.id, id));
+      const instanceRows =
+        versionIds.length > 0
+          ? await tx
+              .select({ id: executionInstances.id })
+              .from(executionInstances)
+              .where(inArray(executionInstances.workflowVersionId, versionIds))
+          : [];
+      const instanceIds = instanceRows.map((i) => i.id);
+
+      if (instanceIds.length > 0) {
+        // Delete ALL rows that reference an instance before the instances
+        // themselves, or the executionInstances delete hits a foreign-key
+        // violation. Besides Event/Message, later phases added BrandNotification
+        // and PaymentInfo — each with an instanceId FK — so they must be cleaned
+        // up here too (omitting them was what broke campaign deletion).
+        await tx.delete(events).where(inArray(events.instanceId, instanceIds));
+        await tx.delete(messages).where(inArray(messages.instanceId, instanceIds));
+        await tx
+          .delete(brandNotifications)
+          .where(inArray(brandNotifications.instanceId, instanceIds));
+        await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
+        await tx
+          .delete(executionInstances)
+          .where(inArray(executionInstances.id, instanceIds));
+      }
+
+      if (versionIds.length > 0) {
+        await tx
+          .delete(workflowVersions)
+          .where(inArray(workflowVersions.workflowId, workflowIds));
+      }
+      await tx.delete(workflows).where(inArray(workflows.id, workflowIds));
+    }
+
+    await tx.delete(campaigns).where(eq(campaigns.id, id));
+  });
 }
 
 export async function getCampaignWithWorkflows(id: string): Promise<

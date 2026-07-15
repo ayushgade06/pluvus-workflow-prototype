@@ -8,6 +8,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type {
   WorkflowSummary,
+  WorkflowOptions,
   InstanceList,
   InstanceDetail,
   Timeline,
@@ -39,10 +40,22 @@ async function getJson<T>(url: string): Promise<T> {
 // Hooks
 // ---------------------------------------------------------------------------
 
-export function useWorkflowSummary() {
+export function useWorkflowSummary(workflowVersionId?: string | null) {
+  // W-6: optional version scope so the canvas reflects one campaign, not the
+  // whole table. Omitted → server defaults to the newest published version.
+  const qs = workflowVersionId ? `?workflowVersionId=${encodeURIComponent(workflowVersionId)}` : "";
   return useQuery({
-    queryKey: ["workflow-summary"],
-    queryFn: () => getJson<WorkflowSummary>(`${BASE}/workflow`),
+    queryKey: ["workflow-summary", workflowVersionId ?? null],
+    queryFn: () => getJson<WorkflowSummary>(`${BASE}/workflow${qs}`),
+    refetchInterval: POLL_INTERVAL_MS,
+  });
+}
+
+/** W-6: the workflow scope picker's options (one row per published workflow). */
+export function useWorkflowOptions() {
+  return useQuery({
+    queryKey: ["workflow-options"],
+    queryFn: () => getJson<WorkflowOptions>(`${BASE}/workflows`),
     refetchInterval: POLL_INTERVAL_MS,
   });
 }
@@ -58,14 +71,22 @@ export function useLlmUsage() {
 export function useInstances(params: {
   state?: InstanceState | undefined;
   search?: string | undefined;
+  workflowVersionId?: string | null | undefined;
 }) {
   const qs = new URLSearchParams();
   if (params.state) qs.set("state", params.state);
   if (params.search) qs.set("search", params.search);
+  // W-6: keep the drilldown scoped to the same version as the summary.
+  if (params.workflowVersionId) qs.set("workflowVersionId", params.workflowVersionId);
   qs.set("pageSize", "200");
   const query = qs.toString();
   return useQuery({
-    queryKey: ["instances", params.state ?? null, params.search ?? null],
+    queryKey: [
+      "instances",
+      params.state ?? null,
+      params.search ?? null,
+      params.workflowVersionId ?? null,
+    ],
     queryFn: () => getJson<InstanceList>(`${BASE}/instances?${query}`),
     // Poll the drilldown too, so creators appear/leave a node live.
     refetchInterval: POLL_INTERVAL_MS,

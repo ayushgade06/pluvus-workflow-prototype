@@ -140,15 +140,28 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
       )
       .orderBy(desc(executionInstances.updatedAt));
 
-    // Full event log per escalated instance (Prisma's include events), fetched
-    // in one query and grouped in memory.
+    // W-6: fetch ONLY the event types deriveEscalation actually reads
+    // (MANUAL_REVIEW_FLAGGED / NEGOTIATION_TURN / STATE_TRANSITION), not the full
+    // per-instance log. The manual queue previously loaded every event for every
+    // escalated instance on each poll — most of them (NODE_ENTERED, OUTREACH_*,
+    // etc.) are irrelevant to the escalation reason. Narrowing the type filter
+    // keeps the query bounded as the funnel history grows.
     const ids = instRows.map((r) => r.instance.id);
     const eventsByInstance = new Map<string, Event[]>();
     if (ids.length > 0) {
       const eventRows = await db
         .select()
         .from(eventsTable)
-        .where(inArray(eventsTable.instanceId, ids))
+        .where(
+          and(
+            inArray(eventsTable.instanceId, ids),
+            inArray(eventsTable.type, [
+              "MANUAL_REVIEW_FLAGGED",
+              "NEGOTIATION_TURN",
+              "STATE_TRANSITION",
+            ]),
+          ),
+        )
         .orderBy(asc(eventsTable.occurredAt));
       for (const ev of eventRows) {
         const list = eventsByInstance.get(ev.instanceId);

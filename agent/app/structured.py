@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Type, TypeVar
 
@@ -53,6 +54,33 @@ def _pool_size() -> int:
 
 
 _LLM_EXECUTOR = ThreadPoolExecutor(max_workers=_pool_size(), thread_name_prefix="llm-invoke")
+
+# W-9(a): a capacity semaphore sized to the pool. future.cancel() is a NO-OP once
+# a task has started, so a timed-out (orphaned) generation keeps holding its pool
+# thread until the underlying SDK call finally returns. With enough orphans the
+# pool saturates and the NEXT invoke_model_bounded blocks on .submit() waiting for
+# a free thread — the wait happens BEFORE .result(timeout), so the wall-clock
+# budget never even starts and the timeout is defeated.
+#
+# The fix: acquire a permit BEFORE submitting and release it in a done-callback
+# (so an orphan holds its permit until it genuinely finishes, accurately modelling
+# real occupancy). A caller that can't get a permit within its budget fails fast
+# with LLMTimeoutError instead of blocking indefinitely on a saturated pool. This
+# keeps the timeout guarantee true under orphan pressure — the classify path then
+# degrades to UNKNOWN and the negotiate path escalates, rather than hanging the
+# FastAPI worker.
+_LLM_CAPACITY = threading.BoundedSemaphore(_pool_size())
+
+
+def _resize_invoke_pool_for_test(size: int) -> None:
+    """Test helper: rebuild the executor + capacity semaphore at a small size so
+    the W-9(a) saturation behaviour can be exercised deterministically. Not used
+    in production (the pool is sized once at import from LLM_INVOKE_POOL_SIZE)."""
+    global _LLM_EXECUTOR, _LLM_CAPACITY
+    _LLM_EXECUTOR.shutdown(wait=False)
+    _LLM_EXECUTOR = ThreadPoolExecutor(max_workers=size, thread_name_prefix="llm-invoke")
+    _LLM_CAPACITY = threading.BoundedSemaphore(size)
+
 
 # Per-generation wall-clock budget for a SINGLE model's llm.invoke (MED-L2). This
 # now bounds ONE model call, not a whole primary→fallback chain: the FailoverChat
@@ -101,11 +129,54 @@ def invoke_model_bounded(model, prompt):
     timeout = _invoke_timeout_seconds()
     if timeout <= 0:
         return model.invoke(prompt)
-    future = _LLM_EXECUTOR.submit(lambda: model.invoke(prompt))
+
+    # Bind the CURRENT executor + semaphore instances locally. A task must release
+    # the SAME semaphore it acquired from — if a test (or a future resize) swaps
+    # the module globals, a stale done-callback releasing the *new* semaphore would
+    # over-release it. Capturing here ties acquire/release to one instance.
+    executor = _LLM_EXECUTOR
+    capacity = _LLM_CAPACITY
+
+    # W-9(a): reserve a pool permit within the SAME wall-clock budget. If the pool
+    # is saturated by orphaned (timed-out but still-running) generations, this
+    # returns promptly with a timeout instead of blocking on .submit() forever.
+    if not capacity.acquire(timeout=timeout):
+        raise LLMTimeoutError(
+            f"llm.invoke pool saturated — no free thread within {timeout:.0f}s "
+            f"(orphaned generations still running)",
+            raw=None,
+        )
+
+    release_lock = threading.Lock()
+    permit_released = False
+
+    def _release_once(_fut: object | None = None) -> None:
+        nonlocal permit_released
+        with release_lock:
+            if permit_released:
+                return
+            permit_released = True
+        capacity.release()
+
+    try:
+        future = executor.submit(lambda: model.invoke(prompt))
+    except Exception:
+        # Submission itself failed — don't leak the permit.
+        _release_once()
+        raise
+
+    # Release the permit only when the task ACTUALLY finishes (success, error, or
+    # long after a timeout) — NOT when result(timeout) gives up. An orphan thus
+    # keeps its permit until it truly returns, so the semaphore reflects real
+    # occupancy and can't over-admit.
+    future.add_done_callback(_release_once)
+
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError as exc:
-        # Don't wait on the orphaned generation; let it finish in the background.
+        # Don't wait on the orphaned generation; the done-callback frees its permit
+        # when it eventually finishes. future.cancel() is a no-op once started, but
+        # harmless for a task still queued.
         future.cancel()
         raise LLMTimeoutError(
             f"llm.invoke exceeded {timeout:.0f}s budget", raw=None

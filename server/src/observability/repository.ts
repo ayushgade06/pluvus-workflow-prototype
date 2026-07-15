@@ -100,104 +100,220 @@ function isStuck(inst: Pick<ExecutionInstance, "currentState" | "dueAt">, now: n
 /**
  * Per-state counts + derived metrics for the canvas.
  *
- * avgTimeInState is computed from the most recent STATE_TRANSITION event whose
- * `to` equals the instance's current state: now - thatEvent.occurredAt,
- * averaged across instances in the state. Instances with no such event (e.g.
- * still ENROLLED, never transitioned) fall back to now - enrolledAt.
+ * W-6: SCOPED to ONE workflow version and computed in SQL.
+ *
+ *   - Correctness: previously this labelled the dashboard with the newest
+ *     published version but aggregated EVERY instance in the table with no
+ *     version filter, so the moment a second campaign launched the counts under
+ *     one workflow's name silently included the other's creators. Now every
+ *     count, waiting/stuck flag, and time-in-state is filtered to the target
+ *     version's instances.
+ *
+ *   - Scale: previously it loaded every instance row AND every STATE_TRANSITION
+ *     event into memory on every 6 s dashboard poll — O(fleet) work per poll,
+ *     growing without bound. Now the per-state counts come from a single
+ *     GROUP BY, and avg-time-in-state from one grouped aggregate join; the DB
+ *     does the reduction and only ~16 rows (one per state) come back.
+ *
+ * `workflowVersionId` selects which version to summarize; when omitted it
+ * defaults to the newest published version (the prior behavior for the label),
+ * so a single-workflow deployment and the existing frontend call are unchanged.
  */
-export async function getWorkflowSummary(): Promise<WorkflowSummaryDTO> {
+export async function getWorkflowSummary(
+  workflowVersionId?: string,
+): Promise<WorkflowSummaryDTO> {
   const now = Date.now();
+  const nowDate = new Date(now);
 
-  // Newest published version is the "active" workflow we visualize.
-  const versionRows = await db
-    .select({ version: workflowVersions, workflow: workflows })
-    .from(workflowVersions)
-    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
-    .orderBy(desc(workflowVersions.version))
-    .limit(1);
+  // Resolve the version to summarize: an explicit id, else the newest published.
+  const versionRows = workflowVersionId
+    ? await db
+        .select({ version: workflowVersions, workflow: workflows })
+        .from(workflowVersions)
+        .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+        .where(eq(workflowVersions.id, workflowVersionId))
+        .limit(1)
+    : await db
+        .select({ version: workflowVersions, workflow: workflows })
+        .from(workflowVersions)
+        .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+        .orderBy(desc(workflowVersions.version))
+        .limit(1);
   const version = versionRows[0] ?? null;
 
-  const instances = await db
-    .select({
-      id: executionInstances.id,
-      currentState: executionInstances.currentState,
-      dueAt: executionInstances.dueAt,
-      enrolledAt: executionInstances.enrolledAt,
-      updatedAt: executionInstances.updatedAt,
-    })
-    .from(executionInstances);
-
-  // Most recent "entered this state" timestamp per instance, from transition
-  // events. One query, grouped in memory.
-  const transitionEvents = await db
-    .select({
-      instanceId: eventsTable.instanceId,
-      payload: eventsTable.payload,
-      occurredAt: eventsTable.occurredAt,
-    })
-    .from(eventsTable)
-    .where(eq(eventsTable.type, "STATE_TRANSITION"))
-    .orderBy(asc(eventsTable.occurredAt));
-
-  // instanceId -> { state -> latest occurredAt entering that state }
-  const enteredAt = new Map<string, number>();
-  for (const ev of transitionEvents) {
-    const p = asRecord(ev.payload);
-    const to = payloadString(p, "to");
-    if (!to) continue;
-    // Latest wins because events are ordered ascending.
-    enteredAt.set(`${ev.instanceId}:${to}`, ev.occurredAt.getTime());
+  // No resolvable version → empty (but well-formed) summary. Every state shows 0.
+  if (!version) {
+    return {
+      workflow: null,
+      totalInstances: 0,
+      nodes: emptyNodes(),
+      generatedAt: nowDate.toISOString(),
+    };
   }
 
-  // Aggregate per-state.
-  const acc = new Map<
-    InstanceState,
-    { count: number; active: number; waiting: number; stuck: number; durSum: number; durN: number }
-  >();
-  for (const state of WORKFLOW_STATE_ORDER) {
-    acc.set(state, { count: 0, active: 0, waiting: 0, stuck: 0, durSum: 0, durN: 0 });
+  const versionId = version.version.id;
+  const scoped = eq(executionInstances.workflowVersionId, versionId);
+
+  // ── Per-state counts, in SQL, scoped to this version ─────────────────────
+  // One GROUP BY returns count + stuck-count per state. "stuck" = a waiting
+  // state whose dueAt lapsed more than STUCK_THRESHOLD_MS ago (same predicate
+  // isStuck() used, now expressed in SQL so no rows are materialized).
+  const staleBefore = new Date(now - STUCK_THRESHOLD_MS);
+  const countRows = await db
+    .select({
+      state: executionInstances.currentState,
+      count: count(),
+      stuck: sql<number>`count(*) filter (where ${inArray(
+        executionInstances.currentState,
+        WAITING_STATES,
+      )} and ${executionInstances.dueAt} is not null and ${executionInstances.dueAt} < ${staleBefore})`.mapWith(
+        Number,
+      ),
+    })
+    .from(executionInstances)
+    .where(scoped)
+    .groupBy(executionInstances.currentState);
+
+  // ── Avg time-in-state, in SQL, scoped to this version ────────────────────
+  // Two levels — nesting max() inside avg() is illegal in SQL, so:
+  //   inner: per instance, entered-at = latest STATE_TRANSITION whose payload
+  //          `to` equals currentState (max), falling back to enrolledAt for
+  //          instances that never transitioned (still ENROLLED, etc.).
+  //   outer: average (now - entered-at) grouped by state → one row per state.
+  const perInstance = db
+    .select({
+      state: executionInstances.currentState,
+      enteredAt:
+        sql<Date>`coalesce(max(${eventsTable.occurredAt}), ${executionInstances.enrolledAt})`.as(
+          "enteredAt",
+        ),
+    })
+    .from(executionInstances)
+    .leftJoin(
+      eventsTable,
+      and(
+        eq(eventsTable.instanceId, executionInstances.id),
+        eq(eventsTable.type, "STATE_TRANSITION"),
+        sql`${eventsTable.payload} ->> 'to' = ${executionInstances.currentState}::text`,
+      ),
+    )
+    .where(scoped)
+    .groupBy(executionInstances.currentState, executionInstances.id, executionInstances.enrolledAt)
+    .as("per_instance");
+
+  const durationRows = await db
+    .select({
+      state: perInstance.state,
+      avgSeconds: sql<number | null>`avg(extract(epoch from (${nowDate} - ${perInstance.enteredAt})))`,
+    })
+    .from(perInstance)
+    .groupBy(perInstance.state);
+
+  const avgByState = new Map<InstanceState, number>();
+  for (const r of durationRows) {
+    if (r.avgSeconds !== null) avgByState.set(r.state, Number(r.avgSeconds));
   }
 
-  for (const inst of instances) {
-    const bucket = acc.get(inst.currentState);
-    if (!bucket) continue; // unknown state — defensive
-    bucket.count += 1;
-    if (!isTerminalState(inst.currentState)) bucket.active += 1;
-    if (isWaitingState(inst.currentState)) bucket.waiting += 1;
-    if (isStuck(inst, now)) bucket.stuck += 1;
-
-    const entered =
-      enteredAt.get(`${inst.id}:${inst.currentState}`) ?? inst.enrolledAt.getTime();
-    bucket.durSum += now - entered;
-    bucket.durN += 1;
+  const countByState = new Map<InstanceState, { count: number; stuck: number }>();
+  let total = 0;
+  for (const r of countRows) {
+    countByState.set(r.state, { count: r.count, stuck: r.stuck });
+    total += r.count;
   }
 
   const nodes: WorkflowNodeSummaryDTO[] = WORKFLOW_STATE_ORDER.map((state) => {
-    const b = acc.get(state)!;
+    const c = countByState.get(state) ?? { count: 0, stuck: 0 };
+    const terminal = isTerminalState(state);
+    const waiting = isWaitingState(state) ? c.count : 0;
+    const avg = avgByState.get(state);
     return {
       state,
-      count: b.count,
-      terminal: isTerminalState(state),
-      active: b.active,
-      waiting: b.waiting,
-      stuck: b.stuck,
-      avgTimeInStateSeconds: b.durN > 0 ? Math.round(b.durSum / b.durN / 1000) : null,
+      count: c.count,
+      terminal,
+      active: terminal ? 0 : c.count,
+      waiting,
+      stuck: c.stuck,
+      avgTimeInStateSeconds: avg !== undefined ? Math.round(avg) : null,
     };
   });
 
   return {
-    workflow: version
-      ? {
-          id: version.workflow.id,
-          name: version.workflow.name,
-          version: version.version.version,
-          versionId: version.version.id,
-        }
-      : null,
-    totalInstances: instances.length,
+    workflow: {
+      id: version.workflow.id,
+      name: version.workflow.name,
+      version: version.version.version,
+      versionId: version.version.id,
+    },
+    totalInstances: total,
     nodes,
-    generatedAt: new Date(now).toISOString(),
+    generatedAt: nowDate.toISOString(),
   };
+}
+
+/** All states at zero — the shape returned when there's no version to summarize. */
+function emptyNodes(): WorkflowNodeSummaryDTO[] {
+  return WORKFLOW_STATE_ORDER.map((state) => ({
+    state,
+    count: 0,
+    terminal: isTerminalState(state),
+    active: 0,
+    waiting: 0,
+    stuck: 0,
+    avgTimeInStateSeconds: null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Workflow selector (W-6)
+// ---------------------------------------------------------------------------
+// The list backing a "which campaign am I looking at?" picker. One row per
+// workflow that has at least one published version, carrying its latest version
+// + a live instance count — so operators can switch the summary/drilldown scope
+// instead of always seeing the newest-published workflow. Computed in SQL.
+
+export interface WorkflowOptionDTO {
+  workflowId: string;
+  workflowName: string;
+  latestVersionId: string;
+  latestVersion: number;
+  instanceCount: number;
+}
+
+export async function listWorkflowOptions(): Promise<WorkflowOptionDTO[]> {
+  // Latest version per workflow: the max(version) row. Done with a grouped
+  // subquery so we return exactly one version per workflow.
+  const rows = await db
+    .select({
+      workflowId: workflows.id,
+      workflowName: workflows.name,
+      versionId: workflowVersions.id,
+      version: workflowVersions.version,
+      instanceCount: count(executionInstances.id),
+    })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
+    .leftJoin(
+      executionInstances,
+      eq(executionInstances.workflowVersionId, workflowVersions.id),
+    )
+    .groupBy(workflows.id, workflows.name, workflowVersions.id, workflowVersions.version)
+    .orderBy(desc(workflowVersions.version));
+
+  // Keep only the newest version per workflow (rows are version-desc ordered).
+  const seen = new Set<string>();
+  const out: WorkflowOptionDTO[] = [];
+  for (const r of rows) {
+    if (seen.has(r.workflowId)) continue;
+    seen.add(r.workflowId);
+    out.push({
+      workflowId: r.workflowId,
+      workflowName: r.workflowName,
+      latestVersionId: r.versionId,
+      latestVersion: r.version,
+      instanceCount: r.instanceCount,
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,6 +325,9 @@ export interface InstanceListParams {
   search?: string;
   page?: number;
   pageSize?: number;
+  // W-6: scope the list to one workflow version so the drilldown matches the
+  // (now version-scoped) summary. Omitted → all versions (backward compatible).
+  workflowVersionId?: string;
 }
 
 /** Escape LIKE wildcards so a search for "50%" doesn't match everything
@@ -225,6 +344,9 @@ export async function listInstances(params: InstanceListParams): Promise<Instanc
   const conditions: SQL[] = [];
   if (params.state) {
     conditions.push(eq(executionInstances.currentState, params.state));
+  }
+  if (params.workflowVersionId) {
+    conditions.push(eq(executionInstances.workflowVersionId, params.workflowVersionId));
   }
   if (params.search && params.search.trim()) {
     const pattern = likeContains(params.search.trim());

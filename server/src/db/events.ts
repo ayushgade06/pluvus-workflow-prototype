@@ -1,10 +1,20 @@
 import { and, asc, eq } from "drizzle-orm";
-import { db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import { events, type Event, type EventInsert, type EventType } from "./schema.js";
 
-/** Append a new event to the audit log. Never update or delete events. */
-export async function appendEvent(data: EventInsert): Promise<Event> {
-  const rows = await db.insert(events).values(data).returning();
+/**
+ * Append a new event to the audit log. Never update or delete events.
+ *
+ * `client` is injectable so the caller can enlist the append in an open
+ * transaction (W-7): the OCC state write and the STATE_TRANSITION / money-trail
+ * event append must commit together, or a crash between them can lose an
+ * ACCEPT's agreed rate. Defaults to the top-level `db` when no tx is passed.
+ */
+export async function appendEvent(
+  data: EventInsert,
+  client: Db | DbTx = db,
+): Promise<Event> {
+  const rows = await client.insert(events).values(data).returning();
   return rows[0]!;
 }
 

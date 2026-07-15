@@ -5,22 +5,30 @@
 // unchanged from the original inline version.
 // ---------------------------------------------------------------------------
 import { useState } from "react";
-import { useWorkflowSummary, POLL_INTERVAL_MS } from "../api/client";
-import type { InstanceState, WorkflowNodeSummary } from "../api/types";
+import { useWorkflowSummary, useWorkflowOptions, POLL_INTERVAL_MS } from "../api/client";
+import type { InstanceState, WorkflowNodeSummary, WorkflowOption } from "../api/types";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { NodeDrilldown } from "./NodeDrilldown";
 import { InstanceInspector } from "./InstanceInspector";
 import { LlmUsageStrip } from "./LlmUsagePanel";
-import { EmptyState } from "./ds";
+import { EmptyState, Select } from "./ds";
 import { colors, font, formatTimestamp } from "../theme";
 
 export default function ObservabilityView() {
-  const summary = useWorkflowSummary();
+  // W-6: an explicit workflow scope. null → "let the server pick the newest
+  // published version" (the historical default). Picking one scopes BOTH the
+  // summary and the drilldown so the counts and the creator list agree.
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const options = useWorkflowOptions();
+  const summary = useWorkflowSummary(selectedVersionId);
   const [selectedState, setSelectedState] = useState<InstanceState | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
 
   const nodes = summary.data?.nodes ?? [];
   const wf = summary.data?.workflow ?? null;
+  // The version the drilldown must match: the explicit pick, else whatever the
+  // summary resolved to (so both views stay on the same campaign).
+  const scopedVersionId = selectedVersionId ?? wf?.versionId ?? null;
 
   function handleSelectState(state: string) {
     setSelectedState(state as InstanceState);
@@ -37,6 +45,13 @@ export default function ObservabilityView() {
         generatedAt={summary.data?.generatedAt ?? null}
         fetching={summary.isFetching}
         error={summary.isError ? (summary.error as Error)?.message : null}
+        options={options.data?.workflows ?? []}
+        selectedVersionId={scopedVersionId}
+        onSelectVersion={(id) => {
+          setSelectedVersionId(id);
+          setSelectedState(null);
+          setSelectedInstanceId(null);
+        }}
       />
       <LlmUsageStrip />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
@@ -61,6 +76,7 @@ export default function ObservabilityView() {
           >
             <NodeDrilldown
               state={selectedState}
+              workflowVersionId={scopedVersionId}
               selectedInstanceId={selectedInstanceId}
               onSelectInstance={setSelectedInstanceId}
             />
@@ -87,6 +103,9 @@ function ObserveTopbar({
   generatedAt,
   fetching,
   error,
+  options,
+  selectedVersionId,
+  onSelectVersion,
 }: {
   name: string;
   version: number | null;
@@ -95,6 +114,9 @@ function ObserveTopbar({
   generatedAt: string | null;
   fetching: boolean;
   error: string | null;
+  options: WorkflowOption[];
+  selectedVersionId: string | null;
+  onSelectVersion: (versionId: string | null) => void;
 }) {
   const active = nodes.filter((n) => !n.terminal).reduce((a, n) => a + n.count, 0);
   const terminal = nodes.filter((n) => n.terminal).reduce((a, n) => a + n.count, 0);
@@ -116,10 +138,27 @@ function ObserveTopbar({
         Observability
       </div>
       <div style={{ width: 1, height: 22, background: colors.border }} />
-      <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
-        {name}
-        {version !== null && <span style={{ color: colors.textDim }}> · v{version}</span>}
-      </div>
+      {/* W-6: scope picker. Only shown once there is more than one workflow to
+          choose between — a single-campaign deployment sees the plain label. */}
+      {options.length > 1 ? (
+        <Select
+          value={selectedVersionId ?? ""}
+          onChange={(e) => onSelectVersion(e.target.value || null)}
+          aria-label="Workflow scope"
+          style={{ width: "auto", padding: "5px 8px", fontSize: font.size.sm }}
+        >
+          {options.map((o) => (
+            <option key={o.latestVersionId} value={o.latestVersionId}>
+              {o.workflowName} · v{o.latestVersion} ({o.instanceCount})
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
+          {name}
+          {version !== null && <span style={{ color: colors.textDim }}> · v{version}</span>}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 16, marginLeft: 8 }}>
         <Stat label="total" value={total} />
         <Stat label="active" value={active} color={colors.accent} />

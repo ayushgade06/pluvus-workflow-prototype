@@ -51,6 +51,20 @@ export interface WorkflowSummary {
   generatedAt: string;
 }
 
+// ---- workflow selector (W-6) ----
+
+export interface WorkflowOption {
+  workflowId: string;
+  workflowName: string;
+  latestVersionId: string;
+  latestVersion: number;
+  instanceCount: number;
+}
+
+export interface WorkflowOptions {
+  workflows: WorkflowOption[];
+}
+
 // ---- instance list ----
 
 export interface InstanceListItem {

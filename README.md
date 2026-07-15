@@ -7,8 +7,8 @@ The platform is a three-service monorepo:
 | Service | Stack | Role |
 |---|---|---|
 | `web/` | React 18 + Vite + React Flow + TanStack Query | Visual workflow builder, campaign wizard, live execution dashboard, manual review queue |
-| `server/` | Express + TypeScript (ESM) + Prisma/PostgreSQL + BullMQ/Redis | REST API, state-machine execution engine, workers, scheduler, email + hosted pages |
-| `agent/` | FastAPI + LangGraph (Ollama / OpenAI) | AI service: reply classification, negotiation decisions, email drafting, brief parsing |
+| `server/` | Express + TypeScript (ESM) + Drizzle/PostgreSQL (Neon) + BullMQ/Redis | REST API, state-machine execution engine, workers, scheduler, email + hosted payout form |
+| `agent/` | FastAPI + LangGraph (Ollama / Anthropic / DeepSeek / OpenRouter) | AI service: reply classification, negotiation decisions, email drafting, brief parsing |
 
 ---
 
@@ -45,7 +45,7 @@ Pluvus Workflow is the execution backbone for creator-marketing campaigns. A bra
 - sends personalized outreach and scheduled follow-ups,
 - classifies every inbound reply with an LLM (guarded by deterministic gates),
 - negotiates rates within a brand-set floor/ceiling band across bounded rounds,
-- escalates genuine judgment calls to the brand by email with one-click magic links,
+- escalates genuine judgment calls to a human (terminal `MANUAL_REVIEW` + a brand-notification email),
 - confirms the agreement, collects payout information on a hosted form,
 - and delivers the campaign brief with a PDF attachment to close the loop.
 
@@ -62,7 +62,7 @@ flowchart TB
     subgraph WebTier["Web Tier"]
         UI["React SPA<br/>Builder / Observability / Manual Queue"]
         API["Express API<br/>campaigns, workflows, creators,<br/>queues, observability, uploads"]
-        PAGES["Hosted Pages<br/>payout form, brand-decision links"]
+        PAGES["Hosted Pages<br/>payout form"]
     end
 
     subgraph ExecTier["Execution Tier"]
@@ -73,11 +73,11 @@ flowchart TB
 
     subgraph AITier["AI Tier"]
         AGENT["FastAPI Agent Service<br/>/classify /negotiate /draft /parse-brief"]
-        LLM["LLM Provider<br/>Ollama (Qwen) or OpenAI, with failover"]
+        LLM["LLM Provider<br/>Ollama / Anthropic / DeepSeek / OpenRouter, with failover"]
     end
 
     subgraph Infra["Shared Infrastructure"]
-        PG[("PostgreSQL<br/>Prisma — 11 models")]
+        PG[("PostgreSQL (Neon)<br/>Drizzle — 11 tables")]
         REDIS[("Redis<br/>queues + instance locks")]
     end
 
@@ -115,13 +115,13 @@ flowchart TB
 - **Event-driven execution engine** — instances advance only on time triggers and inbound email; there is no loop that "runs" a workflow, so idle creators consume nothing.
 - **Visual Workflow Builder** — a React Flow drag-and-drop canvas with live client + server validation, auto-save, and one-click publishing.
 - **Campaign Builder** — a guided wizard captures commercial scope and knowledge fields that are stamped straight into the running engine's node configs.
-- **Human-in-the-loop approvals** — genuine judgment calls become brand emails with one-click magic links (or a Manual Queue entry), tracked with tokens, expiry, and re-ask caps.
+- **Human-in-the-loop escalation** — genuine judgment calls transition to the terminal `MANUAL_REVIEW` state, fire an idempotent brand-notification email, and surface in the Manual Queue for a human to take over.
 - **Immutable workflow versioning** — publishing freezes a node-graph snapshot; in-flight creators keep running their enrolled version while the draft evolves freely.
 - **Queue-based architecture** — BullMQ over Redis with deterministic job IDs, retries, and idempotent workers gives effectively-once processing on an at-least-once queue.
 - **AI safety guardrails** — deterministic gates before the model and decision + output guards after it enforce every money boundary, round cap, and disclosure rule in code.
 - **Observability** — read-only dashboard APIs, per-instance timelines, transition traces (source/worker/job), and per-call LLM telemetry (model, prompt version, tokens, latency, cost).
 - **Correctness under concurrency** — Redis per-instance locks plus optimistic concurrency control guarantee exactly one transition per trigger, even under racing workers.
-- **Production-oriented architecture** — role-split processes (API / scalable workers / single-leader scheduler), circuit-broken AI calls, graceful shutdown, and env-driven provider selection from fully-mocked local to real Nylas + OpenAI.
+- **Production-oriented architecture** — role-split processes (API / scalable workers / Redis leader-locked single-leader scheduler), circuit-broken AI calls, graceful shutdown, and env-driven provider selection from fully-mocked local to real Nylas + a hosted LLM (Anthropic / DeepSeek via OpenRouter).
 
 ---
 
@@ -134,7 +134,7 @@ A two-step campaign wizard (`web/src/components/builder/CampaignWizard.tsx`) cap
 - **Identity:** campaign name, brand name, objective, notes.
 - **Commercial scope:** deliverables (e.g., "3 Instagram Reels + 1 YouTube integration"), timeline, product/sample reward description, and a **ships-physical-product** toggle that adds shipping-address collection to the payout form.
 - **Knowledge fields** (fed verbatim to the AI so it answers creator questions truthfully): brand description, usage rights, exclusivity, payment terms, attribution window.
-- **Escalation routing:** a per-campaign `notifyEmail` where brand-decision requests and manual-review notices are sent.
+- **Escalation routing:** a per-campaign `notifyEmail` where manual-review notifications are sent when an instance is escalated to a human.
 
 Campaign fields are **stamped into workflow node configs** at creation, on every draft save, and at publish — so the running engine always reflects the campaign's current commercial terms.
 
@@ -162,17 +162,18 @@ The engine turns every trigger into a queued job that a worker processes exactly
 
 - **Two BullMQ queues** — `node-execution` and `inbound-email` — with deterministic job IDs, three attempts, and exponential backoff.
 - **Idempotent workers:** node execution guards on expected state; inbound email guards on `externalMessageId` **and** a `processedAt` marker so a persisted-but-unprocessed reply is never lost.
-- **Scheduler (single leader)** runs every 30 seconds: fires due follow-ups (batch-limited, index-backed), expires stale brand decisions (72 h), reconciles instances stranded in transient states after a crash, and logs worker-fleet metrics.
+- **Scheduler (single leader, Redis-locked)** runs every 30 seconds: fires due follow-ups (batch-limited, index-backed), reconciles instances stranded in transient states after a crash, and logs worker-fleet metrics. A Redis leader lease means that even if several `scheduler` processes are launched, only one polls — so no duplicate executor firing or duplicate LLM spend.
 - **Concurrency protection:** per-instance Redis locks with fencing tokens serialize execution; optimistic concurrency control (`UPDATE … WHERE currentState = expected`) is the correctness guarantee — a losing writer becomes a clean no-op, never a double transition.
 - **Process topology:** one codebase, role-selected at start (`PROCESS_ROLE = api | worker | scheduler | all`). Docker Compose ships a split topology with a horizontally scalable worker fleet and a single scheduler leader.
 
 ## AI Reply Classification
 
-Every inbound creator reply is classified `POSITIVE / NEGATIVE / QUESTION / OPT_OUT / UNKNOWN` with a layered pipeline:
+Every inbound creator reply is classified into one of six intents — `POSITIVE / NEGATIVE / QUESTION / OPT_OUT / UNKNOWN / DEFERRED` — with a layered pipeline:
 
 1. **Deterministic gates first** (shared spec, `shared/classifier-spec.json`): opt-out keywords force `OPT_OUT` at confidence 1.0 (compliance-critical, can never be suppressed); prompt-injection patterns force `UNKNOWN`; rate statements and questions short-circuit as engaged replies.
-2. **LLM classification** on sanitized text (temperature 0, seeded, JSON mode).
+2. **LLM classification** on sanitized text (temperature 0; genuinely seeded + JSON-mode on Ollama, temperature-0 + JSON-repair on the hosted providers).
 3. **Low-confidence gate:** anything below 0.50 confidence degrades to `UNKNOWN`, which routes the creator to Manual Review rather than guessing.
+4. **Routing:** `POSITIVE`/`QUESTION` → negotiation, `NEGATIVE` → `REJECTED`, `OPT_OUT` → `OPTED_OUT`, `DEFERRED` ("I'll think about it") → back to `AWAITING_REPLY` with a soft follow-up scheduled, `UNKNOWN` → `MANUAL_REVIEW`.
 
 ## AI Negotiation
 
@@ -194,15 +195,16 @@ Purpose-specific prompts generate the actual outbound copy: initial outreach, fo
 - **Brand scrubbing and format checks:** no platform name leakage, no placeholder tokens, enforced greeting/sections/sign-off structure.
 - **Idempotent sends:** outbound AI messages carry a deterministic pre-send idempotency key so retries can never double-send.
 
-## Human-in-the-Loop: Brand Decisions and Manual Queue
+## Human-in-the-Loop: Escalation and the Manual Queue
 
-Business judgment calls become **brand decisions** — an email to the campaign's `notifyEmail` stating the question with reply cues (`APPROVE` / `REJECT` / `COUNTER <amount>` / `HANDOFF`) and **one-click magic links**:
+Escalation is a **one-way handoff to a human**, not an in-band negotiation loop. When the system hits a business-judgment call, an over-ceiling ask, a guard block, a low-confidence reply, or a missing-configuration case, the instance transitions to the terminal `MANUAL_REVIEW` state and the brand is notified by email — a person then takes over out of band. (An earlier design parked instances in an `AWAITING_BRAND_DECISION` state with tokenized magic-link approvals; the founders' Phase A decision **removed that loop** in favour of the simpler terminal handoff, so no `AWAITING_BRAND_DECISION` state, `BrandDecision` model, or approval magic-links exist in the current system.)
 
-- The instance parks in `AWAITING_BRAND_DECISION` with a `BrandDecision` row carrying an unguessable token, captured context (creator's ask, band, round), and a 72-hour expiry.
-- **Magic links are prefetch-safe:** GET renders a confirmation interstitial (so email-gateway link scanners cannot resolve a decision); POST enacts it. Both verbs enforce expiry; double-clicks are idempotent.
-- **Email replies work too:** a token scan first, an authorized-sender check against the campaign's notify address, then an AI fallback classifier; an ambiguous reply gets exactly one clarification re-ask before handing off to Manual Review.
-- Escalation reasons cover the real cases: max rounds reached, low-confidence replies, over-ceiling asks, output-guard blocks, agent unavailability, and even missing configuration (a missing brand name is requested from the brand by email and written back to the campaign, after which the blocked node re-runs).
-- The **Manual Queue tab** surfaces every escalated creator with the derived reason, brand-notification delivery status, pending decisions with expiry, and a re-notify action. Brand notifications are idempotent per (instance, reason) and never block a state transition.
+- **Entry into `MANUAL_REVIEW` is a deliberate, machine-reasoned decision** with a reason code: `max_rounds_reached`, `low_confidence_reply`, `output_guard_blocked`, `escalated` (agent chose to hand off), `no_ceiling_configured`, `agent_unavailable`, the Phase E always-escalate topics (`legal_or_contract`, `dispute_or_hostile`, `pricing_exception`, `usage_rights_or_licensing`), and `missing_brand_name`.
+- **Brand notification** is an email to the campaign's `notifyEmail` (falling back to `BRAND_NOTIFY_EMAIL`, then an operator default), recorded in a `BrandNotification` row with `SENT`/`FAILED`/`SKIPPED` status. It is idempotent per `(instance, reason)` and best-effort — a notification failure never rolls back or blocks the state transition.
+- The **Manual Queue tab** surfaces every escalated creator with the derived reason, brand-notification delivery status, and a re-notify action (which forces a fresh send even after a prior `SENT`).
+- Max-rounds-with-no-agreement instead resolves to the terminal `REJECTED` state with a best-effort close email, per the founders' round-limit rule — not a human handoff.
+
+> An in-product "resume from `MANUAL_REVIEW`" action (a return path from the terminal handoff) is tracked as post-pilot work; today, recovery from a human-reviewed instance is out of band.
 
 ## Agreement, Payout, and Content Brief
 
@@ -222,7 +224,7 @@ After a successful negotiation the deal is operationalized:
 
 - **Read-only dashboard APIs** (`/observability/*`): workflow summary, filtered/paginated instance lists, per-instance detail (messages, events, decisions), chronological timelines, and transition traces recording source/worker/job for every state change.
 - **Worker-fleet metrics:** live queue depths and stuck-state counts.
-- **LLM telemetry:** every AI call records model, prompt version, latency, input/output tokens, and estimated cost — greppable log lines plus a `/metrics` aggregate endpoint on the agent service.
+- **LLM telemetry (durable):** every AI call records model, prompt version, latency, input/output tokens, and estimated cost. Beyond the agent's in-process `/metrics` ring buffer, each call is persisted server-side to an `LlmCall` table — attributed to the originating instance and role via AsyncLocalStorage — and aggregated by `GET /observability/llm` (all-time + trailing-24h totals, per-role and per-model breakdowns) with a dashboard usage strip and a per-instance "AI Usage" inspector tab.
 - **Frontend Observability view:** state-distribution tiles, terminal/active splits, instance inspector with timeline, message thread (with classified intent and confidence), agent decisions, and logs — all live-polling.
 
 ## Evaluation Framework
@@ -233,7 +235,7 @@ After a successful negotiation the deal is operationalized:
 
 ## Persistence and Audit
 
-Eleven Prisma models over PostgreSQL, 18 migrations, and three invariants: definition models are mutable, published version snapshots are immutable, and the event log is append-only. Unique constraints encode the idempotency keys (message external IDs, outbound send keys, notification keys, decision tokens, payout tokens).
+Eleven tables over PostgreSQL (Neon), accessed through **Drizzle ORM**, with three invariants: definition models are mutable, published version snapshots are immutable, and the event log is append-only. Unique constraints encode the idempotency keys (message external IDs, outbound send keys, notification keys, payout tokens). The 21 SQL migrations under `server/prisma/migrations/` remain the migration-SQL owner and are applied by a small runner (`apply-migration.ts`); the Prisma *runtime* has been fully removed (migration M1) — no `@prisma/client` is imported anywhere. On the money path nothing is updated in place: the agreed fee is recovered by replaying `NEGOTIATION_TURN` events, and (W-7) the state write and that event append now commit in a single transaction so a crash can never strand a state change without its money trail.
 
 ---
 
@@ -254,12 +256,12 @@ Three independently deployable services communicate over well-defined seams:
 |---|---|
 | `server/src/engine/` | Pure execution engine: state machine, runtime, node executors, output guards. Knows nothing about HTTP, queues, or Redis. |
 | `server/src/workers/` | BullMQ queues + idempotent workers wrapping the runtime. |
-| `server/src/scheduler/` | Single-leader poller: due follow-ups, brand-decision expiry, stuck-instance reconciliation, fleet metrics. |
-| `server/src/db/` | Typed repository layer over Prisma; the OCC primitive lives here. |
-| `server/src/routes/` | REST surface: builder, ops, observability, hosted pages, magic links, uploads. |
+| `server/src/scheduler/` | Poller (Redis leader-locked so only one of N scheduler processes acts): due follow-ups, stuck-instance reconciliation, fleet metrics. |
+| `server/src/db/` | Typed repository layer over Drizzle; the OCC primitive lives here. |
+| `server/src/routes/` | REST surface: builder, ops, observability, hosted payout form, uploads. |
 | `server/src/webhooks/` + `providers/nylas/` | Signed inbound intake and the real email provider. |
 | `server/src/adapters/` | HTTP clients to the agent service (classification + negotiation) with breaker/timeouts, plus in-process mocks. |
-| `server/src/notifications/` | Idempotent brand escalation + decision-request emails. |
+| `server/src/notifications/` | Idempotent brand escalation notifications (on entry to `MANUAL_REVIEW`). |
 | `server/src/templates/` | Campaign workflow templates and node-graph validation. |
 | `server/src/storage/` | Swappable file-storage seam (brief PDFs). |
 | `server/src/validation/` | Structural graph validation (mirrored client-side). |
@@ -294,9 +296,8 @@ flowchart LR
     H --> I["Agreement<br/>confirmed"]
     I --> J["Payout info<br/>collected"]
     J --> K["Content brief<br/>delivered"]
-    H -.->|"judgment call"| L["Brand decision<br/>magic links"]
-    L -.-> H
-    G -.->|"low confidence"| M["Manual Queue"]
+    H -.->|"over ceiling / guard / handoff"| M["Manual Queue<br/>(MANUAL_REVIEW)"]
+    G -.->|"low confidence"| M
 ```
 
 Step by step:
@@ -306,9 +307,8 @@ Step by step:
 3. **Enrollment and launch** — creators arrive via CSV, are enrolled into the published version (one instance per creator per version), and launch enqueues the first execution job for each.
 4. **Outreach and follow-ups** — the outreach executor drafts (AI or template) and sends the first email; the follow-up executor schedules `dueAt`; the 30-second poller fires due follow-ups until a reply arrives or the max count exhausts to `NO_RESPONSE`. A reply cancels follow-ups implicitly by moving the instance out of the poller's view.
 5. **Reply processing** — the webhook verifies, correlates, and enqueues; the worker dedups, locks, persists the inbound message, classifies it, and routes: positive/question → negotiation, negative → rejected, opt-out → opted out, unknown/low-confidence → Manual Review.
-6. **Negotiation** — each creator reply triggers one turn: the agent decides (LLM or rules), guards clamp/veto, the draft answers every question, the output guard clears the copy, the email sends idempotently. Rounds are capped; over-ceiling asks and exhausted rounds escalate to the brand.
-7. **Brand decision** — the brand replies or clicks a link; approval closes the deal at the creator's rate, a counter re-enters negotiation at the brand's number, rejection/handoff routes accordingly; 72 hours of silence expires to Manual Review.
-8. **Agreement → payout → brief** — confirmation email and creator acknowledgment, hosted payout form (plus shipping address when applicable), then the brief email with PDF attachment lands the instance at `CONTENT_BRIEF_SENT` — the success terminal.
+6. **Negotiation** — each creator reply triggers one turn: the agent decides (LLM or rules), guards clamp/veto, the draft answers every question, the output guard clears the copy, the email sends idempotently. Rounds are capped; over-ceiling asks and guard blocks escalate to the terminal `MANUAL_REVIEW` (with a brand notification), and max-rounds-with-no-agreement resolves to the terminal `REJECTED` — a one-way handoff, no brand-decision round-trip.
+7. **Agreement → payout → brief** — confirmation email and creator acknowledgment, hosted payout form (plus shipping address when applicable), then the brief email with PDF attachment lands the instance at `CONTENT_BRIEF_SENT` — the success terminal.
 
 ## Inbound reply sequence
 
@@ -409,7 +409,7 @@ flowchart TB
 
 **Live Monitoring** — state-distribution tiles, per-state creator lists, and the instance inspector, polling for live updates.
 
-**Manual Queue** — escalated creators with derived reasons, brand-notification delivery status, pending brand decisions with expiry, and a re-notify action.
+**Manual Queue** — escalated creators (in `MANUAL_REVIEW`) with derived reasons, brand-notification delivery status, and a re-notify action.
 
 **Observability Dashboard** — the read-only instance explorer: timelines, message threads with classified intent and confidence, agent decisions, and transition logs.
 
@@ -430,7 +430,7 @@ A concrete walk-through of one realistic creator — **Jane Doe** (`jane@example
 **5. Negotiation round.** The negotiation executor calls the agent with the band, history, and Jane's reply. The model reads `$1500` (a valid ask **inside** the $200–$2000 band) and returns a `COUNTER`; decision guards clamp it to the band and validate the extracted rate digit-for-digit against Jane's actual text. The draft answers her timeline question and states which terms are fixed; the output guard confirms no floor/ceiling leak; the email sends idempotently. *Service:* server (runtime + guards) → agent (`/negotiate` then `/draft`). *AI:* negotiation decision + email drafting, with `creatorQuestions = ["what's the timeline?"]` threaded into the draft. *Persisted:* `NEGOTIATION_TURN` event (round, action, rate, message), `OUTBOUND` `Message`, `negotiationRound` incremented, instance stays `NEGOTIATING`. *Events:* `NEGOTIATION_TURN`, `STATE_TRANSITION` (self).
 
 **6. Agreement.** Jane accepts the counter. The next turn resolves to `ACCEPT` at the agreed rate (within the band, so no escalation). *Service:* server → agent. *AI:* negotiation decision (accept). *Persisted:* final `NEGOTIATION_TURN`, instance → `ACCEPTED`. *Events:* `NEGOTIATION_TURN`, `STATE_TRANSITION`.
-   *(Had Jane instead demanded $2500 — above the ceiling — the guard would have forced `ESCALATE`: the instance would park at `AWAITING_BRAND_DECISION`, email the brand's `notifyEmail` with one-click links, and wait up to 72 hours before expiring to Manual Review. See [Human-in-the-Loop](#human-in-the-loop-brand-decisions-and-manual-queue).)*
+   *(Had Jane instead demanded $2500 — above the ceiling — the guard would have forced `ESCALATE`: the instance would transition to the terminal `MANUAL_REVIEW`, email the brand's `notifyEmail` so a human can take over, and stop there. See [Human-in-the-Loop](#human-in-the-loop-escalation-and-the-manual-queue).)*
 
 **7. Reward confirmation.** The reward-setup executor emails a "Campaign Agreement Confirmation" stating the final fee, commission, and deliverables; Jane's acknowledgment is classified as agreement. *Service:* server → agent (classify the reply). *AI:* reply classification. *Persisted:* `OUTBOUND` `Message`, instance `ACCEPTED → REWARD_PENDING → REWARD_CONFIRMED`. *Events:* `REWARD_SETUP_SENT`, `REWARD_CONFIRMED`, `STATE_TRANSITION`.
 
@@ -460,11 +460,9 @@ Nine node types (`NodeType` enum), each with a dedicated executor in `server/src
 | `CONTENT_BRIEF` | `contentBrief.ts` | Merged post-negotiation node: finalized offer + payout link + brief PDF; completes to the success terminal. |
 | `END` | `end.ts` | Legacy terminal sink. |
 
-A state-driven (not node-typed) executor, `brandDecision.ts`, resolves every `AWAITING_BRAND_DECISION` interaction: reply parsing, magic links, re-asks, config fixes, and expiry.
-
 ## State machine
 
-Seventeen `InstanceState` values with an explicit transition table (`server/src/engine/stateMachine.ts`); `assertTransition` runs before every persist, so an illegal move can never reach the database.
+Sixteen `InstanceState` values with an explicit transition table (`server/src/engine/stateMachine.ts`); `assertTransition` runs before every persist, so an illegal move can never reach the database. Negotiation escalations route straight to the terminal `MANUAL_REVIEW` (guard block / over-ceiling / agent handoff) or `REJECTED` (max rounds, no agreement) — there is no in-band brand-decision loop.
 
 ```mermaid
 stateDiagram-v2
@@ -482,10 +480,8 @@ stateDiagram-v2
     NEGOTIATING --> NEGOTIATING: counter round
     NEGOTIATING --> AWAITING_REPLY: awaiting next reply
     NEGOTIATING --> ACCEPTED: deal closed
-    NEGOTIATING --> AWAITING_BRAND_DECISION: escalation
-    AWAITING_BRAND_DECISION --> NEGOTIATING: brand counters
-    AWAITING_BRAND_DECISION --> ACCEPTED: brand approves
-    AWAITING_BRAND_DECISION --> REJECTED: brand rejects
+    NEGOTIATING --> MANUAL_REVIEW: escalation (guard / over-ceiling / handoff)
+    NEGOTIATING --> REJECTED: max rounds, no agreement
     ACCEPTED --> REWARD_PENDING: confirmation sent
     REWARD_PENDING --> REWARD_CONFIRMED: creator confirms
     REWARD_CONFIRMED --> PAYMENT_PENDING: payout link sent
@@ -496,6 +492,7 @@ stateDiagram-v2
     CONTENT_BRIEF_SENT --> [*]
     REJECTED --> [*]
     NO_RESPONSE --> [*]
+    MANUAL_REVIEW --> [*]
 ```
 
 Not drawn for readability, but enforced in the table: `OPTED_OUT` is reachable from every live state the creator can speak in, and `MANUAL_REVIEW` is reachable from every non-terminal decision point. **Terminal states:** `CONTENT_BRIEF_SENT` (success), `REJECTED`, `OPTED_OUT`, `NO_RESPONSE`, `MANUAL_REVIEW`.
@@ -539,8 +536,8 @@ All AI routes support bearer-token auth (`AGENT_API_KEY`) and per-client rate li
 
 ## Provider abstraction and determinism
 
-- One switch (`LLM_PROVIDER`) selects **Ollama** (local Qwen, default `qwen3:8b`, optional immutable digest pin) or **OpenAI** (`gpt-4o-mini` default); an optional **failover provider** is tried automatically when the primary fails, with per-candidate wall-clock timeouts so a hung primary cannot starve the fallback.
-- **Determinism controls on every call:** fixed seed (42), `top_p` 1.0, JSON mode, and per-purpose temperatures — 0 for classification and extraction, 0.3 for negotiation decisions, 0.5 for email copy.
+- One switch (`LLM_PROVIDER`) selects the backend — **Ollama** (local Qwen, default `qwen3:8b`, optional immutable digest pin), **Anthropic** (Claude, default `claude-opus-4-8`), **DeepSeek**, or **OpenRouter** — with **per-role overrides** (`LLM_PROVIDER_NEGOTIATE|CLASSIFY|DRAFT`). The accepted hosted-production path is **OpenRouter-only**: a single `OPENROUTER_API_KEY` gateway serving Claude Opus (decision path) and DeepSeek (drafting) via per-role `OPENROUTER_MODEL_<ROLE>`. There is no OpenAI provider. An optional **failover provider** is tried automatically when the primary fails, with per-candidate wall-clock timeouts so a hung primary cannot starve the fallback.
+- **Determinism controls, provider-dependent:** on **Ollama** the call is genuinely deterministic — fixed seed (42), `top_p` 1.0, and `format="json"`. Hosted providers (Anthropic / DeepSeek / OpenRouter) don't expose a seed, so they rely on temperature-0 prompting plus JSON-repair re-asks rather than bit-for-bit determinism. Per-purpose temperatures apply throughout — 0 for classification and extraction, low for negotiation decisions, higher for email copy (temperature is gated off for models that reject it, e.g. Opus 4.7+).
 - **Structured output enforcement:** every response is parsed, schema-validated (Pydantic), and repaired with bounded retries; exhausted retries fail *safe* (classify → `UNKNOWN`, negotiate → rules fallback, never a silent guess).
 - **Timeout discipline at both layers:** Python bounds each model invoke (60 s default); the TypeScript client applies route-level timeouts (120 s generation, 45 s classify) sized so a generation plus one repair retry completes.
 
@@ -589,7 +586,7 @@ A single-page app with hash routing (`#/campaigns`, `#/builder/<workflowId>`, `#
 | **Enroll** | CSV import, searchable roster, batch selection, enrollment results. |
 | **Launch** | Precondition checks (published version, enrolled creators) and launch confirmation. |
 | **Monitor** | Live state-count tiles, per-state creator lists, instance inspector — polling on an interval. |
-| **Manual Queue** | Escalated creators with reasons, brand-notification status, pending brand decisions with expiry, re-notify action. |
+| **Manual Queue** | Escalated creators (`MANUAL_REVIEW`) with reasons, brand-notification status, re-notify action. |
 
 The graph model (`web/src/workflow/graphModel.ts`) is the editing source of truth — nodes, edges, positions, schema-versioned metadata — serialized to the server's linear node array with the graph stored in a runtime-ignored sidecar. Deleting a mid-chain node auto-heals the edge across it.
 
@@ -615,10 +612,9 @@ All routes are mounted unprefixed on the Express app (`server/src/app.ts`); the 
 | **Creators** | `GET /creators`, `POST /creators/import` |
 | **Queues (ops)** | `GET /queues/health`, `GET /queues/jobs`, `POST /queues/node-execution`, `POST /queues/inbound-email` (mock injection) |
 | **Manual Queue** | `GET /manual-queue/workflows/:workflowId`, `POST /manual-queue/instances/:instanceId/notify`, `GET /manual-queue/config` |
-| **Brand decision** | `GET /brand-decision/:token/:action` (confirm page), `POST /brand-decision/:token/:action` (enact) |
 | **Payment** | `GET /payment/:token` (hosted form), `POST /payment/:token` (submit payout info) |
 | **Uploads** | `POST /uploads` (brief PDF, magic-byte validated) |
-| **Observability** | `GET /observability/meta`, `/workflow`, `/metrics`, `/instances`, `/instances/:id`, `/timeline/:id`, `/logs/:id` |
+| **Observability** | `GET /observability/meta`, `/workflow` (version-scoped), `/workflows` (scope picker), `/llm`, `/metrics`, `/instances`, `/instances/:id`, `/timeline/:id`, `/logs/:id` |
 | **Webhooks** | `GET/HEAD/POST /webhooks/nylas` (challenge, probe, signed intake — mounted on the raw body parser) |
 
 ## Data models
@@ -631,15 +627,15 @@ All routes are mounted unprefixed on the Express app (`server/src/app.ts`); the 
 | `Creator` | Roster profile (email-unique) with free-form metadata from CSV. |
 | `ExecutionInstance` | **The unit of execution** — one creator × one version; state, node pointer, counters, `dueAt`; unique per (version, creator); indexed on `(currentState, dueAt)`. |
 | `Message` | Every email in/out: thread ID, external message ID (unique), sender email, outbound idempotency key (unique), classified intent + confidence, `processedAt`. |
-| `Event` | Append-only audit log with typed payloads, indexed by instance + time. |
-| `BrandDecision` | Escalation round-trip: token (unique), question, context, parsed decision, re-ask count, 72 h expiry, raw-reply audit. |
-| `BrandNotification` | At-most-once escalation notices, idempotency-keyed per (instance, reason). |
+| `Event` | Append-only audit log with typed payloads, indexed by instance + time; **the money trail** (agreed fee = replay of `NEGOTIATION_TURN` events). |
+| `BrandNotification` | At-most-once escalation notices, idempotency-keyed per (instance, reason), with `SENT`/`FAILED`/`SKIPPED` status. |
 | `PaymentInfo` | Payout record: token (unique), method, account, country, shipping extra, 30-day expiry, submission timestamps. |
-| `OutboxJob` | Transactional-outbox rows with dedupe keys mirroring queue job IDs. |
+| `LlmCall` | Durable per-call LLM telemetry: model, prompt version, latency, tokens, estimated cost — attributed to instance + role. |
+| `OutboxJob` | Transactional-outbox scaffold with dedupe keys mirroring queue job IDs (schema only — no producers/consumers wired yet). |
 
 ## Supporting services
 
-- **Notifications** — `notifyBrandOfEscalation` (idempotent, recipient precedence: campaign `notifyEmail` → `BRAND_NOTIFY_EMAIL` env → operator fallback) and the brand-decision email builder with reply cues + magic links.
+- **Notifications** — `notifyBrandOfEscalation` (idempotent, recipient precedence: campaign `notifyEmail` → `BRAND_NOTIFY_EMAIL` env → operator fallback) fires on entry to `MANUAL_REVIEW` so a human is told to take over.
 - **Templates** — the three campaign presets with tuned configs, plus node-graph validation shared with the publish/launch gates.
 - **Storage** — `localFileStorage` with opaque random references, path-traversal-safe reads, and an interface shaped for a drop-in S3/GCS backend.
 - **Harnesses** — eight runnable acceptance harnesses (`npm run harness`, `harness:phase4` … `harness:phase9`, `harness:content-brief`) driving real scenarios against Postgres/Redis and asserting outcomes end to end.
@@ -662,21 +658,21 @@ pluvus-workflow-proto/
 │       └── theme.ts              # Design tokens
 ├── server/                       # Express API + execution engine
 │   ├── prisma/
-│   │   ├── schema.prisma         # 11 models, 11 enums
-│   │   ├── migrations/           # 18 migrations
+│   │   ├── migrations/           # 21 SQL migrations (migration-SQL owner; Prisma runtime removed)
 │   │   └── seed.ts               # Seed workflow + published version
 │   └── src/
 │       ├── index.ts              # Role-based entrypoint (api|worker|scheduler|all)
 │       ├── app.ts                # Express app factory (side-effect-free)
+│       ├── db/schema.ts          # Drizzle schema — 11 tables (the live ORM)
 │       ├── engine/               # State machine, runtime, executors/, guards/
 │       ├── workers/              # BullMQ queues + idempotent workers
-│       ├── scheduler/            # Poller, locks, reconciliation, decision sweep
-│       ├── db/                   # Repository layer (OCC primitive)
-│       ├── routes/               # REST + hosted pages (payment, brand-decision)
+│       ├── scheduler/            # Poller, instance + leader locks, reconciliation
+│       ├── db/                   # Drizzle repository layer (OCC + transactions)
+│       ├── routes/               # REST + hosted payout form
 │       ├── webhooks/             # Nylas intake + HMAC verification
 │       ├── providers/nylas/      # Real email provider + mock client
 │       ├── adapters/             # Agent-service HTTP clients + circuit breaker
-│       ├── notifications/        # Brand escalation + decision emails
+│       ├── notifications/        # Brand escalation notifications
 │       ├── templates/            # Campaign templates + graph validation
 │       ├── storage/              # File-storage seam (brief PDFs)
 │       ├── validation/           # Server-side graph validation
@@ -709,7 +705,7 @@ pluvus-workflow-proto/
 |---|---|---|
 | **TypeScript (ESM)** | server, web | End-to-end type safety; shared config via `tsconfig.base.json`. |
 | **Express** | server | Minimal, composable HTTP surface; raw-body mounting for signed webhooks. |
-| **Prisma + PostgreSQL** | server | Typed data access, migration history as a feature timeline, driver adapter over `pg`; Postgres is the single source of truth. |
+| **Drizzle + PostgreSQL (Neon)** | server | Typed data access over the Neon serverless driver; Postgres is the single source of truth. The 21 SQL migrations under `prisma/migrations/` are retained as the migration-SQL owner (applied by `apply-migration.ts`); the Prisma runtime is fully removed. |
 | **BullMQ + Redis** | server | Durable at-least-once queues with deterministic job IDs; Redis doubles as the per-instance lock store. |
 | **React 18 + Vite** | web | Fast dev loop; proxying keeps the client origin-free. |
 | **React Flow 11** | web | Production-grade interactive graph canvas for the builder. |
@@ -717,7 +713,7 @@ pluvus-workflow-proto/
 | **FastAPI + Pydantic** | agent | Typed request/response contracts; schema validation is the safety net for model output. |
 | **LangGraph / LangChain** | agent | LLM orchestration with a uniform interface across providers. |
 | **Ollama (Qwen)** | agent | Local, zero-cost, digest-pinnable model for dev and eval. |
-| **OpenAI** | agent | Production provider behind the same one-switch abstraction. |
+| **Anthropic / DeepSeek / OpenRouter** | agent | Hosted production providers behind the same one-switch, per-role abstraction. The accepted production path is OpenRouter-only (one key, Claude Opus for decisions + DeepSeek for drafting). No OpenAI provider. |
 | **pypdf** | agent | Campaign-brief PDF text extraction. |
 | **Nylas** | server | Real email send + threaded inbound webhooks with HMAC signatures. |
 | **Docker Compose** | infra | One-command Postgres/Redis, plus the split api/worker/scheduler topology. |
@@ -734,9 +730,9 @@ pluvus-workflow-proto/
 - **Providers behind interfaces.** Email (mock/Nylas) and AI (mock/LangGraph) swap via env vars; the entire engine runs offline in CI and harnesses.
 - **Deterministic gates before, and guards after, every model call.** Compliance-critical behavior (opt-out) is code-forced; money boundaries are clamped in code; disclosure is scanned on the way out. The model proposes; code disposes.
 - **Cross-language single source of truth.** `shared/classifier-spec.json` defines the gate regexes once, with fixtures asserting Python/TypeScript parity.
-- **Idempotency at every boundary.** Deterministic job IDs, expected-state checks, `externalMessageId` + `processedAt`, outbound send keys, notification keys, and prefetch-safe GET/POST magic links make retries and double-clicks harmless.
-- **Escalation as a product feature.** Brand decisions carry tokens, expiry, re-ask caps, sender verification, and an audit trail — human judgment is routed, tracked, and time-bounded, not dumped into a shared inbox.
-- **Degrade loudly, never silently.** Circuit-breaker-open, low confidence, guard blocks, and parse failures all land in visible states (`MANUAL_REVIEW`, `AWAITING_BRAND_DECISION`) with recorded reasons.
+- **Idempotency at every boundary.** Deterministic job IDs, expected-state OCC checks, `externalMessageId` + `processedAt`, outbound send keys, notification keys, and tokened payout-form submissions make retries and double-clicks harmless.
+- **Escalation as a deliberate handoff.** Every escalation is a reasoned transition to the terminal `MANUAL_REVIEW` with a machine-readable reason code and an idempotent brand notification — human judgment is routed and tracked, not dumped into a shared inbox. (The founders chose this one-way handoff over the earlier in-band brand-approval loop.)
+- **Degrade loudly, never silently.** Circuit-breaker-open, low confidence, guard blocks, and parse failures all land in the visible terminal state `MANUAL_REVIEW` with recorded reasons and a brand notification.
 - **Observability with attribution.** Every transition records its source/worker/job; every LLM call records model, prompt version, tokens, latency, and cost — regressions are traceable to an exact prompt revision.
 
 ---
@@ -754,7 +750,7 @@ A technical summary of the strongest accomplishments in the codebase. Each links
 | **BullMQ distributed execution** | Two queues with deterministic job IDs and exponential-backoff retries; the queue is the seam between eventing and execution, letting the worker fleet scale independently of the API (see [Queue and worker architecture](#queue-and-worker-architecture)). |
 | **Snapshot-based workflow execution** | Node config, edges, and canvas layout travel in the version snapshot (with a runtime-ignored `_graph` sidecar), so a running instance carries everything it needs and nothing it doesn't. |
 | **AI guardrails** | Deterministic gates before the model and decision + output guards after it enforce money boundaries, round caps, verbatim rate validation, and disclosure scanning in code — the model proposes, code disposes (see [Decision making and safety](#decision-making-and-safety)). |
-| **Human-in-the-loop architecture** | Escalation is a first-class path: tokened brand decisions with prefetch-safe magic links, sender verification, re-ask caps, and 72-hour expiry, backed by the Manual Queue (see [Human-in-the-Loop](#human-in-the-loop-brand-decisions-and-manual-queue)). |
+| **Human-in-the-loop architecture** | Escalation is a first-class path: a reasoned one-way transition to the terminal `MANUAL_REVIEW` with an idempotent brand notification, backed by the Manual Queue (see [Human-in-the-Loop](#human-in-the-loop-escalation-and-the-manual-queue)). |
 | **Provider abstraction** | Email (`IEmailProvider`) and AI (classification/negotiation adapters) swap between mock and real via env vars; the whole engine runs offline in CI and harnesses. |
 | **Modular architecture** | The pure `engine/` knows nothing about HTTP, queues, or Redis; workers, scheduler, routes, and providers wrap it as seams — evidenced by the runtime staying unchanged as each layer was added (see [Module responsibilities](#module-responsibilities)). |
 | **Idempotent processing** | Deterministic job IDs, expected-state checks, `externalMessageId` + `processedAt`, outbound send keys, notification keys, and prefetch-safe GET/POST links make retries and double-clicks harmless (see [Design Decisions](#design-decisions)). |
@@ -785,15 +781,15 @@ The system is a complete, working end-to-end pipeline, validated at multiple lev
 | Area | Status |
 |---|---|
 | Monorepo, three services, health checks, Docker infra | ✅ Working |
-| Data model: 11 models, 18 migrations, repository layer, seed | ✅ Working |
-| Execution engine: 17-state machine, 9 node types, OCC + locks | ✅ Working, harness-validated |
+| Data model: 11 tables (Drizzle), 21 migrations, repository layer, seed | ✅ Working |
+| Execution engine: 16-state machine, 9 node types, OCC + locks | ✅ Working, harness-validated |
 | Event system: 2 queues, idempotent workers, retries | ✅ Working, harness-validated |
-| Scheduler: due follow-ups, decision expiry, reconciliation, metrics | ✅ Working, harness-validated |
+| Scheduler: due follow-ups, reconciliation, leader lock, metrics | ✅ Working, harness-validated |
 | Nylas integration: real sends, attachments, signed webhooks, threading | ✅ Working |
 | AI classification with deterministic gates + low-confidence degrade | ✅ Working, CI eval gate |
 | AI negotiation: LLM + rules strategies, full guard stack, money trail | ✅ Working, 500-case eval dataset |
 | AI drafting: purpose prompts, completeness verify, disclosure guard | ✅ Working |
-| Brand decisions: email replies + magic links + expiry + re-ask | ✅ Working |
+| Escalation → terminal `MANUAL_REVIEW` + idempotent brand notification | ✅ Working |
 | Reward confirmation → hosted payout form → content brief + PDF | ✅ Working |
 | Workflow builder UI: canvas, wizard, validation, versioning | ✅ Working |
 | Enrollment, launch, live monitoring, Manual Queue UI | ✅ Working |
@@ -801,7 +797,7 @@ The system is a complete, working end-to-end pipeline, validated at multiple lev
 | Security: webhook HMAC, agent auth + rate limits, token expiry, injection defense, PDF magic bytes | ✅ Working |
 | CI: agent tests + eval gates + server tests on every push/PR | ✅ Working |
 
-Deployment topology is production-shaped today: role-split processes (API / scalable workers / single-leader scheduler), graceful shutdown, circuit-broken AI calls, and environment-driven provider selection from fully-mocked local development to real Nylas + OpenAI.
+Deployment topology is production-shaped today: role-split processes (API / scalable workers / Redis leader-locked single-leader scheduler), graceful shutdown, circuit-broken AI calls, and environment-driven provider selection from fully-mocked local development to real Nylas + a hosted LLM (OpenRouter — Claude Opus + DeepSeek).
 
 ---
 
@@ -872,9 +868,10 @@ docker compose --profile app up --scale worker=3
 |---|---|---|
 | `EMAIL_PROVIDER` | `mock` / `nylas` | Real email on/off |
 | `AGENT_PROVIDER`, `NEGOTIATION_PROVIDER` | `mock` / `langgraph` | Real AI on/off |
-| `LLM_PROVIDER` | `ollama` / `openai` | Model backend (one switch) |
+| `LLM_PROVIDER` (+ `LLM_PROVIDER_NEGOTIATE\|CLASSIFY\|DRAFT`) | `ollama` / `anthropic` / `deepseek` / `openrouter` | Model backend (global switch + per-role overrides; hosted-prod path is OpenRouter-only) |
 | `NEGOTIATION_STRATEGY` | `rules` / `llm` | Deterministic vs model-driven negotiation |
-| `PROCESS_ROLE` | `api` / `worker` / `scheduler` / `all` | Process topology |
+| `PROCESS_ROLE` | `api` / `worker` / `scheduler` / `all` | Process topology (run exactly one `scheduler`; leader-locked so extras are inert) |
+| `AGENT_ENV` | unset / `production` | When deployed + `AGENT_API_KEY` unset, agent auth fails closed |
 
 ---
 

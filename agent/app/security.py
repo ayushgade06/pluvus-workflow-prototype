@@ -46,11 +46,31 @@ logger = logging.getLogger("agent.security")
 ENV_API_KEY = "AGENT_API_KEY"
 ENV_RATE_LIMIT = "AGENT_RATE_LIMIT"          # max requests per window per client+route
 ENV_RATE_WINDOW = "AGENT_RATE_WINDOW_SECONDS"  # window length in seconds
+ENV_APP_ENV = "AGENT_ENV"                    # deployment env: prod/production ⇒ enforce auth
 
 _DEFAULT_RATE_LIMIT = 60      # requests
 _DEFAULT_RATE_WINDOW = 60.0   # seconds  → 60 req/min/client/route by default
 
 _auth_warning_emitted = False
+
+
+def _is_deployed_env() -> bool:
+    """True when AGENT_ENV names a deployed environment (prod/production/staging).
+
+    Used to FAIL CLOSED: in a deployed env, a missing AGENT_API_KEY is a
+    misconfiguration, not a dev convenience — so the auth dependency rejects
+    every request instead of silently running open (W-9). Local dev / harnesses
+    leave AGENT_ENV unset and keep the no-op-when-unset behavior.
+    """
+    return os.getenv(ENV_APP_ENV, "").strip().lower() in {"prod", "production", "staging"}
+
+
+def auth_enabled() -> bool:
+    """True when a shared secret is configured. When True, a presented key has
+    been validated by require_api_key before the handler runs, so it is safe to
+    use as a rate-limit identity; when False it has NOT, so it must not be
+    trusted (W-9 rate-limiter bypass)."""
+    return bool(os.getenv(ENV_API_KEY))
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +100,21 @@ def require_api_key(
     """
     expected = os.getenv(ENV_API_KEY)
     if not expected:
+        # W-9: in a DEPLOYED environment a missing key is a misconfiguration —
+        # fail CLOSED (503) rather than serve the money-path endpoints open. In
+        # dev / harnesses (AGENT_ENV unset) keep the no-op-with-warning behavior
+        # so offline work needs zero config.
+        if _is_deployed_env():
+            logger.error(
+                "%s is not set but %s indicates a deployed environment — refusing "
+                "requests. Set the API key.",
+                ENV_API_KEY,
+                ENV_APP_ENV,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Agent auth is not configured.",
+            )
         global _auth_warning_emitted
         if not _auth_warning_emitted:
             logger.warning(
@@ -150,16 +185,20 @@ _limiter = _FixedWindowLimiter()
 def _client_id(request: Request) -> str:
     """Best-effort per-client identity for rate-limiting.
 
-    Prefer the authenticated key (so a shared NAT doesn't pool unrelated
-    callers) and fall back to the peer IP. We hash neither — these are not
-    logged here, only used as a bucket key.
+    W-9: the presented key is used as identity ONLY when auth is enabled — in
+    that case require_api_key has already validated it, so it's a trustworthy
+    bucket key. When auth is OFF the key is attacker-controlled and unvalidated;
+    trusting it let a caller dodge the limit by sending a fresh random key per
+    request (a new bucket each time). With auth off we therefore key on the peer
+    IP only, which the caller cannot cheaply rotate.
     """
-    api_key = _extract_presented_key(
-        request.headers.get("authorization"),
-        request.headers.get("x-api-key"),
-    )
-    if api_key:
-        return f"key:{api_key}"
+    if auth_enabled():
+        api_key = _extract_presented_key(
+            request.headers.get("authorization"),
+            request.headers.get("x-api-key"),
+        )
+        if api_key:
+            return f"key:{api_key}"
     client = request.client
     return f"ip:{client.host}" if client else "ip:unknown"
 

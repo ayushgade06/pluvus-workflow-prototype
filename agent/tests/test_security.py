@@ -186,3 +186,92 @@ def test_health_route_is_unprotected():
     importlib.reload(main_mod)
     c = TestClient(main_mod.app)
     assert c.get("/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# W-9(b): rate-limit identity must NOT trust an unvalidated key when auth is off
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_ignores_presented_key_when_auth_disabled(client, monkeypatch):
+    # Auth OFF. A caller rotating a fresh random key per request must NOT get a
+    # fresh bucket each time — otherwise the limit is trivially bypassable. With
+    # the fix, identity falls back to the peer IP, so the bucket is shared.
+    monkeypatch.delenv(security.ENV_API_KEY, raising=False)
+    monkeypatch.setenv(security.ENV_RATE_LIMIT, "2")
+    monkeypatch.setenv(security.ENV_RATE_WINDOW, "60")
+    assert (
+        client.post("/classify", json={"message": "1"}, headers={"X-API-Key": "rot-1"}).status_code
+        == 200
+    )
+    assert (
+        client.post("/classify", json={"message": "2"}, headers={"X-API-Key": "rot-2"}).status_code
+        == 200
+    )
+    # Third with yet another new key is still blocked — key rotation didn't help.
+    r = client.post("/classify", json={"message": "3"}, headers={"X-API-Key": "rot-3"})
+    assert r.status_code == 429
+
+
+def test_rate_limit_uses_validated_key_when_auth_enabled(client, monkeypatch):
+    # Auth ON. Now the presented key IS validated, so it's a legit per-client
+    # bucket: two different (valid) callers would not share a limit. Here we use
+    # the one configured key, so its bucket fills and blocks as normal.
+    monkeypatch.setenv(security.ENV_API_KEY, "s3cret")
+    monkeypatch.setenv(security.ENV_RATE_LIMIT, "1")
+    monkeypatch.setenv(security.ENV_RATE_WINDOW, "60")
+    hdr = {"X-API-Key": "s3cret"}
+    assert client.post("/classify", json={"message": "1"}, headers=hdr).status_code == 200
+    assert client.post("/classify", json={"message": "2"}, headers=hdr).status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# W-9: fail CLOSED in a deployed environment when no key is configured
+# ---------------------------------------------------------------------------
+
+
+def test_deployed_env_without_key_fails_closed(client, monkeypatch):
+    monkeypatch.delenv(security.ENV_API_KEY, raising=False)
+    monkeypatch.setenv(security.ENV_APP_ENV, "production")
+    r = client.post("/classify", json={"message": "hi"})
+    assert r.status_code == 503  # refuses to serve unauthenticated in prod
+
+
+def test_dev_env_without_key_still_open(client, monkeypatch):
+    # AGENT_ENV unset (dev) keeps the no-op-when-unset behavior for offline work.
+    monkeypatch.delenv(security.ENV_API_KEY, raising=False)
+    monkeypatch.delenv(security.ENV_APP_ENV, raising=False)
+    r = client.post("/classify", json={"message": "hi"})
+    assert r.status_code == 200
+
+
+def test_deployed_env_with_key_works_normally(client, monkeypatch):
+    monkeypatch.setenv(security.ENV_APP_ENV, "production")
+    monkeypatch.setenv(security.ENV_API_KEY, "s3cret")
+    ok = client.post("/classify", json={"message": "hi"}, headers={"X-API-Key": "s3cret"})
+    assert ok.status_code == 200
+    bad = client.post("/classify", json={"message": "hi"})
+    assert bad.status_code == 401  # missing key → 401 (auth configured), not 503
+
+
+# ---------------------------------------------------------------------------
+# W-9(c): /metrics is now behind the API key
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_requires_key_when_configured(monkeypatch):
+    monkeypatch.setenv(security.ENV_API_KEY, "s3cret")
+    import app.main as main_mod
+    importlib.reload(main_mod)
+    c = TestClient(main_mod.app)
+    assert c.get("/metrics").status_code == 401
+    assert c.get("/metrics", headers={"X-API-Key": "s3cret"}).status_code == 200
+
+
+def test_metrics_open_when_auth_disabled(monkeypatch):
+    monkeypatch.delenv(security.ENV_API_KEY, raising=False)
+    monkeypatch.delenv(security.ENV_APP_ENV, raising=False)
+    import app.main as main_mod
+    importlib.reload(main_mod)
+    c = TestClient(main_mod.app)
+    assert c.get("/metrics").status_code == 200

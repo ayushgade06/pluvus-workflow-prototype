@@ -1,5 +1,5 @@
 import { startPoller, stopPoller } from "./poller.js";
-import { closeLockClient } from "./lock.js";
+import { closeLockClient, releaseLeadership } from "./lock.js";
 
 // ---------------------------------------------------------------------------
 // Scheduler facade
@@ -13,5 +13,9 @@ export function startScheduler(pollIntervalMs?: number): void {
 
 export async function stopScheduler(): Promise<void> {
   stopPoller();
+  // W-8: hand the leader lease back before closing the client, so a standby
+  // scheduler can take over immediately instead of waiting for the lease to
+  // lapse. Best-effort — releaseLeadership swallows its own errors.
+  await releaseLeadership();
   await closeLockClient();
 }

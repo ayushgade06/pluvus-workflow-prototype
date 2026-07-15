@@ -5,6 +5,7 @@ import type {
   MessageInsert,
 } from "../db/schema.js";
 import {
+  db,
   findInstanceById,
   findCreatorById,
   findVersionById,
@@ -223,17 +224,6 @@ export class WorkflowRuntime {
       patch.completedAt = result.completedAt ?? null;
     }
 
-    // Persist state change — OCC: only succeeds if currentState hasn't changed
-    const updated = await updateInstanceStateConditional(
-      instanceId,
-      instance.currentState,
-      patch,
-    );
-    if (!updated) {
-      // Another worker already advanced this instance — treat as a no-op.
-      throw new StaleInstanceError(instanceId, instance.currentState);
-    }
-
     const now = new Date();
 
     // Attribute the transition. Explicit caller source wins; otherwise infer
@@ -241,34 +231,79 @@ export class WorkflowRuntime {
     // answer "who triggered this" even when the worker doesn't pass a source.
     const source: TransitionSource =
       opts?.source ?? inferSourceFromEvent(result.eventType);
+    const stateChanged = instance.currentState !== result.nextState;
 
-    // Write domain event (OUTREACH_DRAFTED, FOLLOW_UP_DUE, etc.)
-    await appendEvent({
-      instanceId,
-      type: result.eventType,
-      nodeId: node.id,
-      payload: (result.eventPayload ?? {}) as InputJsonValue,
-      occurredAt: now,
+    // W-7: commit the OCC state write and the follow-on event appends in ONE
+    // transaction. Previously these were three separate statements — a crash
+    // after the state write but before the NEGOTIATION_TURN/STATE_TRANSITION
+    // append could commit an ACCEPT whose agreed rate is then unrecoverable from
+    // the event log (the money trail is a replay of NEGOTIATION_TURN events), so
+    // downstream fee resolution would escalate `no_agreed_fee`. Wrapping them
+    // means either all three land or none do; a lost race still rolls the whole
+    // step back and the job retries. The transaction returns whether the OCC
+    // write won; a StaleInstanceError is thrown OUTSIDE the tx so the rollback
+    // has already happened by the time callers see it.
+    const updated = await db.transaction(async (tx) => {
+      // Persist state change — OCC: only succeeds if currentState hasn't changed.
+      const row = await updateInstanceStateConditional(
+        instanceId,
+        instance.currentState,
+        patch,
+        tx,
+      );
+      if (!row) {
+        // Another worker already advanced this instance. Roll back the (empty)
+        // transaction; do NOT append events for a step that didn't happen.
+        return null;
+      }
+
+      // Write domain event (OUTREACH_DRAFTED, FOLLOW_UP_DUE, NEGOTIATION_TURN,
+      // …). For negotiation this IS the money trail, so it must be atomic with
+      // the state write above.
+      await appendEvent(
+        {
+          instanceId,
+          type: result.eventType,
+          nodeId: node.id,
+          payload: (result.eventPayload ?? {}) as InputJsonValue,
+          occurredAt: now,
+        },
+        tx,
+      );
+
+      // Write STATE_TRANSITION event (only if state actually changed).
+      if (stateChanged) {
+        await appendEvent(
+          {
+            instanceId,
+            type: "STATE_TRANSITION",
+            nodeId: node.id,
+            // `source`, `worker`, `queueJobId` are persisted so end-to-end
+            // traceability (Phase 9 Part 10) does not depend on stdout.
+            payload: {
+              from: instance.currentState,
+              to: result.nextState,
+              source,
+              ...(opts?.worker ? { worker: opts.worker } : {}),
+              ...(opts?.queueJobId ? { queueJobId: opts.queueJobId } : {}),
+            } as InputJsonValue,
+            occurredAt: now,
+          },
+          tx,
+        );
+      }
+
+      return row;
     });
 
-    // Write STATE_TRANSITION event (only if state actually changed)
-    if (instance.currentState !== result.nextState) {
-      await appendEvent({
-        instanceId,
-        type: "STATE_TRANSITION",
-        nodeId: node.id,
-        // `source`, `worker`, `queueJobId` are persisted so end-to-end
-        // traceability (Phase 9 Part 10) does not depend on stdout.
-        payload: {
-          from: instance.currentState,
-          to: result.nextState,
-          source,
-          ...(opts?.worker ? { worker: opts.worker } : {}),
-          ...(opts?.queueJobId ? { queueJobId: opts.queueJobId } : {}),
-        } as InputJsonValue,
-        occurredAt: now,
-      });
+    if (!updated) {
+      // Another worker already advanced this instance — treat as a no-op.
+      throw new StaleInstanceError(instanceId, instance.currentState);
+    }
 
+    // Stdout trace is a side effect, not part of the atomic unit — emit it only
+    // after the transaction has durably committed the transition.
+    if (stateChanged) {
       logTransition({
         instanceId,
         creatorId: creator.id,
@@ -375,32 +410,52 @@ export class WorkflowRuntime {
     // poller enqueues a spurious job against whatever node the instance has since
     // moved to (e.g. a NEGOTIATION-node AWAITING_REPLY → "expects NEGOTIATING
     // state" crash loop). The reply path owns its own scheduling from here on.
-    const updatedForReply = await updateInstanceStateConditional(instanceId, instance.currentState, {
-      currentState: "REPLY_RECEIVED",
-      currentNodeId: replyNode?.id ?? "node-reply-detection",
-      dueAt: null,
+    //
+    // W-7: same atomic unit as stepInstance — the OCC state write and its event
+    // appends commit together, so a crash can't record REPLY_RECEIVED with no
+    // INBOUND_REPLY_RECEIVED/STATE_TRANSITION trail (or vice versa).
+    const updatedForReply = await db.transaction(async (tx) => {
+      const row = await updateInstanceStateConditional(
+        instanceId,
+        instance.currentState,
+        {
+          currentState: "REPLY_RECEIVED",
+          currentNodeId: replyNode?.id ?? "node-reply-detection",
+          dueAt: null,
+        },
+        tx,
+      );
+      if (!row) return null;
+
+      // Write inbound reply event
+      await appendEvent(
+        {
+          instanceId,
+          type: "INBOUND_REPLY_RECEIVED",
+          nodeId: instance.currentNodeId ?? null,
+          payload: { subject: opts.subject, externalMessageId },
+          occurredAt: now,
+        },
+        tx,
+      );
+
+      // Write state transition event — attributed to the inbound email itself.
+      await appendEvent(
+        {
+          instanceId,
+          type: "STATE_TRANSITION",
+          nodeId: instance.currentNodeId ?? null,
+          payload: { from: instance.currentState, to: "REPLY_RECEIVED", source: "inbound-email" },
+          occurredAt: now,
+        },
+        tx,
+      );
+
+      return row;
     });
     if (!updatedForReply) {
       throw new StaleInstanceError(instanceId, instance.currentState);
     }
-
-    // Write inbound reply event
-    await appendEvent({
-      instanceId,
-      type: "INBOUND_REPLY_RECEIVED",
-      nodeId: instance.currentNodeId ?? null,
-      payload: { subject: opts.subject, externalMessageId },
-      occurredAt: now,
-    });
-
-    // Write state transition event — attributed to the inbound email itself.
-    await appendEvent({
-      instanceId,
-      type: "STATE_TRANSITION",
-      nodeId: instance.currentNodeId ?? null,
-      payload: { from: instance.currentState, to: "REPLY_RECEIVED", source: "inbound-email" },
-      occurredAt: now,
-    });
 
     logTransition({
       instanceId,

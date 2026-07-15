@@ -3,6 +3,7 @@ import { enqueueNodeExecution } from "../workers/queues.js";
 import { logTrace } from "../observability/logger.js";
 import { reconcileStuckInstances } from "./reconciliation.js";
 import { logWorkerMetrics } from "../workers/workerMetrics.js";
+import { acquireOrRenewLeadership } from "./lock.js";
 
 // ---------------------------------------------------------------------------
 // Due-instance poller
@@ -17,6 +18,16 @@ const POLL_INTERVAL_MS = 30_000;
 let _timer: ReturnType<typeof setInterval> | null = null;
 
 async function poll(): Promise<void> {
+  // W-8: leader election. `PROCESS_ROLE=scheduler` is meant to run as a single
+  // leader, but nothing structurally stops two from being launched. If a second
+  // one polls, its reconcile + due-scan re-run the same executors — and an
+  // executor's agent (LLM) call runs BEFORE the OCC check, so a double-fire burns
+  // real LLM spend even though sendOnce/OCC still block any duplicate email or
+  // transition. Acquire (or renew) the Redis leader lease each cycle; only the
+  // holder proceeds. A non-leader (or a Redis error) skips the whole cycle.
+  const leader = await acquireOrRenewLeadership();
+  if (!leader) return;
+
   // HARD-R1: reconciliation sweep — re-enqueue instances stranded in a transient
   // non-terminal state (crash between OCC commit and enqueue). Same cadence; its
   // own internal try/catch so a failure never affects the due-instance path.

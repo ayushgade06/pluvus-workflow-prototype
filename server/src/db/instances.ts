@@ -1,5 +1,5 @@
 import { and, asc, count, eq, inArray, lt, lte } from "drizzle-orm";
-import { db, type Db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import {
   executionInstances,
   type ExecutionInstance,
@@ -121,13 +121,14 @@ export async function updateInstanceState(
  * lose-the-race case. Callers branch on the null.
  *
  * `client` is injectable so the OCC race test can run against an embedded
- * Postgres (PGlite) with the real migration DDL applied.
+ * Postgres (PGlite) with the real migration DDL applied, AND so the runtime can
+ * enlist this write in the same transaction as the follow-on event append (W-7).
  */
 export async function updateInstanceStateConditional(
   id: string,
   expectedCurrentState: InstanceState,
   patch: InstancePatch,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<ExecutionInstance | null> {
   const rows = await client
     .update(executionInstances)
