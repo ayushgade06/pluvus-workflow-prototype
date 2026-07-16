@@ -250,3 +250,119 @@ export interface ObservabilityMeta {
   terminalStates: InstanceState[];
   waitingStates: InstanceState[];
 }
+
+// ---------------------------------------------------------------------------
+// Attribution & Payouts (Phase 4)
+// ---------------------------------------------------------------------------
+
+export interface PartnershipMetrics {
+  clicks: number;
+  conversions: number;
+  revenueCents: number;
+  earnedCents: number;
+  unpaidCents: number;
+  paidCents: number;
+}
+
+export interface PayoutRollup {
+  unpaidFeeCents: number;
+  unpaidCommissionCents: number;
+  inFlightCents: number;
+  settledCents: number;
+  hasDispute: boolean;
+}
+
+export interface PartnershipListItem {
+  id: string;
+  instanceId: string;
+  campaignId: string | null;
+  creatorId: string;
+  referralCode: string;
+  trackingLink: string | null;
+  commissionRate: number | null;
+  agreedFeeCents: number | null;
+  status: "ACTIVE" | "PAUSED";
+  createdAt: string;
+  updatedAt: string;
+  // Joined
+  creatorName: string;
+  creatorEmail: string;
+  campaignName: string | null;
+  // Phase 4 additions
+  metrics: PartnershipMetrics;
+  rollup: PayoutRollup;
+}
+
+export interface PaymentInfoSummary {
+  method: string | null;
+  accountIdentifier: string | null;
+  shipping: unknown | null;
+}
+
+export interface Conversion {
+  id: string;
+  partnershipId: string | null;
+  referralCode: string | null;
+  externalId: string;
+  valueCents: number;
+  currency: string;
+  commissionCents: number;
+  customerEmail: string | null;
+  payoutId: string | null;
+  refunded: boolean;
+  attributedAt: string;
+}
+
+export interface Obligation {
+  id: string;
+  partnershipId: string;
+  description: string;
+  amountCents: number;
+  status: "PENDING" | "PAID" | "CANCELLED";
+  payoutId: string | null;
+  createdAt: string;
+  paidAt: string | null;
+}
+
+export type PayoutStatus = "PENDING" | "SENT" | "CONFIRMED" | "DISPUTED" | "SETTLED";
+export type PayoutType = "COMMISSION" | "FIXED_FEE";
+
+export interface Payout {
+  id: string;
+  partnershipId: string;
+  payoutType: PayoutType;
+  amountCents: number;
+  currency: string;
+  status: PayoutStatus;
+  method: string | null;
+  destination: string | null;
+  reference: string | null;
+  note: string | null;
+  conversionCount: number;
+  sentAt: string | null;
+  confirmedAt: string | null;
+  disputedAt: string | null;
+  settledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  emailSent?: boolean;
+}
+
+export interface PartnershipDetail extends PartnershipListItem {
+  creator: {
+    id: string;
+    name: string;
+    email: string;
+    handle: string | null;
+    platform: string | null;
+  };
+  campaign: { name: string; brand: string | null; targetUrl: string | null } | null;
+  paymentInfo: PaymentInfoSummary | null;
+  recentConversions: Conversion[];
+  recentClicks: Array<{ id: string; clickedAt: string }>;
+}
+
+export interface PartnershipPayoutsResponse {
+  payouts: Payout[];
+  obligations: Obligation[];
+}

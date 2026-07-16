@@ -1,5 +1,14 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { eq, sql } from "drizzle-orm";
+import { db } from "../db/drizzle.js";
+import {
+  campaigns,
+  creators,
+  obligations,
+  partnerships,
+  paymentInfo,
+} from "../db/schema.js";
 import {
   appendEvent,
   createCommissionPayout,
@@ -287,6 +296,101 @@ router.get(
   },
 );
 
+// ── GET /payouts/export/paypal-csv ────────────────────────────────────────────
+// PayPal bulk-payment CSV: one row per partnership that has unpaid amounts and a
+// destination (PayPal email). Ported from parent Pluvus/server/routes/api/payouts.ts:257-303.
+// Amounts rendered as dollars with 2 decimals (from cents). Same CSV-escape helper.
+// NOTE: this is informational — creating/locking payouts still goes through the
+// transactional per-creator endpoints (Phase 3). The CSV is what the brand pastes
+// into PayPal's batch payment tool.
+router.get("/export/paypal-csv", async (_req: Request, res: Response) => {
+  // One query: partnerships with creator + campaign + PaymentInfo (for paypal email)
+  // + obligation rollup + unpaid commission rollup. Filter: unpaid > 0 AND has destination.
+  const rows = await db
+    .select({
+      partnershipId: partnerships.id,
+      creatorName: creators.name,
+      creatorEmail: creators.email,
+      campaignName: campaigns.name,
+      paypalEmail: paymentInfo.accountIdentifier,
+      agreedFeeCents: partnerships.agreedFeeCents,
+    })
+    .from(partnerships)
+    .innerJoin(creators, eq(partnerships.creatorId, creators.id))
+    .leftJoin(campaigns, eq(partnerships.campaignId, campaigns.id))
+    .leftJoin(paymentInfo, eq(paymentInfo.instanceId, partnerships.instanceId))
+    .where(sql`${paymentInfo.method} = 'PAYPAL' AND ${paymentInfo.accountIdentifier} IS NOT NULL`);
+
+  if (rows.length === 0) {
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename=paypal-payouts-${isoDate()}.csv`);
+    res.send("creator_name,creator_email,paypal_email,amount,currency,note,partnership_id\n");
+    return;
+  }
+
+  const ids = rows.map((r) => r.partnershipId);
+
+  // Unpaid obligation sum per partnership.
+  const obRows = await db
+    .select({
+      partnershipId: obligations.partnershipId,
+      unpaidFeeCents: sql<number>`coalesce(sum(${obligations.amountCents}) filter (where ${obligations.status} = 'PENDING' and ${obligations.payoutId} is null), 0)`,
+    })
+    .from(obligations)
+    .where(
+      sql`${obligations.partnershipId} IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`, `,
+      )})`,
+    )
+    .groupBy(obligations.partnershipId);
+
+  const obMap = new Map(obRows.map((r) => [r.partnershipId, Number(r.unpaidFeeCents)]));
+
+  // Unpaid commission sum per partnership.
+  const convRows = await db.execute<{ partnershipId: string; unpaidCommissionCents: string }>(sql`
+    SELECT "partnershipId",
+           coalesce(sum("commissionCents") filter (where "payoutId" is null and "refunded" = false and "commissionCents" > 0), 0) as "unpaidCommissionCents"
+    FROM "Conversion"
+    WHERE "partnershipId" IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+    GROUP BY "partnershipId"
+  `);
+  const commMap = new Map(
+    convRows.rows.map((r) => [r.partnershipId, Number(r.unpaidCommissionCents)]),
+  );
+
+  // Build CSV rows — only include partnerships with unpaid amounts.
+  const header = "creator_name,creator_email,paypal_email,amount,currency,note,partnership_id";
+  const csvRows: string[] = [header];
+
+  for (const row of rows) {
+    const unpaidFee = obMap.get(row.partnershipId) ?? 0;
+    const unpaidComm = commMap.get(row.partnershipId) ?? 0;
+    const totalCents = unpaidFee + unpaidComm;
+    if (totalCents <= 0) continue;
+
+    const amount = (totalCents / 100).toFixed(2);
+    const note = buildPaypalNote(unpaidFee, unpaidComm, row.campaignName);
+
+    csvRows.push(
+      [
+        csvEsc(row.creatorName),
+        csvEsc(row.creatorEmail),
+        csvEsc(row.paypalEmail ?? ""),
+        amount,
+        "USD",
+        csvEsc(note),
+        csvEsc(row.partnershipId),
+      ].join(","),
+    );
+  }
+
+  const today = isoDate();
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename=paypal-payouts-${today}.csv`);
+  res.send(csvRows.join("\n") + "\n");
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -356,6 +460,34 @@ async function creatorForInstance(instanceId: string) {
   const inst = await findInstanceById(instanceId);
   if (!inst) return null;
   return findCreatorById(inst.creatorId);
+}
+
+// ---------------------------------------------------------------------------
+// CSV helpers (ported from parent Pluvus/server/routes/api/payouts.ts:257-303)
+// ---------------------------------------------------------------------------
+
+/**
+ * RFC 4180 CSV field escape: wrap in quotes and double any internal quotes.
+ * e.g. `O'Brien, "Bob"` → `"O'Brien, ""Bob"""`
+ */
+export function csvEsc(value: string): string {
+  const s = String(value ?? "");
+  if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function buildPaypalNote(feeCents: number, commCents: number, campaignName: string | null): string {
+  const parts: string[] = [];
+  if (feeCents > 0) parts.push(`Fee: $${(feeCents / 100).toFixed(2)}`);
+  if (commCents > 0) parts.push(`Commission: $${(commCents / 100).toFixed(2)}`);
+  if (campaignName) parts.push(`Campaign: ${campaignName}`);
+  return parts.join(" | ");
+}
+
+function isoDate(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 export default router;

@@ -20,8 +20,11 @@ import { colors, font } from "./theme";
 // Lazy-load the observability dashboard so its React Flow graph + inspector
 // stack stay out of the builder's initial bundle.
 const ObservabilityView = lazy(() => import("./components/ObservabilityView"));
+const PartnersView = lazy(() =>
+  import("./components/partners/PartnersView").then((m) => ({ default: m.PartnersView })),
+);
 
-type View = "campaigns" | "builder" | "observe";
+type View = "campaigns" | "builder" | "observe" | "partners";
 
 interface Route {
   view: View;
@@ -35,6 +38,7 @@ function parseHash(): Route {
   const [view, id] = raw.split("/");
   if (view === "builder" && id) return { view: "builder", activeWorkflowId: decodeURIComponent(id) };
   if (view === "observe") return { view: "observe", activeWorkflowId: null };
+  if (view === "partners") return { view: "partners", activeWorkflowId: null };
   return { view: "campaigns", activeWorkflowId: null };
 }
 
@@ -43,6 +47,7 @@ function routeToHash(r: Route): string {
     return `#/builder/${encodeURIComponent(r.activeWorkflowId)}`;
   }
   if (r.view === "observe") return "#/observe";
+  if (r.view === "partners") return "#/partners";
   return "#/campaigns";
 }
 
@@ -91,6 +96,11 @@ export default function App() {
               <ObservabilityView />
             </Suspense>
           )}
+          {view === "partners" && (
+            <Suspense fallback={<Center>Loading partners…</Center>}>
+              <PartnersView />
+            </Suspense>
+          )}
         </div>
       </div>
     </ToastProvider>
@@ -105,6 +115,7 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
   const tabs: { key: View; label: string }[] = [
     { key: "campaigns", label: "Builder" },
     { key: "observe", label: "Observability" },
+    { key: "partners", label: "Partners" },
   ];
   return (
     <div
@@ -152,7 +163,9 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }} role="tablist">
         {tabs.map((tab) => {
-          const activeView = view === tab.key || (tab.key === "campaigns" && view === "builder");
+          const activeView =
+            view === tab.key ||
+            (tab.key === "campaigns" && view === "builder");
           return (
             <button
               key={tab.key}
