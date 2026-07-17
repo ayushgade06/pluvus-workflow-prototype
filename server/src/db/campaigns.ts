@@ -3,11 +3,15 @@ import { db } from "./drizzle.js";
 import {
   brandNotifications,
   campaigns,
+  clicks,
+  conversions,
   events,
   executionInstances,
   messages,
+  obligations,
   partnerships,
   paymentInfo,
+  payouts,
   workflows,
   workflowVersions,
   type Campaign,
@@ -98,6 +102,28 @@ export async function deleteCampaign(id: string): Promise<void> {
           .delete(brandNotifications)
           .where(inArray(brandNotifications.instanceId, instanceIds));
         await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
+        // Attribution/payout ledger (Phase 2–4) hangs off the instance's
+        // Partnership, not the instance directly. clicks/conversions/obligations/
+        // payouts all carry a partnershipId FK, so they MUST be deleted before the
+        // partnerships themselves or the partnerships DELETE hits a foreign-key
+        // violation (this is what 500'd campaign deletion once a hybrid run
+        // completed and minted a Partnership + fee Obligation). Scope by the
+        // partnership ids belonging to these instances.
+        const partnershipRows = await tx
+          .select({ id: partnerships.id })
+          .from(partnerships)
+          .where(inArray(partnerships.instanceId, instanceIds));
+        const partnershipIds = partnershipRows.map((p) => p.id);
+        if (partnershipIds.length > 0) {
+          await tx.delete(clicks).where(inArray(clicks.partnershipId, partnershipIds));
+          await tx
+            .delete(conversions)
+            .where(inArray(conversions.partnershipId, partnershipIds));
+          await tx
+            .delete(obligations)
+            .where(inArray(obligations.partnershipId, partnershipIds));
+          await tx.delete(payouts).where(inArray(payouts.partnershipId, partnershipIds));
+        }
         await tx
           .delete(partnerships)
           .where(inArray(partnerships.instanceId, instanceIds));
