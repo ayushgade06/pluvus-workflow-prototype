@@ -5,6 +5,7 @@
 // obligations). Uses TanStack Query for reads; plain fetch for mutations.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { withOperatorKey } from "./operatorKey";
 import type {
   PartnershipListItem,
   PartnershipDetail,
@@ -17,7 +18,9 @@ import type {
 // ---------------------------------------------------------------------------
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  // P2: operator routes (/partnerships, /payouts) — inject X-Operator-Key
+  // without clobbering Content-Type (no-op when the key is unset).
+  const res = await fetch(url, withOperatorKey(init));
   if (!res.ok) {
     let detail = "";
     try {

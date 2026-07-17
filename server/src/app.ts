@@ -16,6 +16,7 @@ import attributionRouter from "./routes/attribution.js";
 import partnershipsRouter from "./routes/partnerships.js";
 import payoutsRouter from "./routes/payouts.js";
 import payoutConfirmRouter from "./routes/payoutConfirm.js";
+import { requireOperatorKey } from "./middleware/requireOperatorKey.js";
 
 // ---------------------------------------------------------------------------
 // Express app factory (HARD-A1)
@@ -54,28 +55,49 @@ export function createApp(): Express {
     }
   });
 
-  // Phase 4 — Queue routes
-  app.use("/queues", queuesRouter);
-  // Phase 9 — Observability dashboard APIs (read-only)
-  app.use("/observability", observabilityRouter);
-  // Phase 10 — Workflow Builder APIs
-  app.use("/campaigns", campaignsRouter);
-  app.use("/workflows", workflowsRouter);
-  // Phase 11 — Manual Queue (escalated creators + brand notifications)
-  app.use("/manual-queue", manualQueueRouter);
+  // -------------------------------------------------------------------------
+  // P2 — operator-route gate. `requireOperatorKey` (X-Operator-Key vs
+  // OPERATOR_API_KEY) is mounted on the OPERATOR routers only. The
+  // creator/webhook-facing routers (/webhooks, /payment, /t, /attribution,
+  // /payout) are intentionally left OPEN — a creator's email magic link and the
+  // inbound webhooks must reach them with no operator key. See the route
+  // inventory in the go-live plan (P2). Health endpoints above are also open
+  // (uptime probes). Gating is open-when-unset in dev; the startup guard
+  // (config/requiredSecrets.ts) refuses to boot in prod without the key.
+  // -------------------------------------------------------------------------
+
+  // OPERATOR routers (gated) --------------------------------------------------
+  // Phase 4 — Queue routes (health/jobs leak internals; injection POSTs already
+  // 404 in prod, gated here too for defense in depth).
+  app.use("/queues", requireOperatorKey, queuesRouter);
+  // Phase 9 — Observability dashboard APIs (leak every creator email/transcript/
+  // payout destination).
+  app.use("/observability", requireOperatorKey, observabilityRouter);
+  // Phase 10 — Workflow Builder APIs (create + cascade-DELETE a campaign).
+  app.use("/campaigns", requireOperatorKey, campaignsRouter);
+  app.use("/workflows", requireOperatorKey, workflowsRouter);
+  // Phase 11 — Manual Queue (escalated-creator data + notify mutation).
+  app.use("/manual-queue", requireOperatorKey, manualQueueRouter);
   // Creator roster + CSV import — used by the enrollment UI.
-  app.use("/creators", creatorsRouter);
-  // Phase 15 — Payment Info: hosted payout-information page (server-rendered)
+  app.use("/creators", requireOperatorKey, creatorsRouter);
+  // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF).
+  app.use("/uploads", requireOperatorKey, uploadsRouter);
+  app.use("/partnerships", requireOperatorKey, partnershipsRouter);
+  // Phase 3 (Payout ledger) — brand-side payout actions: mark paid, resend,
+  // settle money, PayPal CSV export. ALL operator (the creator-facing confirm/
+  // dispute pages live on the SEPARATE /payout router below, left open).
+  app.use("/payouts", requireOperatorKey, payoutsRouter);
+
+  // OPEN routers (creator magic-link / webhooks / public — NEVER gated) --------
+  // Phase 15 — Payment Info: hosted payout-information page (creator magic-link).
   app.use("/payment", paymentRouter);
-  // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF)
-  app.use("/uploads", uploadsRouter);
-  // Phase 2 (Attribution) — short-link redirect + conversion webhook + read API
+  // Phase 2 (Attribution) — public short-link redirect + conversion webhook
+  // (/attribution has its OWN X-Attribution-Secret gate, P1).
   app.use("/t", trackingRouter);
   app.use("/attribution", attributionRouter);
-  app.use("/partnerships", partnershipsRouter);
-  // Phase 3 (Payout ledger) — brand-side payout actions + creator-facing
-  // confirm/dispute magic-link pages (GET renders, POST mutates — I-5).
-  app.use("/payouts", payoutsRouter);
+  // Phase 3 (Payout ledger) — creator-facing confirm/dispute magic-link pages
+  // (GET renders, POST mutates — I-5). Token-gated; must reach creators with no
+  // operator key. Distinct from the operator /payouts router above.
   app.use("/payout", payoutConfirmRouter);
 
   return app;

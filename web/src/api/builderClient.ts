@@ -6,6 +6,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { POLL_INTERVAL_MS } from "./client";
+import { withOperatorKey } from "./operatorKey";
 import type {
   CampaignListItem,
   CampaignDetail,
@@ -30,7 +31,9 @@ import type {
 // ---------------------------------------------------------------------------
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  // P2: operator routes (/campaigns, /workflows, /uploads, /manual-queue, ...) —
+  // inject X-Operator-Key without clobbering Content-Type (no-op when unset).
+  const res = await fetch(url, withOperatorKey(init));
   if (!res.ok) {
     let detail = "";
     try {

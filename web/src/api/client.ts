@@ -6,6 +6,7 @@
 // any websocket plumbing — Part 2 target is a 5–10s refresh.
 
 import { useQuery } from "@tanstack/react-query";
+import { withOperatorKey } from "./operatorKey";
 import type {
   WorkflowSummary,
   WorkflowOptions,
@@ -23,7 +24,8 @@ const BASE = "/api/observability";
 export const POLL_INTERVAL_MS = 6000;
 
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  // P2: operator route — inject X-Operator-Key (no-op when the key is unset).
+  const res = await fetch(url, withOperatorKey());
   if (!res.ok) {
     let detail = "";
     try {

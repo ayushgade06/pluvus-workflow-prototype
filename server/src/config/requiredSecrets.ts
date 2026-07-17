@@ -30,7 +30,13 @@ const PRODUCTION_REQUIRED_SECRETS: RequiredSecret[] = [
       "conversion webhook would accept unauthenticated POSTs → attackers can inject " +
       "fake sales and inflate creator commissions (money integrity).",
   },
-  // OPERATOR_API_KEY is added by P2 once the operator-route gate lands.
+  {
+    name: "OPERATOR_API_KEY",
+    reason:
+      "operator routes (/payouts, /campaigns, /observability, ...) would be ungated on " +
+      "a public origin → anyone who learns the URL can settle money, delete campaigns, " +
+      "or read every creator's data.",
+  },
 ];
 
 /** True when the process considers itself a real deployment (not local/test). */

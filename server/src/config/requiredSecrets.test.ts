@@ -79,15 +79,21 @@ test("P1: assertRequiredSecrets does NOT exit in development", () => {
   assert.equal(exited, false);
 });
 
-test("P1: assertRequiredSecrets does NOT exit in production when the secret is present", () => {
+test("P1: assertRequiredSecrets does NOT exit in production when ALL required secrets are present", () => {
   let exited = false;
   const fakeExit = ((_code: number) => {
     exited = true;
     return undefined as never;
   }) as (code: number) => never;
 
+  // The default production-required list now includes both the attribution
+  // webhook secret (P1) and the operator key (P2) — set both.
   assertRequiredSecrets(
-    { NODE_ENV: "production", ATTRIBUTION_WEBHOOK_SECRET: "s3cret" },
+    {
+      NODE_ENV: "production",
+      ATTRIBUTION_WEBHOOK_SECRET: "s3cret",
+      OPERATOR_API_KEY: "op3rator",
+    },
     fakeExit,
   );
   assert.equal(exited, false);
