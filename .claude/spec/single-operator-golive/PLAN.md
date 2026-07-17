@@ -203,24 +203,66 @@ on the hosted model.
 **Why:** The commission half is inert until real sales flow into
 `/attribution/conversion`. Parent Pluvus already has Stripe (`stripe ^19.1.0`).
 
-**Do (in Pluvus, or the merged codebase):**
-1. Add a Stripe webhook handler for `checkout.session.completed` (and
-   `charge.refunded` → our refund endpoint).
-2. Verify the Stripe signature (`Stripe-Signature`) in Pluvus — reuse the
-   raw-body-HMAC pattern from `webhooks.ts verifyNylasSignature`.
-3. Read `referralCode` from `session.metadata.referralCode` (set at checkout —
-   see P7).
-4. Translate → `POST /attribution/conversion` with
-   `X-Attribution-Secret` (P1), `referralCode`, `externalId: session.id`,
-   `amountCents: session.amount_total`, `customerEmail`,
-   `metadata:{ kind:"purchase" }`.
-5. On `charge.refunded` → `POST /attribution/conversion/:externalId/refund`.
+### ⚠ AUDIT FINDINGS (Pluvus repo, 2026-07-17) — reshaped this item
+Pluvus is ITSELF an affiliate-attribution product for its own tenants, with a
+mature INBOUND engine (Stripe/Shopify/Clerk webhooks → writes conversions to
+Pluvus's OWN db). None of it calls OUT to our system. Key correction:
+**Pluvus's LIVE billing is Clerk Billing, not Stripe.** The Stripe checkout path
+(`server/services/stripe.ts`, `agreements.ts` `/api/stripe/create-checkout`) is
+secondary/legacy. So the outbound reporter must hook the **Clerk-billing success
+path primarily**, Stripe secondarily.
 
-**Acceptance:** a real (test-mode) Stripe checkout carrying a referralCode
-produces an attributed conversion + 10% commission obligation on the right
-partnership; a refund reverses it.
+What Pluvus already has (reference/reuse — do NOT rebuild):
+- Capture `_from` (+8 aliases): `client/src/hooks/useAffiliateAttribution.ts`,
+  `App.tsx:81-159`, cookie `pluvus_click_id` (30d).
+- Click ingest: `server/index.ts:359-481` (`/api/track/internal-click`).
+- Session mapping Clerk user/org → clickId: `server/routes/api/tracking.ts:22-70`
+  (`clerk_session_mappings`), resolved in `clerk-billing.ts:124-131`.
+- Inbound conversion write + refund: `server/routes/webhooks/stripe-conversion.ts`
+  (`checkout.session.completed`:131, `charge.refunded`:107-128), `clerk-billing.ts:101-256`.
+- Commission math: `server/services/billing/commission.ts`.
+- Dead scaffolding to repurpose: `server/config/env.ts:25-28` `AFFILIATE_PROVIDER`
+  / `AFFILIATE_API_BASE` (+ a falsely-"required" `AFFILIATE_WEBHOOK_SECRET`).
 
-**Files:** Pluvus Stripe webhook module (NEW); this system unchanged (endpoint
+**What's genuinely MISSING = the outbound reporter.** The referralCode is
+recoverable (stored on the `affiliate_clicks` row linked via clickId in
+`clerk-billing.ts:128`), but nothing forwards a sale to our endpoint.
+
+**Do (in Pluvus):**
+1. Config: add `ATTRIBUTION_BASE_URL` + reuse/rename to a real
+   `ATTRIBUTION_SECRET` (retire the dead `AFFILIATE_*` scaffolding or repoint it);
+   add to `.env.example`; stop `validateCoreEnv` falsely requiring the old secret.
+2. Recover the referralCode at conversion time (Piece 1c): for the **Clerk path**
+   read it off the `affiliate_clicks` row already linked via clickId
+   (`clerk-billing.ts:128`); for the **Stripe path** add `referralCode` to
+   `session.metadata` in `server/services/stripe.ts:75-83` (threaded from
+   `agreements.ts`).
+3. NEW outbound reporter (e.g. `server/services/attribution/report.ts`):
+   `POST {ATTRIBUTION_BASE_URL}/attribution/conversion`, header
+   `X-Attribution-Secret` (P1), body `{ referralCode, externalId, amountCents,
+   currency, customerEmail, metadata:{ kind:"purchase" } }`.
+   - `externalId` = Stripe `session.id`/PI (Stripe path) or `clerk_pay_`/
+     `clerk_sub_${id}` (Clerk path) — reuse Pluvus's existing externalId
+     convention → free dedup on our unique index.
+   - `amountCents` = INTEGER CENTS (Pluvus handlers convert to dollars; send the
+     raw `amount_total`/`plan.amount` in cents instead).
+4. Wire it into the success handlers, gated on a referralCode being present:
+   `clerk-billing.ts:204` (live Clerk path) and `stripe-conversion.ts:466`
+   (Stripe path).
+5. Refund reporter: `POST /attribution/conversion/:externalId/refund` from
+   `stripe-conversion.ts:119-127` (and the Clerk refund equivalent if refunds
+   flow through Clerk).
+6. Reliability: fire-and-forget-with-retry — never fail the webhook 200 if our
+   service is down; log via Pluvus's `recordWebhookActivity`; rely on our
+   `externalId` dedup for at-least-once safety.
+
+**Acceptance:** a real (test-mode) Clerk-billed subscription (and a Stripe
+checkout) carrying a referralCode produces an attributed conversion + 10%
+commission obligation on the right partnership in OUR system; a refund reverses
+it; a down attribution service does NOT break the Pluvus webhook.
+
+**Files:** Pluvus outbound reporter (NEW) + hooks into existing
+`clerk-billing.ts` / `stripe-conversion.ts`; THIS system unchanged (endpoint
 ready).
 
 ---
@@ -239,28 +281,34 @@ obligation type (a % rate yields $0 on a $0 signup), plus stronger anti-abuse
 
 ---
 
-## P7 — `?_from=` capture + Stripe metadata threading 🟠 BLOCKING for commissions
+## P7 — Carry the referral code to conversion time 🟠 BLOCKING for commissions
 
-**Why:** THIS is the real integration work and the crux of attribution accuracy.
-The tracking redirect (`/t/:code`) already appends `?_from=<code>` to the
-brand's target URL. But capturing it and carrying it through to checkout is 100%
-on the Pluvus side and does NOT exist yet. Without it, P5 fires with a null
-`referralCode` → unattributed. (Purchase-only per D2, so this threads into Stripe
-checkout only — not Clerk sign-up.)
+### ⚠ AUDIT FINDINGS reshaped this item — MOSTLY ALREADY DONE
+Pluvus ALREADY captures + persists `_from`: `useAffiliateAttribution.ts` reads
+`_from` (+8 aliases), cookie `pluvus_click_id` (30d), `App.tsx:81-159` backup at
+signup, click → `affiliate_clicks` row (`server/index.ts:451` stores the
+referralCode), Clerk user/org → clickId in `clerk_session_mappings`
+(`tracking.ts:22-70`). So capture (1a) and persistence (1b) EXIST and are solid.
 
-**Do (in Pluvus):**
-1. Landing page / entry: read `?_from=<code>` from the URL, persist it
-   (first-touch cookie/localStorage, honoring an `attributionWindow` if set —
-   campaign already has the field).
-2. Carry the persisted `referralCode` through the browsing session to checkout.
-3. At Stripe Checkout Session creation: inject `referralCode` into
-   `metadata.referralCode` so `checkout.session.completed` (P5) carries it.
-4. Decide attribution model: first-touch vs last-touch; cookie window length
-   (campaign `attributionWindow` is the intended source of truth — D3).
+**What's left is the "1c" gap — make the referralCode available at CONVERSION
+time so P5's reporter can send it:**
+- **Clerk path (live billing):** no new capture needed — recover the referralCode
+  off the `affiliate_clicks` row already linked via clickId in
+  `clerk-billing.ts:128`. (Confirm the row carries the raw code, not just the
+  clickId — audit says it's on `server/index.ts:451`.)
+- **Stripe path (secondary):** inject `referralCode` into `session.metadata` in
+  `server/services/stripe.ts:75-83` (thread from `agreements.ts`), so
+  `checkout.session.completed` carries it.
 
-**Acceptance:** click tracking link → land on Pluvus → purchase → the conversion
-webhook receives the correct `referralCode` end-to-end, with NO manual code
-entry.
+This is small — reuse existing plumbing, don't rebuild capture. Merge P7 work
+with P5 (same handlers).
+
+**Decide (D3):** first-touch vs last-touch; cookie window (Pluvus uses 30d; our
+campaign `attributionWindow` field is the intended source of truth — reconcile).
+
+**Acceptance:** click tracking link → land on Pluvus → subscribe (Clerk) or buy
+(Stripe) → the conversion webhook receives the correct `referralCode`
+end-to-end, with NO manual code entry.
 
 **Files:** Pluvus front-end capture + Stripe session creation (NEW).
 
