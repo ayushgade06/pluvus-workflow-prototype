@@ -419,7 +419,11 @@ class FailoverChat:
         # of a hard telemetry dependency (and to avoid import cycles).
         import time
 
-        from app.telemetry import get_active_prompt_version, record_llm_call
+        from app.telemetry import (
+            SpendCapExceeded,
+            get_active_prompt_version,
+            record_llm_call,
+        )
 
         errors: list[str] = []
         prompt_version = get_active_prompt_version()
@@ -434,6 +438,10 @@ class FailoverChat:
                 result = invoke_model_bounded(model, prompt)
                 if idx > 0:
                     logger.warning("LLM failover: served by fallback %s", label)
+                # record_llm_call runs the P4 spend guard; if it raises
+                # SpendCapExceeded the request has already spent its budget, so we
+                # must NOT fall over to the next candidate (that would spend MORE).
+                # Let it propagate straight out of the failover loop (see below).
                 record_llm_call(
                     model=label,
                     latency_ms=(time.perf_counter() - start) * 1000.0,
@@ -442,6 +450,10 @@ class FailoverChat:
                     ok=True,
                 )
                 return result
+            except SpendCapExceeded:
+                # Budget hit — stop the whole chain, don't try the fallback and
+                # don't double-record (the tipping call was already recorded).
+                raise
             except Exception as exc:  # noqa: BLE001 — any failure should try the next
                 errors.append(f"{label}: {exc}")
                 logger.warning("LLM candidate %s failed: %s", label, exc)

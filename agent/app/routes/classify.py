@@ -28,7 +28,12 @@ from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.topic_gate import detect_escalation_topic
 from app.structured import StructuredOutputError, invoke_structured
-from app.telemetry import capture_llm_calls, set_active_prompt_version, usage_payload
+from app.telemetry import (
+    SpendCapExceeded,
+    capture_llm_calls,
+    set_active_prompt_version,
+    usage_payload,
+)
 
 router = APIRouter()
 logger = logging.getLogger("agent.classify")
@@ -298,6 +303,13 @@ def classify(req: ClassifyRequest) -> ClassifyResponse:
             result = classify_message(req.message)
         result.llmUsage = usage_payload(calls)
         return result
+    except SpendCapExceeded as exc:
+        # P4 spend guard: this request crossed the per-request cost ceiling. Return
+        # a DISTINCT 503 (not the generic 500) so the operator can tell a runaway-
+        # cost stop apart from a real bug. The server maps a failed classify to a
+        # safe UNKNOWN/manual-review degrade, so no reply is silently accepted.
+        logger.warning("classify halted by spend cap: %s", exc)
+        raise HTTPException(status_code=503, detail="LLM spend cap reached") from exc
     except Exception as exc:
         # EASY-S1: log the real error server-side (with any raw preview) but return
         # a GENERIC detail to the client — the exception text can carry model output

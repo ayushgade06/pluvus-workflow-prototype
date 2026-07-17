@@ -239,6 +239,23 @@ export interface LlmUsageBreakdownEntryDTO {
   totals: LlmUsageTotalsDTO;
 }
 
+/**
+ * P4 daily spend monitor. Reports the configured 24h spend threshold, the
+ * current trailing-24h estimated spend, and whether it has been exceeded, so the
+ * operator (and any alerting) can see a runaway bill without a metrics backend.
+ * Disabled (thresholdUsd null) when LLM_DAILY_SPEND_ALERT_USD is unset.
+ */
+export interface LlmSpendGuardDTO {
+  /** Configured daily alert threshold in USD, or null when unset (guard off). */
+  thresholdUsd: number | null;
+  /** Trailing-24h estimated spend in USD (mirrors last24h.estCostUsd). */
+  spentUsd: number;
+  /** True when a threshold is set AND spentUsd has crossed it. */
+  exceeded: boolean;
+  /** Fraction of the threshold used (spentUsd/thresholdUsd), or null when off. */
+  ratio: number | null;
+}
+
 export interface LlmUsageSummaryDTO {
   /** All-time totals across every persisted call. */
   totals: LlmUsageTotalsDTO;
@@ -248,6 +265,8 @@ export interface LlmUsageSummaryDTO {
   byModel: LlmUsageBreakdownEntryDTO[];
   /** Most recent calls, newest first. */
   recent: LlmCallDTO[];
+  /** P4 daily spend guard status (threshold vs trailing-24h spend). */
+  spendGuard: LlmSpendGuardDTO;
   generatedAt: string;
 }
 

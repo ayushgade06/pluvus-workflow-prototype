@@ -53,7 +53,12 @@ from app.injection import (
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
 from app.structured import invoke_structured, StructuredOutputError
-from app.telemetry import capture_llm_calls, set_active_prompt_version, usage_payload
+from app.telemetry import (
+    SpendCapExceeded,
+    capture_llm_calls,
+    set_active_prompt_version,
+    usage_payload,
+)
 from app.topic_gate import detect_escalation_topic
 
 logger = logging.getLogger("agent.negotiate")
@@ -3521,6 +3526,13 @@ def negotiate(req: NegotiateRequest) -> NegotiateResponse:
             result = _langgraph_negotiate(req)
         result.llmUsage = usage_payload(calls)
         return result
+    except SpendCapExceeded as exc:
+        # P4 spend guard: a runaway negotiation loop crossed the per-request cost
+        # ceiling. Return a DISTINCT 503 so the operator can tell a cost-stop apart
+        # from a real bug; the server executor maps the failure to escalation /
+        # manual review, so the creator is handed to a human rather than dropped.
+        logger.warning("negotiate halted by spend cap: %s", exc)
+        raise HTTPException(status_code=503, detail="LLM spend cap reached") from exc
     except Exception as exc:
         # EASY-S1: generic client detail; the real error (which can carry model
         # output — a quoted rate, a raw-response preview) is logged server-side only.
@@ -3541,6 +3553,10 @@ def draft(req: DraftRequest) -> DraftResponse:
             result = _langgraph_draft(req)
         result.llmUsage = usage_payload(calls)
         return result
+    except SpendCapExceeded as exc:
+        # P4 spend guard — see the negotiate handler. Distinct 503 for a cost-stop.
+        logger.warning("draft halted by spend cap: %s", exc)
+        raise HTTPException(status_code=503, detail="LLM spend cap reached") from exc
     except Exception as exc:
         # EASY-S1: generic client detail; real error logged server-side only.
         logger.exception("draft failed")

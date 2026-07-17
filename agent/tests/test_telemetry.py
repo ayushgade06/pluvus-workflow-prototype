@@ -164,6 +164,99 @@ def test_usage_payload_empty_capture():
     assert payload["totals"]["estCostUsd"] == 0.0
 
 
+# ---------------------------------------------------------------------------
+# P4 — per-request spend cap
+# ---------------------------------------------------------------------------
+
+
+def test_spend_cap_off_by_default(monkeypatch):
+    # Unset cap → the guard never fires, even on a "costly" call. Local Ollama
+    # ($0) and every existing suite must be unaffected.
+    monkeypatch.delenv("LLM_MAX_REQUEST_COST_USD", raising=False)
+    with telemetry.capture_llm_calls():
+        telemetry.record_llm_call(
+            model="openrouter:anthropic/claude-opus-4.8",
+            latency_ms=10,
+            result=_FakeMsg("{}", {"input_tokens": 100000, "output_tokens": 100000}),
+            ok=True,
+        )  # would be ~$3 — but no cap, so no raise
+
+
+def test_spend_cap_zero_is_disabled(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_REQUEST_COST_USD", "0")
+    with telemetry.capture_llm_calls():
+        telemetry.record_llm_call(
+            model="openrouter:anthropic/claude-opus-4.8",
+            latency_ms=10,
+            result=_FakeMsg("{}", {"input_tokens": 100000, "output_tokens": 100000}),
+            ok=True,
+        )
+
+
+def test_spend_cap_fires_when_running_cost_exceeds(monkeypatch):
+    # A tiny cap trips on the first non-trivial paid call. The tipping record is
+    # still buffered (observable) before the raise.
+    monkeypatch.setenv("LLM_MAX_REQUEST_COST_USD", "0.01")
+    before = len(telemetry.recent_records())
+    with pytest.raises(telemetry.SpendCapExceeded) as ei:
+        with telemetry.capture_llm_calls():
+            telemetry.record_llm_call(
+                model="openrouter:anthropic/claude-opus-4.8",
+                latency_ms=10,
+                # 1000 in + 1000 out on Opus = $0.03 > $0.01 cap.
+                result=_FakeMsg("{}", {"input_tokens": 1000, "output_tokens": 1000}),
+                ok=True,
+            )
+    assert ei.value.cap == 0.01
+    assert ei.value.running_cost > 0.01
+    assert len(telemetry.recent_records()) == before + 1  # tipping call recorded
+
+
+def test_spend_cap_accumulates_across_calls(monkeypatch):
+    # Several cheap calls that individually stay under the cap trip it once their
+    # SUM crosses — this is what bounds a runaway multi-call loop.
+    monkeypatch.setenv("LLM_MAX_REQUEST_COST_USD", "0.05")
+    calls_made = 0
+    with pytest.raises(telemetry.SpendCapExceeded):
+        with telemetry.capture_llm_calls():
+            for _ in range(10):
+                telemetry.record_llm_call(
+                    model="openrouter:anthropic/claude-opus-4.8",
+                    latency_ms=10,
+                    # $0.03 each; the 2nd call crosses $0.05.
+                    result=_FakeMsg("{}", {"input_tokens": 1000, "output_tokens": 1000}),
+                    ok=True,
+                )
+                calls_made += 1
+    assert calls_made == 1  # tripped on the 2nd call (index 1), before it returned
+
+
+def test_spend_cap_ignores_uncosted_ollama(monkeypatch):
+    # A local ($0) model never accrues cost, so the cap is a no-op no matter how
+    # many calls — local dev stays free-running under any cap value.
+    monkeypatch.setenv("LLM_MAX_REQUEST_COST_USD", "0.01")
+    with telemetry.capture_llm_calls():
+        for _ in range(50):
+            telemetry.record_llm_call(
+                model="ollama:qwen3:8b",
+                latency_ms=1,
+                result=_FakeMsg("{}", {"input_tokens": 10000, "output_tokens": 10000}),
+                ok=True,
+            )
+
+
+def test_spend_cap_only_applies_inside_a_capture(monkeypatch):
+    # Outside a request capture there is no per-request budget to bound, so the
+    # guard does nothing (the ring buffer is process-wide, not per-request).
+    monkeypatch.setenv("LLM_MAX_REQUEST_COST_USD", "0.001")
+    telemetry.record_llm_call(
+        model="openrouter:anthropic/claude-opus-4.8",
+        latency_ms=10,
+        result=_FakeMsg("{}", {"input_tokens": 5000, "output_tokens": 5000}),
+        ok=True,
+    )  # no active capture → no raise
+
+
 def test_classify_route_returns_llm_usage(monkeypatch):
     # The route response must carry the llmUsage block (calls + totals) so the
     # TS server can persist token/cost telemetry attributed to the instance.

@@ -150,12 +150,45 @@ def extract_usage(result: object) -> tuple[int | None, int | None, int | None]:
     return (None, None, None)
 
 
+class SpendCapExceeded(RuntimeError):
+    """Raised mid-request when the running estimated cost of the active capture
+    crosses LLM_MAX_REQUEST_COST_USD (P4 spend guard). A route catches this and
+    degrades (falls back to rules / escalates) rather than let a runaway
+    negotiation loop keep spending. Carries the running total + cap for the log."""
+
+    def __init__(self, running_cost: float, cap: float) -> None:
+        self.running_cost = running_cost
+        self.cap = cap
+        super().__init__(
+            f"per-request LLM spend cap exceeded: "
+            f"est ${running_cost:.4f} > cap ${cap:.4f} (LLM_MAX_REQUEST_COST_USD)"
+        )
+
+
+def _request_cost_cap_usd() -> float:
+    """Per-request estimated-cost ceiling. 0 (default) disables the guard, so
+    local Ollama ($0) and the existing suites are unaffected. Set a small dollar
+    value in a hosted (paid) deployment to bound a single runaway loop."""
+    raw = os.getenv("LLM_MAX_REQUEST_COST_USD", "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
 def emit_llm_metric(record: LLMCallRecord) -> None:
     """The SINGLE sink for an instrumented LLM call. Today it logs a structured
     line, appends to the in-process ring buffer, and hands the record to any
     active per-request capture (see capture_llm_calls); wire an OTel/Prometheus
     exporter HERE to ship the same record to a real backend (the acceptance-
-    criterion infra) without touching any call site."""
+    criterion infra) without touching any call site.
+
+    P4 spend guard: after appending to the active capture, if the running
+    estimated cost of THIS request crosses LLM_MAX_REQUEST_COST_USD, raise
+    SpendCapExceeded so a runaway loop is stopped mid-flight. The record is still
+    buffered/logged first, so the call that tipped over the cap is observable."""
     _recent.append(record)
     captured = _active_capture.get()
     if captured is not None:
@@ -174,6 +207,21 @@ def emit_llm_metric(record: LLMCallRecord) -> None:
         record.ok,
         record.error_kind,
     )
+
+    # P4 spend guard — bound a single request. Only meaningful inside a capture
+    # (a route's request scope) and when a cap is configured. The record above is
+    # already buffered + logged, so the tipping call stays observable.
+    cap = _request_cost_cap_usd()
+    if cap > 0 and captured is not None:
+        running = round(sum(r.est_cost_usd or 0.0 for r in captured), 6)
+        if running > cap:
+            logger.warning(
+                "llm_spend_cap_exceeded running_cost_usd=%.6f cap_usd=%.6f calls=%d",
+                running,
+                cap,
+                len(captured),
+            )
+            raise SpendCapExceeded(running, cap)
 
 
 def record_llm_call(

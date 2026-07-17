@@ -45,6 +45,7 @@ import {
   type LlmUsageTotalsDTO,
   type LlmUsageBreakdownEntryDTO,
   type LlmUsageSummaryDTO,
+  type LlmSpendGuardDTO,
 } from "./dto.js";
 
 // An instance in a waiting state is "stuck" if its dueAt passed more than this
@@ -781,6 +782,31 @@ function toTotalsDTO(row: LlmTotalsRow | undefined): LlmUsageTotalsDTO {
   };
 }
 
+// ---------------------------------------------------------------------------
+// P4 — daily spend guard (monitor)
+// ---------------------------------------------------------------------------
+// Pure: given the trailing-24h estimated spend and the raw env threshold string,
+// report whether the daily budget has been crossed. Threshold unset/blank/invalid
+// ⇒ guard off (thresholdUsd null, never exceeded), so local Ollama ($0) and
+// deployments that haven't opted in are unaffected. Exported for unit testing.
+export function computeSpendGuard(
+  spentUsd: number,
+  thresholdRaw: string | undefined,
+): LlmSpendGuardDTO {
+  const parsed = thresholdRaw === undefined ? NaN : Number(thresholdRaw.trim());
+  const threshold = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  const spent = round6(spentUsd);
+  if (threshold === null) {
+    return { thresholdUsd: null, spentUsd: spent, exceeded: false, ratio: null };
+  }
+  return {
+    thresholdUsd: threshold,
+    spentUsd: spent,
+    exceeded: spent > threshold,
+    ratio: round6(spent / threshold),
+  };
+}
+
 export async function getLlmUsage(): Promise<LlmUsageSummaryDTO> {
   const now = Date.now();
   const dayAgo = new Date(now - 24 * 60 * 60 * 1000);
@@ -811,12 +837,17 @@ export async function getLlmUsage(): Promise<LlmUsageSummaryDTO> {
       .map((r) => ({ key: r.key, totals: toTotalsDTO(r) }))
       .sort((a, b) => b.totals.calls - a.totals.calls);
 
+  const last24h = toTotalsDTO(dayRows[0]);
+
   return {
     totals: toTotalsDTO(allRows[0]),
-    last24h: toTotalsDTO(dayRows[0]),
+    last24h,
     byRole: breakdown(roleRows),
     byModel: breakdown(modelRows),
     recent: recentRows.map(mapLlmCall),
+    // P4 daily spend monitor — compare trailing-24h spend to the configured
+    // threshold (LLM_DAILY_SPEND_ALERT_USD); off when unset.
+    spendGuard: computeSpendGuard(last24h.estCostUsd, process.env["LLM_DAILY_SPEND_ALERT_USD"]),
     generatedAt: new Date(now).toISOString(),
   };
 }
