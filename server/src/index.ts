@@ -1,6 +1,7 @@
 import "dotenv/config";
 import type { Server } from "node:http";
 import { createApp } from "./app.js";
+import { assertRequiredSecrets } from "./config/requiredSecrets.js";
 import { startWorkers, stopWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 import { processRole, runsApi, runsWorkers, runsScheduler, type ProcessRole } from "./processRole.js";
@@ -17,6 +18,12 @@ import { processRole, runsApi, runsWorkers, runsScheduler, type ProcessRole } fr
 
 const role: ProcessRole = processRole();
 const port = process.env["PORT"] ? Number(process.env["PORT"]) : 3001;
+
+// P1: in production, refuse to boot with an open money/data posture (e.g. an
+// unset ATTRIBUTION_WEBHOOK_SECRET). No-op in local dev / test. Guard runs for
+// every role — the worker/scheduler share the same env, and failing loud from
+// any process is better than a silent open API replica.
+assertRequiredSecrets();
 
 let httpServer: Server | null = null;
 
