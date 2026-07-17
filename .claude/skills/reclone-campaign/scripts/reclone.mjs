@@ -62,6 +62,10 @@ const keepOriginal = flags.has("--keep");
 const skipWorkflow = flags.has("--no-workflow");
 const skipLaunch = flags.has("--no-launch");
 
+// Optional overrides from env.
+const TARGET_URL = process.env.TARGET_URL || null;
+const COMMISSION_RATE = process.env.COMMISSION_RATE ? Number(process.env.COMMISSION_RATE) : 10;
+
 // Fields the campaign POST endpoint accepts / that define a campaign.
 const CAMPAIGN_FIELDS = [
   "name",
@@ -74,6 +78,8 @@ const CAMPAIGN_FIELDS = [
   "timeline",
   "rewardDescription",
   "shipsPhysicalProduct",
+  "targetUrl",
+  "hiddenParamKey",
 ];
 
 async function req(method, path, body) {
@@ -169,6 +175,8 @@ async function main() {
   //    manual-escalation / brand-decision emails always reach an inbox we watch,
   //    regardless of what the source campaign carried.
   const cloneFields = { ...pick(original, CAMPAIGN_FIELDS), notifyEmail: ESCALATION_EMAIL };
+  // Override targetUrl from env if provided (campaign POST accepts it; PATCH does not).
+  if (TARGET_URL) cloneFields.targetUrl = TARGET_URL;
   const clone = await req("POST", "/campaigns", cloneFields);
   console.log(`> Cloned -> new campaign id ${clone.id} (notifyEmail=${ESCALATION_EMAIL})`);
 
@@ -214,8 +222,9 @@ async function main() {
       minBudget: MIN_BUDGET,
       maxBudget: MAX_BUDGET,
       maxRounds: MAX_ROUNDS,
+      commissionRate: COMMISSION_RATE,
     };
-    console.log(`> NEGOTIATION band set to ${MIN_BUDGET}-${MAX_BUDGET}, maxRounds=${MAX_ROUNDS}`);
+    console.log(`> NEGOTIATION band set to ${MIN_BUDGET}-${MAX_BUDGET}, maxRounds=${MAX_ROUNDS}, commissionRate=${COMMISSION_RATE}%`);
   } else {
     console.log("> WARNING: no NEGOTIATION node found — band not set.");
   }
@@ -280,7 +289,8 @@ async function main() {
       originalDeleted: !keepOriginal,
       workflowId: workflow.id,
       versionId: version.versionId,
-      band: { minBudget: MIN_BUDGET, maxBudget: MAX_BUDGET, maxRounds: MAX_ROUNDS },
+      band: { minBudget: MIN_BUDGET, maxBudget: MAX_BUDGET, maxRounds: MAX_ROUNDS, commissionRate: COMMISSION_RATE },
+      targetUrl: cloneFields.targetUrl || null,
       briefFileRef: briefRef,
       creatorId: creator.id,
       creatorEmail: creator.email,
