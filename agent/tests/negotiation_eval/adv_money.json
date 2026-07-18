@@ -1,0 +1,291 @@
+{
+  "money": [
+    {
+      "id": "M1-anchor-high",
+      "tactic": "extreme-anchor",
+      "good": "COUNTER meaningfully below $500 ask; must not fold; first counter should be modest above standing offer, not jump toward their anchor",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator asked for $500, which is above our standing offer of $350. We counter below their ask, anchoring at $375, which is a modest increase and aligns with our negotiation discipline to concede in small steps.",
+        "creatorQuestions": [
+          "For a reel + 3 stories I'd normally be at $500."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 500.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest in AeroSoft! We’re excited to collaborate. For a reel + 3 stories, we’re offering $375.00. This includes 10% commission on sales and one pair of Cloudstride running shoes plus a branded sock set as a standard perk. The content will be live by October 10, 2026. Let’s discuss how we can move forward!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M2-split-the-difference",
+      "tactic": "split-the-difference",
+      "good": "should NOT blindly split to the exact midpoint; concede a small step and tie it to value",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator asked for $500, which is above our standing offer of $350. Following negotiation discipline, we counter below their ask but above our current offer, moving incrementally toward a fair agreement.",
+        "creatorQuestions": [
+          "Let's just meet in the middle — you're at $350, I want $500, so $425 and we're done?"
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 500.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest in the collaboration! We’re happy to meet in the middle and offer $375 for this campaign. This includes 1 Instagram Reel + 3 Instagram Stories, with content live by October 10, 2026. The commission remains at 10%, and you’ll receive one pair of AeroSoft Cloudstride running shoes plus a branded sock set as part of the collaboration. Let me know if this works for you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M3-nibble",
+      "tactic": "nibble",
+      "good": "hold the fee at ~agreed; extra pairs = fixed perk, state as fixed; do NOT raise fee to grant a perk",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 380.0,
+        "reasoning": "The creator met our standing offer and added a request for an extra pair of shoes, which we can fulfill through the standard perk structure. There is no room for further negotiation in this final round, so we accept their rate and close the deal.",
+        "creatorQuestions": [
+          "can you throw in a second pair of shoes to seal it?"
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 380.0,
+        "escalationReason": null,
+        "isFinalRound": true,
+        "responseDraft": "Great to hear that $380 works! We’re excited to move forward with your collaboration. As a reminder, the commission rate is fixed at 10%, and the product perk — one pair of AeroSoft Cloudstride running shoes plus a branded sock set — is also non-negotiable. Content will go live by October 10, 2026, as planned. Let’s get started!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M4-deadline-pressure",
+      "tactic": "false-urgency",
+      "good": "must not raise offer merely due to urgency; hold, may reassure timeline",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 400.0,
+        "reasoning": "The creator's ask is above our standing offer, so we counter meaningfully below their ask but at or above our current standing offer. We move incrementally to close the gap without giving away too much in one step.",
+        "creatorQuestions": [
+          "I've got another brand offering $480 and I need to decide in an hour. Match it or I'm out."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 480.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest in the AeroSoft collaboration! We understand you're considering other opportunities, but we're confident in the value of this campaign. To keep the conversation moving, let's settle on a rate of $400.00. This includes 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights, and a pair of AeroSoft Cloudstride running shoes plus a branded sock set. Content will be live by October 10, 2026, and the commission remains at 10% of sales. Let me know if this works for you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M5-batna-claim",
+      "tactic": "outside-option",
+      "good": "don't reflexively match the claimed $450; hold discipline, concede small if at all",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator’s ask is above our standing offer, so we anchor below their ask but above our current offer, moving incrementally to maintain a collaborative tone.",
+        "creatorQuestions": [
+          "Honestly another athletic brand already offered me $450 for the same deliverables."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 450.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for sharing that, we’re always looking to collaborate with creators who align with our brand values. We’re happy to offer $375 for the campaign, which includes 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights, and a pair of AeroSoft Cloudstride running shoes plus a branded sock set. The commission remains at 10%, and the content is due by October 10, 2026. Let me know if this works for you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M6-creator-concedes",
+      "tactic": "reciprocal-concession",
+      "good": "recognize their move down to $420; COUNTER slightly below or ACCEPT; never counter ABOVE $420",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 420.0,
+        "reasoning": "The creator’s rate of $420 is below our internal ceiling and represents a meaningful concession toward our standing offer. Since this is the final round, we close the deal at their ask to secure the collaboration without overpaying.",
+        "creatorQuestions": [
+          "Okay I can come down from $500 to $420, that's fair right?"
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 420.0,
+        "escalationReason": null,
+        "isFinalRound": true,
+        "responseDraft": "Thank you for your flexibility! We’re happy to move forward at $420. The deliverables — 1 Instagram Reel + 3 Instagram Stories — and the timeline of content live by October 10, 2026, are set as per our campaign. The 10% commission on sales and the product perk (one pair of AeroSoft Cloudstride running shoes plus a branded sock set) are also fixed and cannot be adjusted. Let’s get started!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M7-final-round-close",
+      "tactic": "final-round-close",
+      "good": "final round, $450 within ceiling → ACCEPT/close, not escalate",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 450.0,
+        "reasoning": "The creator’s rate of $450 is within our internal ceiling and meets their firm number, and this is the final round. We close at their ask to secure the collaboration without further negotiation.",
+        "creatorQuestions": [
+          "$450 is my firm number. That's what I can do."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 450.0,
+        "escalationReason": null,
+        "isFinalRound": true,
+        "responseDraft": "Thank you for considering this collaboration! We’re happy to move forward at $450. The deliverables — 1 Instagram Reel + 3 Instagram Stories — and the timeline of content live by October 10, 2026, are set as per our campaign plan. The 10% commission on sales and the product perk (one pair of Cloudstride running shoes + branded sock set) are also fixed and cannot be adjusted. Let’s get started!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M8-final-over-ceiling",
+      "tactic": "over-ceiling-final-firm",
+      "good": "final round but $650 firm > ceiling → ESCALATE; must NOT close at a clamped 500 the creator never agreed to",
+      "resp": {
+        "action": "ESCALATE",
+        "rate": null,
+        "reasoning": "The creator’s ask of $650 exceeds our internal ceiling of $500, and we must close at the lowest rate the creator will accept. Since this is the final round, we counter at our current standing offer of $450 to secure the collaboration without overpaying.",
+        "creatorQuestions": [
+          "$650 flat, and I won't go a dollar under. Final answer."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 650.0,
+        "escalationReason": null,
+        "isFinalRound": true,
+        "responseDraft": null,
+        "_err": null
+      }
+    },
+    {
+      "id": "M9-at-ceiling-early",
+      "tactic": "at-ceiling-early",
+      "good": "$500 == ceiling with rounds left → COUNTER below, do NOT accept at ceiling early",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator asked for $500, which is above our standing offer of $350. We counter below their ask, at the midpoint between our standing offer and their ask, to move the conversation forward while protecting our budget.",
+        "creatorQuestions": [
+          "I can do $500 for the package."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 500.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thank you for considering this collaboration! We’re happy to offer $375 for the package. This includes 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights, and a pair of AeroSoft Cloudstride running shoes plus a branded sock set. The 10% commission on sales is fixed and cannot be adjusted. Content will be live by October 10, 2026. Let me know if this works for you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M10-meets-our-offer",
+      "tactic": "accept-at-our-number",
+      "good": "they accept our standing $375 → ACCEPT at 375; must NOT counter up",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 375.0,
+        "reasoning": "The creator met or beat our standing offer and expressed willingness to proceed, making this the right time to close the deal.",
+        "creatorQuestions": [
+          "$375 sounds fair, let's lock it in."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 375.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Great to hear! We're excited to move forward with the collaboration. The deliverables will include 1 Instagram Reel + 3 Instagram Stories, and the content will be live by October 10, 2026. The product perk of one pair of AeroSoft Cloudstride running shoes plus a branded sock set is included as part of the campaign. We look forward to working with you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M11-below-floor",
+      "tactic": "below-floor",
+      "good": "$150 < floor → ACCEPT (downstream clamps to 200); must NOT counter up to standing offer",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 200.0,
+        "reasoning": "The creator’s rate of $150 is below our internal floor of $200, so we accept and close the deal at their number. The downstream guard will clamp the paid rate up to the floor, but we do not need to counter upward as per rule 4.",
+        "creatorQuestions": [
+          "I really just want the shoes — $150 and I'm happy."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 150.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": null,
+        "_err": null
+      }
+    },
+    {
+      "id": "M12-range-ask",
+      "tactic": "range-anchor",
+      "good": "range $400-500 → engage on the LOW end (~400); COUNTER below 400 or near it; must not pick 500 or misparse to 450500",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator’s rate is above our standing offer, so we anchor below their ask and concede in small steps to maintain a collaborative tone while protecting our budget.",
+        "creatorQuestions": [
+          "My rate for this is somewhere in the $400 to $500 range depending on scope."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": null,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest in the campaign! We’re happy to offer $375 for the collaboration, which includes 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights, and a pair of AeroSoft Cloudstride running shoes plus a branded sock set. The content will be live by October 10, 2026, and we’re excited to work with you. Let me know if this fits within your budget!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M13-commission-for-fee-swap",
+      "tactic": "fixed-term-swap",
+      "good": "commission is fixed at 10% → refuse the swap, keep negotiating fee only; do NOT grant 20%",
+      "resp": {
+        "action": "ACCEPT",
+        "rate": 250.0,
+        "reasoning": "The creator's request to increase their commission to 20% and reduce the fee to $250 is outside our fixed terms. We must maintain the 10% commission and the standard perk. Since their ask is below our standing offer, we do not raise our counter toward their lower number. We remain firm on our $350.00 offer and invite them to accept it or continue the negotiation.",
+        "creatorQuestions": [
+          "Tell you what — bump my commission to 20% and I'll take just $250 flat on the fee."
+        ],
+        "pushedFixedTerms": [
+          "commission"
+        ],
+        "creatorRequestedRate": 250.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": null,
+        "_err": null
+      }
+    },
+    {
+      "id": "M14-decoy-discount",
+      "tactic": "decoy-anchor",
+      "good": "$520 still > ceiling → in-band COUNTER or ESCALATE; ignore the fake $800 anchor",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 400.0,
+        "reasoning": "The creator’s ask of $520 is above our standing offer of $350, so we counter meaningfully below their ask, at $400, which is above our floor and within our ceiling. We aim to move the conversation forward while protecting our budget.",
+        "creatorQuestions": [
+          "My list rate is $800 but because I love AeroSoft I'll give you a special deal at $520."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 520.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thank you for your interest in the AeroSoft campaign! We’re excited to collaborate and appreciate your enthusiasm. Given your rate of $520, we’re happy to counter at $400. This rate includes 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights, and the standard perk of one pair of AeroSoft Cloudstride running shoes plus a branded sock set. The timeline for content delivery is set for October 10, 2026. Let’s discuss if this works for you!",
+        "_err": null
+      }
+    },
+    {
+      "id": "M15-creep-raise",
+      "tactic": "incremental-creep",
+      "good": "we've moved 300→400 already; their $460 → small COUNTER (<=430) or ESCALATE if final; must not leap to 460",
+      "resp": {
+        "action": "COUNTER",
+        "rate": 375.0,
+        "reasoning": "The creator’s ask of $460 is above our standing offer of $350, so we counter below their ask but above our current offer, following the rule to anchor below the ask and concede in small steps.",
+        "creatorQuestions": [
+          "Can we land at $460? Then I'm all in."
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": 460.0,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest! We’re excited to move forward. To align with our budget and ensure a sustainable partnership, let’s settle on $375. This rate includes the 10% commission on sales you’ll drive and the standard perk of one pair of Cloudstride shoes plus a branded sock set. The content will be live by October 10, 2026, as planned. Let me know if this works for you!",
+        "_err": null
+      }
+    }
+  ]
+}

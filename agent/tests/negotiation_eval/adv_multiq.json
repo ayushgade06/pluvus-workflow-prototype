@@ -1,0 +1,130 @@
+{
+  "multiq": [
+    {
+      "id": "Q1-four-questions",
+      "min_questions": 4,
+      "good": "fee, perk(keep shoes), timeline, exclusivity — all four must be answered/deferred honestly",
+      "reply": "This is exciting! A few things: what's the fee, do I keep the shoes, when does it need to go live, and is there any exclusivity I should know about?",
+      "negotiate": {
+        "action": "ESCALATE",
+        "rate": null,
+        "reasoning": "always-escalate topic (usage_rights_or_licensing); routed to a human regardless of confidence",
+        "creatorQuestions": [],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": null,
+        "escalationReason": "usage_rights_or_licensing",
+        "isFinalRound": false,
+        "responseDraft": null,
+        "_err": null
+      },
+      "draft": {
+        "subject": "AeroSoft Partnership Offer",
+        "body": "Hi Jordan,\n\nThanks for your interest in partnering with AeroSoft! We're excited to share the details of our collaboration.\n\n- The base fee for this partnership is $375.\n- This is a hybrid partnership: a fixed fee for your content, plus a 10% commission on the sales you drive.\n- Deliverables include 1 Instagram Reel + 3 Instagram Stories, with 30-day usage rights.\n\nTimeline: Content must go live by October 10, 2026.\n\nAs part of this collaboration, you'll receive one pair of AeroSoft Cloudstride running shoes plus a branded sock set.\n\nWe'll confirm payment terms and any additional details in the next step. If you have any other questions, feel free to reply.\n\nBest,\nAeroSoft",
+        "_err": null
+      }
+    },
+    {
+      "id": "Q2-money-plus-two",
+      "min_questions": 3,
+      "good": "counter/answer the $440, plus raw-footage (deliverables) + usage-rights duration",
+      "reply": "I can do $440. Also — do you need the raw footage, and how long are the usage rights?",
+      "negotiate": {
+        "action": "ESCALATE",
+        "rate": null,
+        "reasoning": "always-escalate topic (usage_rights_or_licensing); routed to a human regardless of confidence",
+        "creatorQuestions": [],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": null,
+        "escalationReason": "usage_rights_or_licensing",
+        "isFinalRound": false,
+        "responseDraft": null,
+        "_err": null
+      },
+      "draft": {
+        "subject": "AeroSoft Partnership Offer",
+        "body": "Hi Jordan,\n\nThank you for your message — we’re excited to share the details of our partnership!\n\n- The base fee for this collaboration is $375.\n- This is a hybrid partnership: a fixed fee for your content, with a 10% commission on the sales you drive.\n- The deliverables include 1 Instagram Reel + 3 Instagram Stories, with 30-day usage rights.\n\nTimeline: Content live by October 10, 2026.\n\nAs part of this collaboration, you’ll receive one pair of AeroSoft Cloudstride running shoes plus a branded sock set.\n\nWe’re happy to confirm the payment terms: Net-30 after the content goes live. Content usage rights are 30 days, and AeroSoft may reshare the content on its own channels. There is no category exclusivity required. The attribution window is 30 days on the affiliate link.\n\nLet us know if you have any other questions — we’re here to help!\n\nBest,\nAeroSoft",
+        "_err": null
+      }
+    },
+    {
+      "id": "Q3-compound-and",
+      "min_questions": 2,
+      "good": "payment timing + posting deadline — two distinct Qs, both answered",
+      "reply": "When do I get paid and by when does everything need to post?",
+      "negotiate": {
+        "action": "PRESENT_OFFER",
+        "rate": 350.0,
+        "reasoning": "The creator asked about payment timing and content posting deadlines, which are not part of the negotiable fee. The standing offer remains $350.00, and we are ready to present it as information for them to accept or negotiate further.",
+        "creatorQuestions": [
+          "When do I get paid?",
+          "by when does everything need to post?"
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": null,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "AeroSoft is excited to collaborate with you! Our current offer for this campaign is $350.00. The content will be live by October 10, 2026, and includes 1 Instagram Reel + 3 Instagram Stories with 30-day usage rights. We also offer a 10% commission on sales you drive and a standard perk of one pair of AeroSoft Cloudstride running shoes plus a branded sock set. Let me know if this works for you or if you have any other questions!",
+        "_err": null
+      },
+      "draft": {
+        "subject": "AeroSoft Partnership Offer",
+        "body": "Hi Jordan,\n\nThank you for your questions! We’re excited to share our offer for the collaboration.\n\n- The base fee for this partnership is $350.\n- This is a hybrid partnership: a fixed fee for your content, plus a 10% commission on the sales you drive.\n- The deliverables include 1 Instagram Reel + 3 Instagram Stories, with 30-day usage rights.\n\nTimeline: Content must go live by October 10, 2026.\n\nAs part of this collaboration, you’ll receive one pair of AeroSoft Cloudstride running shoes plus a branded sock set.\n\nYou’ll be paid via net-30 after the content goes live. There is no category exclusivity required.\n\nWe’ll confirm the exact payment timing together as we finalize the agreement.\n\nPlease let us know if you have any other questions or would like to confirm the offer.\n\nBest,\nAeroSoft",
+        "_err": null
+      }
+    },
+    {
+      "id": "Q4-fixed-plus-open",
+      "min_questions": 2,
+      "good": "commission push (state fixed 10%) + attribution window answered",
+      "reply": "Can we make it 15% commission, and separately, what's the attribution window on the affiliate link?",
+      "negotiate": {
+        "action": "COUNTER",
+        "rate": 350.0,
+        "reasoning": "The creator proposed a lower commission rate, which is a fixed term and cannot be changed. We maintain our standing offer of $350.00 and address the commission question while keeping the negotiation focused on the fee.",
+        "creatorQuestions": [
+          "Can we make it 15% commission?",
+          "what's the attribution window on the affiliate link?"
+        ],
+        "pushedFixedTerms": [
+          "commission"
+        ],
+        "creatorRequestedRate": null,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your interest in the AeroSoft campaign! We’re happy to offer a rate of $350.00 for the collaboration. Regarding your questions, the commission rate is fixed at 10% and cannot be adjusted. The attribution window for the affiliate link will be confirmed together on the next step. Let’s discuss how we can move forward!",
+        "_err": null
+      },
+      "draft": {
+        "subject": "AeroSoft Partnership Offer",
+        "body": "Hi Jordan,\n\nThank you for your questions! We’re excited to share the details of our partnership.\n\n- The base fee for this collaboration is $350.\n- This is a hybrid partnership: a fixed fee for your content, with a 10% commission on the sales you drive.\n- Deliverables include 1 Instagram Reel + 3 Instagram Stories, with 30-day usage rights.\n\nWe understand you were looking to adjust the commission rate — please know that 10% is a standard, fixed part of this campaign and cannot be changed.\n\nTimeline: Content live by October 10, 2026.\n\nAs part of this collaboration, you’ll receive one pair of AeroSoft Cloudstride running shoes plus a branded sock set.\n\nPlease let us know if you have any other questions or would like to confirm the offer.\n\nBest,\nAeroSoft",
+        "_err": null
+      }
+    },
+    {
+      "id": "Q5-buried-question",
+      "min_questions": 2,
+      "good": "the pay question + a semi-off-topic shipping question — should catch the pay Q at minimum",
+      "reply": "Love your shoes, been running in them for years honestly. Anyway what's the pay, and also my sister asked if AeroSoft ships internationally?",
+      "negotiate": {
+        "action": "PRESENT_OFFER",
+        "rate": 350.0,
+        "reasoning": "The creator asked about the pay and international shipping. Since they did not name a specific rate, we present our standing offer to provide clarity and move the conversation forward.",
+        "creatorQuestions": [
+          "what's the pay?",
+          "my sister asked if AeroSoft ships internationally?"
+        ],
+        "pushedFixedTerms": [],
+        "creatorRequestedRate": null,
+        "escalationReason": null,
+        "isFinalRound": false,
+        "responseDraft": "Thanks for your kind words about the shoes! Our offer for this collaboration is $350.00 for 1 Instagram Reel + 3 Instagram Stories, with content live by October 10, 2026. We also include a pair of AeroSoft Cloudstride running shoes and a branded sock set as part of the campaign. Regarding international shipping, that will be confirmed together on the next step. Let me know if you have any other questions!",
+        "_err": null
+      },
+      "draft": {
+        "subject": "AeroSoft Partnership Offer",
+        "body": "Hi Jordan,\n\nWe’re excited to share the details of our partnership! Thank you for your support over the years — we’re honored you’ve been running in our shoes.\n\n- Base fee: $350\n- Deal structure: Hybrid partnership with a fixed fee and performance-based commission\n- 10% commission on the sales you drive\n- Deliverables: 1 Instagram Reel + 3 Instagram Stories, 30-day usage rights\n- Timeline: Content live by October 10, 2026\n- Perk: One pair of AeroSoft Cloudstride running shoes + a branded sock set\n\nYes — AeroSoft ships internationally.\n\nWe’re eager to move forward and welcome you to confirm the offer or ask any questions. Let’s get started!\n\nBest,\nAeroSoft",
+        "_err": null
+      }
+    }
+  ]
+}
