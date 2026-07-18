@@ -9,17 +9,22 @@ expertMode = true
 [userenv]
 
 [userenv.shared]
-AGENT_PROVIDER = "mock"
+AGENT_PROVIDER = "langgraph"
 AGENT_SERVICE_URL = "http://localhost:8000"
 EMAIL_PROVIDER = "mock"
 ENABLE_QUEUE_INJECTION = "false"
-LLM_PROVIDER = "mock"
-NEGOTIATION_PROVIDER = "mock"
+LLM_PROVIDER = "openrouter"
+NEGOTIATION_PROVIDER = "langgraph"
 NODE_ENV = "development"
 PORT = "3001"
 PROCESS_ROLE = "all"
 REDIS_URL = "redis://localhost:6379"
 WORKER_CONCURRENCY = "2"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MAX_RETRIES = "2"
+OPENROUTER_MODEL = "anthropic/claude-opus-4.8"
+OPENROUTER_MODEL_DRAFT = "deepseek/deepseek-chat"
+OPENROUTER_TIMEOUT_SECONDS = "60"
 
 [workflows]
 runButton = "Project"
@@ -36,6 +41,10 @@ args = "Start application"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Backend"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Agent"
 
 [[workflows.workflow]]
 name = "Start application"
@@ -61,6 +70,18 @@ waitForPort = 3001
 [workflows.workflow.metadata]
 outputType = "console"
 
+[[workflows.workflow]]
+name = "Agent"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd agent && uvicorn app.main:app --reload --port 8000"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 3001
 externalPort = 3001
@@ -68,3 +89,7 @@ externalPort = 3001
 [[ports]]
 localPort = 5000
 externalPort = 5000
+
+[[ports]]
+localPort = 6379
+externalPort = 80
