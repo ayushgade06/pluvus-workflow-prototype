@@ -5,3 +5,66 @@ channel = "stable-25_05"
 
 [agent]
 expertMode = true
+
+[userenv]
+
+[userenv.shared]
+AGENT_PROVIDER = "mock"
+AGENT_SERVICE_URL = "http://localhost:8000"
+EMAIL_PROVIDER = "mock"
+ENABLE_QUEUE_INJECTION = "false"
+LLM_PROVIDER = "mock"
+NEGOTIATION_PROVIDER = "mock"
+NODE_ENV = "development"
+PORT = "3001"
+PROCESS_ROLE = "all"
+REDIS_URL = "redis://localhost:6379"
+WORKER_CONCURRENCY = "2"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Backend"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run dev:web"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "Backend"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash -c \"redis-server --port 6379 &>/tmp/redis.log & sleep 1 && npm run dev:server\""
+waitForPort = 3001
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[ports]]
+localPort = 3001
+externalPort = 3001
+
+[[ports]]
+localPort = 5000
+externalPort = 5000
