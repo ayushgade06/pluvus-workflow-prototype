@@ -1,0 +1,189 @@
+# Render Blueprint — Pluvus Workflow Platform
+# ---------------------------------------------------------------------------
+# Deploys all apps EXCEPT the database. Postgres stays on Neon (the server uses
+# the @neondatabase/serverless driver — set DATABASE_URL to a Neon endpoint).
+#
+# This is a STARTER blueprint. Secrets are marked `sync: false` — set them in the
+# Render dashboard, do NOT commit real values. See DEPLOYMENT.md for the full guide.
+#
+# Prereqs before `render blueprint launch`:
+#   1. Apply the §6 Redis code fix (redisConnection must pass password + tls).
+#   2. Run the Neon migrations (DEPLOYMENT.md §4).
+#   3. Have the OpenRouter / Nylas / generated secrets ready.
+# ---------------------------------------------------------------------------
+
+services:
+  # --- Managed Redis (BullMQ queues + scheduler locks) ---------------------
+  - type: keyvalue
+    name: pluvus-redis
+    plan: starter
+    ipAllowList: []          # private-network only
+
+  # --- Agent (Python / FastAPI / LangGraph) — deploy first -----------------
+  - type: web
+    name: pluvus-agent
+    runtime: python
+    rootDir: agent
+    plan: starter
+    buildCommand: pip install -e ".[ai]"
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LLM_PROVIDER
+        value: openrouter
+      - key: NEGOTIATION_STRATEGY
+        value: llm
+      - key: AGENT_ENV
+        value: production
+      - key: OPENROUTER_MODEL
+        value: anthropic/claude-opus-4.8   # ⚠ verify on openrouter.ai/models
+      - key: LLM_MAX_REQUEST_COST_USD
+        value: "0.50"
+      - key: LLM_DAILY_SPEND_ALERT_USD
+        value: "25"
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AGENT_API_KEY            # must match the server's AGENT_API_KEY
+        sync: false
+
+  # --- Server: API (public HTTP + creator-facing pages) --------------------
+  - type: web
+    name: pluvus-api
+    runtime: docker
+    dockerfilePath: server/Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: PROCESS_ROLE
+        value: api
+      - key: NODE_ENV
+        value: production
+      - key: AGENT_PROVIDER
+        value: langgraph
+      - key: NEGOTIATION_PROVIDER
+        value: langgraph
+      - key: EMAIL_PROVIDER
+        value: nylas
+      - key: AGENT_SERVICE_URL
+        fromService: { type: web, name: pluvus-agent, property: hostport }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: pluvus-redis, property: connectionString }
+      # Secrets (set in dashboard):
+      - key: DATABASE_URL            # Neon pooled connection string
+        sync: false
+      - key: ATTRIBUTION_WEBHOOK_SECRET
+        sync: false
+      - key: OPERATOR_API_KEY
+        sync: false
+      - key: AGENT_API_KEY
+        sync: false
+      - key: NYLAS_API_KEY
+        sync: false
+      - key: NYLAS_GRANT_ID
+        sync: false
+      - key: NYLAS_WEBHOOK_SECRET
+        sync: false
+      # Set AFTER first deploy to this service's own public URL, then redeploy:
+      - key: PAYMENT_BASE_URL
+        sync: false
+
+  # --- Server: Worker fleet (scale horizontally) ---------------------------
+  - type: worker
+    name: pluvus-worker
+    runtime: docker
+    dockerfilePath: server/Dockerfile
+    dockerContext: .
+    plan: starter
+    envVars:
+      - key: PROCESS_ROLE
+        value: worker
+      - key: NODE_ENV
+        value: production
+      - key: WORKER_CONCURRENCY
+        value: "5"
+      - key: AGENT_PROVIDER
+        value: langgraph
+      - key: NEGOTIATION_PROVIDER
+        value: langgraph
+      - key: EMAIL_PROVIDER
+        value: nylas
+      - key: AGENT_SERVICE_URL
+        fromService: { type: web, name: pluvus-agent, property: hostport }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: pluvus-redis, property: connectionString }
+      - key: DATABASE_URL
+        sync: false
+      - key: ATTRIBUTION_WEBHOOK_SECRET
+        sync: false
+      - key: OPERATOR_API_KEY
+        sync: false
+      - key: AGENT_API_KEY
+        sync: false
+      - key: NYLAS_API_KEY
+        sync: false
+      - key: NYLAS_GRANT_ID
+        sync: false
+      - key: NYLAS_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_BASE_URL
+        sync: false
+
+  # --- Server: Scheduler (SINGLE leader — never scale > 1) -----------------
+  - type: worker
+    name: pluvus-scheduler
+    runtime: docker
+    dockerfilePath: server/Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1          # ⚠ exactly one — two schedulers double-fire the poller
+    envVars:
+      - key: PROCESS_ROLE
+        value: scheduler
+      - key: NODE_ENV
+        value: production
+      - key: SCHEDULER_LEADER_TTL_MS
+        value: "90000"
+      - key: AGENT_PROVIDER
+        value: langgraph
+      - key: NEGOTIATION_PROVIDER
+        value: langgraph
+      - key: EMAIL_PROVIDER
+        value: nylas
+      - key: AGENT_SERVICE_URL
+        fromService: { type: web, name: pluvus-agent, property: hostport }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: pluvus-redis, property: connectionString }
+      - key: DATABASE_URL
+        sync: false
+      - key: ATTRIBUTION_WEBHOOK_SECRET
+        sync: false
+      - key: OPERATOR_API_KEY
+        sync: false
+      - key: AGENT_API_KEY
+        sync: false
+      - key: NYLAS_API_KEY
+        sync: false
+      - key: NYLAS_GRANT_ID
+        sync: false
+      - key: NYLAS_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMENT_BASE_URL
+        sync: false
+
+  # --- Web dashboard (static SPA) ------------------------------------------
+  - type: web
+    name: pluvus-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    # The dev Vite proxy does not exist in a static build. Route /api to the API
+    # host so the SPA can reach it (or thread a VITE_API_BASE_URL into web/src/api).
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://pluvus-api.onrender.com/*   # ← replace with your API host
+    envVars:
+      - key: VITE_OPERATOR_API_KEY    # must equal the server's OPERATOR_API_KEY
+        sync: false

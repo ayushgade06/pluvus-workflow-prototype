@@ -10,6 +10,11 @@ The platform is a three-service monorepo:
 | `server/` | Express + TypeScript (ESM) + Drizzle/PostgreSQL (Neon) + BullMQ/Redis | REST API, state-machine execution engine, workers, scheduler, email + hosted payout form |
 | `agent/` | FastAPI + LangGraph (Ollama / Anthropic / DeepSeek / OpenRouter) | AI service: reply classification, negotiation decisions, email drafting, brief parsing |
 
+> **🚀 Deploying this?** See **[`DEPLOYMENT.md`](./DEPLOYMENT.md)** — the full production
+> deployment plan: what runs where (Render + Neon + Redis + Nylas + OpenRouter), every key
+> required, the deploy order, and the go-live checklist. A starter Render Blueprint is at
+> [`render.yaml`](./render.yaml).
+
 ---
 
 ## Table of Contents
