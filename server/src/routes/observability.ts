@@ -22,6 +22,7 @@ import {
   getTimeline,
   getLogs,
   getLlmUsage,
+  getAlertsReport,
 } from "../observability/repository.js";
 import { WORKFLOW_STATE_ORDER, TERMINAL_STATES, WAITING_STATES } from "../observability/dto.js";
 
@@ -99,6 +100,24 @@ router.get("/metrics", async (_req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: "worker_metrics_failed", message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /observability/alerts  (P9)
+// ---------------------------------------------------------------------------
+// Single-poll operator alert roll-up: queue failures, MANUAL_REVIEW parks,
+// FAILED brand/escalation emails, LLM daily-spend breach, and stuck instances,
+// each judged to a severity. `status` is "ok" when nothing fires, else the most
+// severe firing level. Point an uptime monitor / cron `curl` at this and page on
+// status != "ok". Gated with the rest of /observability (X-Operator-Key).
+
+router.get("/alerts", async (_req, res) => {
+  try {
+    res.json(await getAlertsReport());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "alerts_failed", message });
   }
 });
 

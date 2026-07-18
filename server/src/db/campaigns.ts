@@ -1,5 +1,5 @@
 import { count, desc, eq, inArray } from "drizzle-orm";
-import { db } from "./drizzle.js";
+import { db, type DbTx } from "./drizzle.js";
 import {
   brandNotifications,
   campaigns,
@@ -9,6 +9,7 @@ import {
   executionInstances,
   messages,
   obligations,
+  outboxJobs,
   partnerships,
   paymentInfo,
   payouts,
@@ -59,6 +60,64 @@ export async function updateCampaign(
   return updated;
 }
 
+/**
+ * Delete every row that hangs off the given execution instances, then the
+ * instances themselves — in foreign-key-safe order — inside the caller's
+ * transaction. Extracted from deleteCampaign so the P8 harness-cleanup script
+ * (scripts/cleanHarnessData.ts) purges test instances through the EXACT same
+ * ordering; keeping one implementation means the two can't drift and re-open
+ * the foreign-key violations this ordering was written to avoid.
+ *
+ * No-op when `instanceIds` is empty. Order (children → parents):
+ *   Event, Message, BrandNotification, PaymentInfo  (direct instanceId FK)
+ *   → Click/Conversion/Obligation/Payout            (via the instance's Partnership)
+ *   → Partnership → ExecutionInstance
+ */
+export async function deleteInstanceCascade(
+  tx: DbTx,
+  instanceIds: string[],
+): Promise<void> {
+  if (instanceIds.length === 0) return;
+  // Delete ALL rows that reference an instance before the instances themselves,
+  // or the executionInstances delete hits a foreign-key violation. Besides
+  // Event/Message, later phases added BrandNotification and PaymentInfo — each
+  // with an instanceId FK — so they must be cleaned up here too (omitting them
+  // was what broke campaign deletion).
+  await tx.delete(events).where(inArray(events.instanceId, instanceIds));
+  await tx.delete(messages).where(inArray(messages.instanceId, instanceIds));
+  await tx.delete(outboxJobs).where(inArray(outboxJobs.instanceId, instanceIds));
+  await tx
+    .delete(brandNotifications)
+    .where(inArray(brandNotifications.instanceId, instanceIds));
+  await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
+  // Attribution/payout ledger (Phase 2–4) hangs off the instance's Partnership,
+  // not the instance directly. clicks/conversions/obligations/payouts all carry
+  // a partnershipId FK, so they MUST be deleted before the partnerships
+  // themselves or the partnerships DELETE hits a foreign-key violation (this is
+  // what 500'd campaign deletion once a hybrid run completed and minted a
+  // Partnership + fee Obligation). Scope by the partnership ids belonging to
+  // these instances.
+  const partnershipRows = await tx
+    .select({ id: partnerships.id })
+    .from(partnerships)
+    .where(inArray(partnerships.instanceId, instanceIds));
+  const partnershipIds = partnershipRows.map((p) => p.id);
+  if (partnershipIds.length > 0) {
+    await tx.delete(clicks).where(inArray(clicks.partnershipId, partnershipIds));
+    await tx
+      .delete(conversions)
+      .where(inArray(conversions.partnershipId, partnershipIds));
+    await tx
+      .delete(obligations)
+      .where(inArray(obligations.partnershipId, partnershipIds));
+    await tx.delete(payouts).where(inArray(payouts.partnershipId, partnershipIds));
+  }
+  await tx.delete(partnerships).where(inArray(partnerships.instanceId, instanceIds));
+  await tx
+    .delete(executionInstances)
+    .where(inArray(executionInstances.id, instanceIds));
+}
+
 export async function deleteCampaign(id: string): Promise<void> {
   // W-7: the whole cascade runs in ONE transaction. Previously each DELETE was a
   // separate statement, so a crash partway through left orphaned rows (e.g.
@@ -90,47 +149,7 @@ export async function deleteCampaign(id: string): Promise<void> {
           : [];
       const instanceIds = instanceRows.map((i) => i.id);
 
-      if (instanceIds.length > 0) {
-        // Delete ALL rows that reference an instance before the instances
-        // themselves, or the executionInstances delete hits a foreign-key
-        // violation. Besides Event/Message, later phases added BrandNotification
-        // and PaymentInfo — each with an instanceId FK — so they must be cleaned
-        // up here too (omitting them was what broke campaign deletion).
-        await tx.delete(events).where(inArray(events.instanceId, instanceIds));
-        await tx.delete(messages).where(inArray(messages.instanceId, instanceIds));
-        await tx
-          .delete(brandNotifications)
-          .where(inArray(brandNotifications.instanceId, instanceIds));
-        await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
-        // Attribution/payout ledger (Phase 2–4) hangs off the instance's
-        // Partnership, not the instance directly. clicks/conversions/obligations/
-        // payouts all carry a partnershipId FK, so they MUST be deleted before the
-        // partnerships themselves or the partnerships DELETE hits a foreign-key
-        // violation (this is what 500'd campaign deletion once a hybrid run
-        // completed and minted a Partnership + fee Obligation). Scope by the
-        // partnership ids belonging to these instances.
-        const partnershipRows = await tx
-          .select({ id: partnerships.id })
-          .from(partnerships)
-          .where(inArray(partnerships.instanceId, instanceIds));
-        const partnershipIds = partnershipRows.map((p) => p.id);
-        if (partnershipIds.length > 0) {
-          await tx.delete(clicks).where(inArray(clicks.partnershipId, partnershipIds));
-          await tx
-            .delete(conversions)
-            .where(inArray(conversions.partnershipId, partnershipIds));
-          await tx
-            .delete(obligations)
-            .where(inArray(obligations.partnershipId, partnershipIds));
-          await tx.delete(payouts).where(inArray(payouts.partnershipId, partnershipIds));
-        }
-        await tx
-          .delete(partnerships)
-          .where(inArray(partnerships.instanceId, instanceIds));
-        await tx
-          .delete(executionInstances)
-          .where(inArray(executionInstances.id, instanceIds));
-      }
+      await deleteInstanceCascade(tx, instanceIds);
 
       if (versionIds.length > 0) {
         await tx

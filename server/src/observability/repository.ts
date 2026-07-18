@@ -10,6 +10,7 @@
 import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db } from "../db/drizzle.js";
 import {
+  brandNotifications,
   creators,
   events as eventsTable,
   executionInstances,
@@ -25,6 +26,8 @@ import {
   type LlmCallRole,
   type Message,
 } from "../db/schema.js";
+import { collectWorkerMetrics } from "../workers/workerMetrics.js";
+import { buildAlertsReport, type AlertInputs, type AlertsReportDTO } from "./alerts.js";
 import {
   WORKFLOW_STATE_ORDER,
   TERMINAL_STATES,
@@ -850,4 +853,62 @@ export async function getLlmUsage(): Promise<LlmUsageSummaryDTO> {
     spendGuard: computeSpendGuard(last24h.estCostUsd, process.env["LLM_DAILY_SPEND_ALERT_USD"]),
     generatedAt: new Date(now).toISOString(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// P9 — operator alerts aggregator (GET /observability/alerts)
+// ---------------------------------------------------------------------------
+// Gather every "the operator should act now" signal in ONE read so an uptime
+// monitor / cron curl can poll a single endpoint and page a human. The judging
+// (thresholds + severity) lives in the pure evaluateAlerts (alerts.ts); this
+// only collects the live numbers to feed it.
+
+/** Count instances currently parked in MANUAL_REVIEW (the human-action state). */
+async function countManualReview(): Promise<number> {
+  const rows = await db
+    .select({ n: count() })
+    .from(executionInstances)
+    .where(eq(executionInstances.currentState, "MANUAL_REVIEW"));
+  return rows[0]?.n ?? 0;
+}
+
+/** Count brand/escalation notifications whose send FAILED (operator not reached). */
+async function countFailedNotifications(): Promise<number> {
+  const rows = await db
+    .select({ n: count() })
+    .from(brandNotifications)
+    .where(eq(brandNotifications.status, "FAILED"));
+  return rows[0]?.n ?? 0;
+}
+
+export async function getAlertsReport(): Promise<AlertsReportDTO> {
+  const now = Date.now();
+  // Reuse the existing collectors: worker metrics gives queue failed counts +
+  // stuck total, getLlmUsage gives the spend-guard verdict. Run in parallel.
+  const [metrics, llm, manualReviewCount, failedNotificationCount] = await Promise.all([
+    collectWorkerMetrics(now),
+    getLlmUsage(),
+    countManualReview(),
+    countFailedNotifications(),
+  ]);
+
+  const queueFailedByName: Record<string, number> = {};
+  let queueFailedTotal = 0;
+  for (const q of metrics.queues) {
+    queueFailedByName[q.queue] = q.failed;
+    queueFailedTotal += q.failed;
+  }
+
+  const inputs: AlertInputs = {
+    queueFailedTotal,
+    queueFailedByName,
+    manualReviewCount,
+    failedNotificationCount,
+    stuckInstanceCount: metrics.stuckTotal,
+    spendExceeded: llm.spendGuard.exceeded,
+    spendUsd: llm.spendGuard.spentUsd,
+    spendThresholdUsd: llm.spendGuard.thresholdUsd,
+  };
+
+  return buildAlertsReport(inputs, new Date(now).toISOString());
 }

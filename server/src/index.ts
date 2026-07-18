@@ -2,9 +2,16 @@ import "dotenv/config";
 import type { Server } from "node:http";
 import { createApp } from "./app.js";
 import { assertRequiredSecrets } from "./config/requiredSecrets.js";
+import { initLogSink } from "./observability/logSink.js";
 import { startWorkers, stopWorkers } from "./workers/index.js";
 import { startScheduler, stopScheduler } from "./scheduler/scheduler.js";
 import { processRole, runsApi, runsWorkers, runsScheduler, type ProcessRole } from "./processRole.js";
+
+// P9: mirror console output to a file when LOG_FILE / LOG_DIR is set, so the live
+// log is readable even when this runs detached / behind a tunnel. No-op when
+// unset (stdout-only, unchanged). Installed FIRST so every startup line is
+// captured too.
+initLogSink();
 
 // ---------------------------------------------------------------------------
 // Unified entrypoint (HARD-A1)
