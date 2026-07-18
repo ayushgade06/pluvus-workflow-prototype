@@ -262,6 +262,194 @@ def test_guards_changed_decision_helper():
     assert _guards_changed_decision("ACCEPT", 900, escalated) is True  # action changed
 
 
+# ---------------------------------------------------------------------------
+# F-M8/F-M13 — action-consistent `reasoning`. The stored reasoning is the audit
+# line shown in the Manual Queue; it must NEVER contradict the recorded action.
+# On a terminal REJECT/ESCALATE or any guard-altered decision we overwrite the
+# model's (possibly contradictory) reasoning with a deterministic one.
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_overwritten_on_escalate_even_if_model_describes_counter(monkeypatch):
+    # F-M8: final-round over-ceiling firm ask → guard ESCALATES, but the model's
+    # reasoning says "we counter at $450". The stored reasoning must describe the
+    # ESCALATE and must not name a number.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 650, '
+         '"response": "Let us secure this at $450.", '
+         '"reasoning": "Since this is the final round, we counter at our standing offer of $450 to secure the collaboration."}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req("$650 flat, won't go under. Final answer.", round_=4, max_rounds=5))
+    assert resp.action == "ESCALATE"
+    assert "counter" not in resp.reasoning.lower()
+    assert "450" not in resp.reasoning
+    assert "human" in resp.reasoning.lower()
+
+
+def test_reasoning_overwritten_on_commission_for_fee_swap_accept(monkeypatch):
+    # F-M13: creator says "20% commission and I'll take $250"; $250 ≤ standing $350
+    # → ACCEPT@250 (budget-optimal). The model's reasoning contradicts it ("we
+    # remain firm on $350"). The guard converts the model's COUNTER to ACCEPT (the
+    # anti-over-pay guard on an at/below-offer ask), so the decision is ALTERED and
+    # the reasoning is overwritten to name the real ACCEPT@250.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 350, '
+         '"response": "We remain firm at $350.", '
+         '"reasoning": "We remain firm on our $350.00 offer and invite them to accept it.", '
+         '"creatorRateMentioned": 250, "pushedFixedTerms": ["commission"]}'],
+    )
+    resp = neg_mod._langgraph_negotiate(
+        _req("Bump my commission to 20% and I'll take just $250 flat.", round_=1, max_rounds=4)
+    )
+    assert resp.action == "ACCEPT"
+    assert resp.proposedTerms == {"rate": 250.0}
+    # Reasoning must reflect the ACCEPT@250, not "remain firm on $350".
+    assert "350" not in resp.reasoning
+    assert "250" in resp.reasoning
+
+
+def test_reasoning_kept_when_decision_unaltered(monkeypatch):
+    # When the guards leave an in-band COUNTER untouched, the model's own reasoning
+    # is preserved (it matches the action).
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "COUNTER", "rate": 420, "response": "How about $420?", "reasoning": "meet in the middle"}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req())
+    assert resp.action == "COUNTER"
+    assert resp.reasoning == "meet in the middle"
+
+
+def test_reasoning_never_leaks_number_on_reject(monkeypatch):
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "REJECT", "rate": null, "response": "No worries!", '
+         '"reasoning": "We could have gone to $500 but they declined."}'],
+    )
+    resp = neg_mod._langgraph_negotiate(_req("Not interested, thanks."))
+    assert resp.action == "REJECT"
+    assert "500" not in resp.reasoning
+    assert "declin" in resp.reasoning.lower() or "closing" in resp.reasoning.lower()
+
+
+def test_deterministic_reasoning_helper():
+    from app.routes.negotiate import NegotiationDecision, _deterministic_reasoning
+
+    esc = _deterministic_reasoning(NegotiationDecision(action="ESCALATE", proposed_rate=None))
+    assert "human" in esc.lower()
+    esc2 = _deterministic_reasoning(
+        NegotiationDecision(action="ESCALATE", proposed_rate=None), escalation_reason="usage_rights_or_licensing"
+    )
+    assert "usage rights" in esc2.lower()
+    acc = _deterministic_reasoning(NegotiationDecision(action="ACCEPT", proposed_rate=250.0))
+    assert "250" in acc
+    rej = _deterministic_reasoning(NegotiationDecision(action="REJECT", proposed_rate=None))
+    assert "declin" in rej.lower()
+
+
+# ---------------------------------------------------------------------------
+# F-M3 — perk-push extraction backstop: the creator's own words inject `perk`
+# when the model under-extracted it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "$380 works. Oh and can you throw in a second pair of shoes to seal it?",
+        "Sounds good — could I get an extra pair too?",
+        "Deal, but toss in another pair of shoes.",
+        "Yes, and send a signing-bonus pair up front.",
+        "Can you add two pairs on top of the perk?",
+    ],
+)
+def test_fm3_augment_injects_perk_from_reply(reply):
+    assert "perk" in neg_mod._augment_pushed_terms_from_reply([], reply)
+
+
+def test_fm3_augment_does_not_duplicate_or_touch_other_terms():
+    # Already tagged → unchanged; other terms preserved.
+    assert neg_mod._augment_pushed_terms_from_reply(["perk"], "throw in a second pair") == ["perk"]
+    out = neg_mod._augment_pushed_terms_from_reply(["commission"], "and an extra pair of shoes")
+    assert out == ["commission", "perk"]
+
+
+def test_fm3_augment_no_false_positive_on_bare_reward_mention():
+    # A plain mention of the reward (no CHANGE requested) must not inject perk.
+    assert neg_mod._augment_pushed_terms_from_reply([], "Love that the shoes come with the deal!") == []
+    assert neg_mod._augment_pushed_terms_from_reply([], "What's the fee?") == []
+
+
+def test_fm3_end_to_end_injects_perk(monkeypatch):
+    # M3: model held the fee (ACCEPT 380) but returned pushedFixedTerms=[]. The
+    # backstop injects perk from "second pair of shoes".
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "ACCEPT", "rate": 380, "response": "Deal at $380!", '
+         '"reasoning": "met our terms", "creatorRateMentioned": 380, "pushedFixedTerms": []}'],
+    )
+    req = _req(reply="$380 works. Oh and can you throw in a second pair of shoes?",
+               floor=100, ceiling=500, round_=2, max_rounds=4)
+    resp = neg_mod._langgraph_negotiate(req)
+    assert "perk" in resp.pushedFixedTerms
+
+
+# ---------------------------------------------------------------------------
+# F-T2 — a bare "yes" with no creator rate and no real prior offer must become
+# PRESENT_OFFER, never a fabricated ACCEPT at a seeded number.
+# ---------------------------------------------------------------------------
+
+
+def test_ft2_bare_yes_no_prior_offer_becomes_present_offer(monkeypatch):
+    # Model "accepts" the seeded currentOffer 350 on a bare "I'm in!" with NO
+    # history. There is no real offer to accept → force PRESENT_OFFER.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "ACCEPT", "rate": 350, "response": "Great, deal at $350!", '
+         '"reasoning": "they said yes", "creatorRateMentioned": null}'],
+    )
+    req = _req(reply="Sounds good, I'm in!", floor=100, ceiling=500, round_=0, max_rounds=4, history=[])
+    # seed a non-zero currentOffer the model latched onto
+    req.currentOffer = neg_mod.NegotiationTerm(rate=350)
+    resp = neg_mod._langgraph_negotiate(req)
+    assert resp.action == "PRESENT_OFFER"
+    assert resp.proposedTerms is not None
+    # The pre-guard "Deal at $350!" email must be dropped (action changed).
+    assert resp.responseDraft is None
+
+
+def test_ft2_bare_yes_WITH_real_prior_offer_still_accepts(monkeypatch):
+    # When a REAL offer was already presented (a PRESENT_OFFER turn in history), a
+    # bare "yes" is a genuine acceptance of that number — F-T2 must NOT fire.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "ACCEPT", "rate": 350, "response": "Locking it in at $350!", '
+         '"reasoning": "they accepted our presented offer", "creatorRateMentioned": null}'],
+    )
+    hist = [neg_mod.NegotiationHistoryEntry(round=0, action="PRESENT_OFFER",
+                                            terms=neg_mod.NegotiationTerm(rate=350))]
+    req = _req(reply="Yes, let's do it!", floor=100, ceiling=500, round_=1, max_rounds=4, history=hist)
+    resp = neg_mod._langgraph_negotiate(req)
+    assert resp.action == "ACCEPT"
+    assert resp.proposedTerms == {"rate": 350.0}
+
+
+def test_ft2_does_not_fire_when_creator_named_a_rate(monkeypatch):
+    # If the creator DID name a number, an ACCEPT is legitimate even with no
+    # history — F-T2 only guards the bare "yes with no number" case.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "ACCEPT", "rate": 300, "response": "Deal at $300!", '
+         '"reasoning": "met our terms", "creatorRateMentioned": 300}'],
+    )
+    req = _req(reply="I'll take $300.", floor=100, ceiling=500, round_=0, max_rounds=4, history=[])
+    resp = neg_mod._langgraph_negotiate(req)
+    assert resp.action == "ACCEPT"
+    assert resp.proposedTerms == {"rate": 300.0}
+
+
 def test_llm_strategy_guards_over_ceiling_acceptance(monkeypatch):
     # A rogue model tries to ACCEPT above the ceiling → guarded to ESCALATE.
     _patch_llm(
