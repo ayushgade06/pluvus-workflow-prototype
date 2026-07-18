@@ -10,6 +10,11 @@
 export interface BullMQConnection {
   host: string;
   port: number;
+  // Explicit `| undefined` (not just `?`) so these can be assigned undefined
+  // under exactOptionalPropertyTypes — local plaintext Redis leaves them unset.
+  username?: string | undefined;
+  password?: string | undefined;
+  tls?: Record<string, unknown> | undefined;
   maxRetriesPerRequest: null;
   enableReadyCheck: boolean;
 }
@@ -21,6 +26,12 @@ export function redisConnection(): BullMQConnection {
     return {
       host: u.hostname || "127.0.0.1",
       port: u.port ? Number(u.port) : 6379,
+      // Managed Redis (Upstash, Redis Cloud, Render Key Value) carries auth in the
+      // URL and the TLS endpoint uses the rediss:// scheme. Local plaintext Redis
+      // has neither, so both stay undefined for redis://localhost.
+      username: u.username || undefined,
+      password: u.password || undefined,
+      tls: u.protocol === "rediss:" ? {} : undefined,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     };

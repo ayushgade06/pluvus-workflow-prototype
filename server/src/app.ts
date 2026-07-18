@@ -1,5 +1,8 @@
 import express from "express";
 import type { Express } from "express";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { db } from "./db/drizzle.js";
 import queuesRouter from "./routes/queues.js";
@@ -99,6 +102,44 @@ export function createApp(): Express {
   // (GET renders, POST mutates — I-5). Token-gated; must reach creators with no
   // operator key. Distinct from the operator /payouts router above.
   app.use("/payout", payoutConfirmRouter);
+
+  // -------------------------------------------------------------------------
+  // Static SPA (single-origin deploy) — serve the built dashboard.
+  // -------------------------------------------------------------------------
+  // On Replit (single Reserved VM) the web/ SPA is built to web/dist and served
+  // from THIS server so `/api/*` is same-origin (the SPA's client uses a relative
+  // /api base — see web/src/api/client.ts). Mounted LAST so every API, webhook,
+  // and creator magic-link route above wins; only unmatched GETs fall through to
+  // the SPA. Opt-in by the dist dir existing: absent in local dev (Vite serves
+  // the SPA on its own port) and in a split deploy → this whole block is a no-op.
+  const webDist =
+    process.env["WEB_DIST_DIR"] ??
+    resolve(fileURLToPath(new URL(".", import.meta.url)), "../../web/dist");
+  if (existsSync(webDist)) {
+    // The SPA's API clients use a relative "/api/..." base (web/src/api/*), but
+    // the operator routers above are mounted at their bare paths. Re-mount the
+    // operator API under /api so same-origin SPA calls resolve. Same routers, same
+    // requireOperatorKey gate — only the URL prefix differs. (These are the 8
+    // prefixes the web build actually calls; the bare mounts above still serve any
+    // non-browser client.)
+    const apiRouter = express.Router();
+    apiRouter.use("/observability", requireOperatorKey, observabilityRouter);
+    apiRouter.use("/campaigns", requireOperatorKey, campaignsRouter);
+    apiRouter.use("/workflows", requireOperatorKey, workflowsRouter);
+    apiRouter.use("/manual-queue", requireOperatorKey, manualQueueRouter);
+    apiRouter.use("/creators", requireOperatorKey, creatorsRouter);
+    apiRouter.use("/uploads", requireOperatorKey, uploadsRouter);
+    apiRouter.use("/partnerships", requireOperatorKey, partnershipsRouter);
+    apiRouter.use("/payouts", requireOperatorKey, payoutsRouter);
+    app.use("/api", apiRouter);
+
+    app.use(express.static(webDist));
+    // SPA history fallback: any other GET that isn't an API/asset returns index.html.
+    app.get("*", (req, res, next) => {
+      if (req.method !== "GET") return next();
+      res.sendFile(resolve(webDist, "index.html"));
+    });
+  }
 
   return app;
 }

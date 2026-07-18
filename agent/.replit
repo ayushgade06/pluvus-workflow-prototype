@@ -1,0 +1,17 @@
+# Replit config — Pluvus Agent (Python / FastAPI / LangGraph)
+# Deploy as a Reserved VM (always-on). See ../DEPLOYMENT.md §7a.
+# Secrets (OPENROUTER_API_KEY, AGENT_API_KEY, AGENT_ENV=production, …) go in the
+# Repl's Secrets pane — never commit them.
+
+run = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+entrypoint = "app/main.py"
+modules = ["python-3.11"]
+
+[deployment]
+deploymentTarget = "vm"          # Reserved VM — the server calls this synchronously
+build = ["pip", "install", "-e", ".[ai]"]
+run = ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
+
+[[ports]]
+localPort = 8000
+externalPort = 80

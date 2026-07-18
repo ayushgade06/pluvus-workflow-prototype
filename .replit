@@ -1,0 +1,28 @@
+# Replit config — Pluvus Server Repl (primary app). See DEPLOYMENT.md §7b.
+#
+# Import the WHOLE repo (it's an npm workspace) and build from the root so
+# @pluvus/server's local deps resolve. Runs PROCESS_ROLE=all: the HTTP API, the
+# BullMQ worker, and the single scheduler poller in ONE always-on process.
+# Keep this to ONE deployment — a second copy would double-fire the 30s poller.
+#
+# The build also builds the dashboard (web/dist) so the server serves it same-origin
+# (§7c). VITE_OPERATOR_API_KEY must be in the deploy env at BUILD time so the SPA
+# bakes it in. Other secrets (DATABASE_URL, REDIS_URL, OPERATOR_API_KEY,
+# ATTRIBUTION_WEBHOOK_SECRET, AGENT_SERVICE_URL, AGENT_API_KEY, NYLAS_*,
+# PAYMENT_BASE_URL, LLM_DAILY_SPEND_ALERT_USD, …) go in the Secrets pane.
+
+run = "node server/dist/index.js"
+modules = ["nodejs-20"]
+
+[env]
+PROCESS_ROLE = "all"
+NODE_ENV = "production"
+
+[deployment]
+deploymentTarget = "vm"          # Reserved VM — scheduler + workers must stay always-on
+build = ["sh", "-c", "npm ci && npm --workspace @pluvus/web run build && npm --workspace @pluvus/server run build"]
+run = ["node", "server/dist/index.js"]
+
+[[ports]]
+localPort = 3001
+externalPort = 80
