@@ -28,7 +28,6 @@ const full = () =>
     commissionRate: 15,
     deliverables: "2 Reels + 1 Story",
     timeline: "Content live by July 20, 2026",
-    referralLink: "https://example.com/referral/creator123",
     creatorNotes: "Please tag @pluvus in your first story.",
   });
 
@@ -80,7 +79,6 @@ test("fee falls back to 'the agreed fee' and commission to 'None' when absent", 
     creatorName: "Ada",
     brandName: "Pluvus",
     formLink: FORM_LINK,
-    referralLink: "",
     creatorNotes: "",
   });
   assert.match(body, /• Fixed Fee: the agreed fee/);
@@ -94,22 +92,12 @@ test("body includes the secure payout form link verbatim", () => {
   assert.ok(body.includes(FORM_LINK));
 });
 
-// ── Referral link ────────────────────────────────────────────────────────────
-test("body includes the referral link verbatim under a label when configured", () => {
-  const { body } = full();
-  assert.match(body, /Your referral link:/);
-  assert.ok(body.includes("https://example.com/referral/creator123"));
-});
-
-test("body omits the referral section entirely when no link is configured", () => {
-  const { body } = renderContentBriefEmail({
-    creatorName: "Ada",
-    brandName: "Pluvus",
-    formLink: FORM_LINK,
-    referralLink: "",
-    creatorNotes: "",
-  });
-  assert.doesNotMatch(body, /Your referral link:/);
+// ── Referral link (removed) ──────────────────────────────────────────────────
+// The manual referral field was removed: attribution mints a UNIQUE per-creator
+// tracking link (partnership.ts), delivered in the welcome email. This email must
+// no longer render any "referral link" section.
+test("body never renders a referral-link section", () => {
+  assert.doesNotMatch(full().body, /referral link/i);
 });
 
 // ── Creator notes ────────────────────────────────────────────────────────────
@@ -123,7 +111,6 @@ test("body omits notes cleanly when none are provided (no empty gap markers)", (
     creatorName: "Ada",
     brandName: "Pluvus",
     formLink: FORM_LINK,
-    referralLink: "https://x.test/r/1",
     creatorNotes: "   ",
   });
   // No stray blank paragraph (triple newline) where the notes would have been.
@@ -137,7 +124,6 @@ test("body renders the reward bullet when a rewardDescription is provided", () =
     creatorName: "Ada",
     brandName: "Pluvus",
     formLink: FORM_LINK,
-    referralLink: "",
     creatorNotes: "",
     rewardDescription: "a free pair of our running shoes",
   });

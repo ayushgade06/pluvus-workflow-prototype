@@ -31,13 +31,18 @@ export interface FollowUpConfig {
   intervalUnit: "seconds" | "minutes" | "hours" | "days";
   maxCount: number;
   bodyTemplate: string;
-  stopOnReply: boolean;
+  // NOTE: no stopOnReply field. Follow-ups ALWAYS stop when the creator replies
+  // — that's hardcoded in the runtime (an inbound reply clears the follow-up
+  // dueAt), never read from config. The old toggle was a no-op and was removed.
 }
 
-export interface ReplyDetectionConfig {
-  lowConfidenceThreshold: number;
-  manualReviewOnLowConfidence: boolean;
-}
+// Reply Detection has NO configurable fields. The classifier's low-confidence
+// threshold is a fixed engine constant (0.50) and low-confidence replies always
+// route to Manual Review — neither was ever read from node config. The former
+// lowConfidenceThreshold / manualReviewOnLowConfidence fields were dead and were
+// removed; the type is kept (empty) so the NodeConfig union and node identity
+// stay stable.
+export type ReplyDetectionConfig = Record<string, never>;
 
 export interface NegotiationConfig {
   /**
@@ -55,7 +60,9 @@ export interface NegotiationConfig {
    */
   maxBudget: number;
   maxRounds: number;
-  approvalMode: "auto" | "manual";
+  // NOTE: no approvalMode field. The engine always auto-accepts within budget;
+  // the old "manual — human approves final terms" option was never read, so it
+  // promised a human gate that didn't exist. The control + field were removed.
   commissionRate?: number;
   /**
    * Phase C (#12): merchant tolerance ABOVE the max budget, as a percent. 0 (or
@@ -86,19 +93,21 @@ export interface PaymentInfoConfig {
 
 // Content Brief is the merged post-negotiation node: on ACCEPTED it sends ONE
 // email with the finalized offer (fee/commission/deliverables/timeline), a secure
-// payout-form link, and the campaign brief (PDF + referral link + optional notes),
-// then waits for the creator to submit the form. The brand configures the brief
-// fields in the builder before launch; the offer fields are stamped from the
-// campaign / negotiation config at save/publish (like the legacy Reward Setup
-// node). Only the uploaded PDF's stored reference is persisted — never the bytes;
-// the original filename is kept for display + the attachment.
+// payout-form link, and the campaign brief (PDF + optional notes), then waits for
+// the creator to submit the form. The brand configures the brief fields in the
+// builder before launch; the offer fields are stamped from the campaign /
+// negotiation config at save/publish (like the legacy Reward Setup node). Only
+// the uploaded PDF's stored reference is persisted — never the bytes; the
+// original filename is kept for display + the attachment.
+//
+// NOTE: there is no manual referral-link field. Attribution mints a UNIQUE
+// per-creator tracking link (server: partnership.ts) delivered in the welcome
+// email; a static brand-typed link here would be redundant and track nothing.
 export interface ContentBriefConfig {
   /** Stored reference for the uploaded Campaign Brief PDF (required to launch). */
   briefFileRef?: string;
   /** Original filename of the uploaded PDF, for display + the email attachment. */
   briefFileName?: string;
-  /** Optional referral link included in the email body. */
-  referralLink?: string;
   /** Optional brand notes shown to the creator in the email body. */
   creatorNotes?: string;
   /** Commission %, stamped from the negotiation node (for display in the builder). */

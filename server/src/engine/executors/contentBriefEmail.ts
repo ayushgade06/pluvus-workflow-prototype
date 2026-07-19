@@ -10,7 +10,10 @@ import { splitDeliverables } from "./rewardEmail.js";
 //   1. the finalized offer terms (fee / commission / deliverables / timeline),
 //   2. a secure tokenized payout-form link the creator completes, and
 //   3. the campaign brief itself (PDF attached by the executor) + optional
-//      referral link and brand notes.
+//      brand notes.
+// NOTE: no manual referral link is rendered here — attribution mints a UNIQUE
+// per-creator tracking link (partnership.ts) delivered in the welcome email, so a
+// static brand-typed link would be redundant and track nothing.
 // Kept as a pure builder (like rewardEmail.ts / paymentEmail.ts) so it is the
 // single source of truth for the body and is unit-testable without a DB or the
 // file system. The PDF attachment is loaded + attached by the executor; this only
@@ -29,8 +32,6 @@ export interface ContentBriefInput {
   deliverables?: string | undefined;
   /** Optional go-live timeline; stated only when present. */
   timeline?: string | undefined;
-  /** The brand-configured referral link. Empty string when not configured. */
-  referralLink: string;
   /** Optional brand-authored notes, shown in the body. Empty string when none. */
   creatorNotes: string;
   /** Optional product/sample reward blurb. Empty string for cash-only deals. */
@@ -39,7 +40,6 @@ export interface ContentBriefInput {
 
 /** Render the merged "Your Campaign Brief" email body + subject. */
 export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
-  const referral = input.referralLink.trim();
   const notes = input.creatorNotes.trim();
   const reward = (input.rewardDescription ?? "").trim();
   const formLink = input.formLink.trim();
@@ -76,11 +76,6 @@ export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
     ``,
     `Attached is your campaign brief containing all campaign requirements, deliverables, timelines, and content guidelines.`,
   ];
-
-  // Referral link — only stated when the brand configured one (it's optional).
-  if (referral) {
-    lines.push(``, `Your referral link:`, ``, referral);
-  }
 
   // Optional creator notes — appended verbatim as their own paragraph.
   if (notes) {

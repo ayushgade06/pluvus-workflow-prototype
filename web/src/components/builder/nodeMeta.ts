@@ -91,12 +91,9 @@ export function configSummary(node: DraftNode): string {
       }
       return "Not configured";
     }
-    case "REPLY_DETECTION": {
-      const threshold = cfg["lowConfidenceThreshold"] as number | undefined;
-      return threshold !== undefined
-        ? `Confidence threshold ${Math.round(threshold * 100)}%`
-        : "Not configured";
-    }
+    case "REPLY_DETECTION":
+      // No config — fixed 50% threshold, low-confidence always to Manual Review.
+      return "Classifies replies · low-confidence → Manual Review";
     case "NEGOTIATION": {
       const min = cfg["minBudget"] as number | undefined;
       const max = cfg["maxBudget"] as number | undefined;
@@ -147,23 +144,19 @@ export function configChips(node: DraftNode): string[] {
       const unit = cfg["intervalUnit"] as string | undefined;
       if (max !== undefined) chips.push(`max ${max}`);
       if (unit) chips.push(unit);
-      if (cfg["stopOnReply"]) chips.push("stop on reply");
+      // Follow-ups always stop on reply (hardcoded) — surface it as a fixed fact.
+      chips.push("stops on reply");
       return chips;
     }
-    case "REPLY_DETECTION": {
-      const chips: string[] = [];
-      const t = cfg["lowConfidenceThreshold"] as number | undefined;
-      if (t !== undefined) chips.push(`≥ ${Math.round(t * 100)}%`);
-      if (cfg["manualReviewOnLowConfidence"]) chips.push("manual review");
-      return chips;
-    }
+    case "REPLY_DETECTION":
+      // No configurable fields; the behavior is fixed (see nodeDescription).
+      return ["auto-classify", "→ manual review"];
     case "NEGOTIATION": {
       const chips: string[] = [];
       const rounds = cfg["maxRounds"] as number | undefined;
-      const mode = cfg["approvalMode"] as string | undefined;
       const commission = cfg["commissionRate"] as number | undefined;
       if (rounds !== undefined) chips.push(`${rounds} rounds`);
-      if (mode) chips.push(mode === "auto" ? "auto-approve" : "manual approve");
+      // No approve-mode chip: the engine always auto-accepts within budget.
       if (commission && commission > 0) chips.push(`${commission}% commission`);
       return chips;
     }
@@ -182,15 +175,13 @@ export function configChips(node: DraftNode): string[] {
       return ["payout method", "account id", "hosted form", "awaits submission"];
     case "CONTENT_BRIEF": {
       // Offer + payout link are always in the merged email · Brief (Uploaded/
-      // Missing) · Referral (Configured/Missing) · then the payout wait state.
+      // Missing) · then the payout wait state. (No referral chip: the unique
+      // per-creator tracking link is minted server-side, not configured here.)
       const hasBrief = typeof cfg["briefFileRef"] === "string" && !!(cfg["briefFileRef"] as string);
-      const hasReferral =
-        typeof cfg["referralLink"] === "string" && !!(cfg["referralLink"] as string).trim();
       return [
         "finalized offer",
         "payout link",
         hasBrief ? "brief uploaded" : "brief missing",
-        hasReferral ? "referral set" : "no referral",
         "awaits payout",
       ];
     }

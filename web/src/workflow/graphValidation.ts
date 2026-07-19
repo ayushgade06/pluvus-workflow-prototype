@@ -402,15 +402,21 @@ function validateNodeConfig(n: GraphNode): ValidationIssue | null {
   const cfg = (n.config ?? {}) as Record<string, unknown>;
   switch (n.type) {
     case "INITIAL_OUTREACH": {
-      if (!isNonEmptyString(cfg["subjectTemplate"]))
-        return cfgErr(n, "MISSING_SUBJECT", "Initial Outreach needs an email subject.");
-      if (!isNonEmptyString(cfg["bodyTemplate"]))
-        return cfgErr(n, "MISSING_BODY", "Initial Outreach needs an email body.");
+      // Subject/body are OPTIONAL: production generates the outreach email with
+      // the AI (executeInitialOutreach → agent.draftEmail), which writes both the
+      // subject and body itself. These templates are only the fallback the engine
+      // renders if AI generation fails after retries, so an empty field is valid
+      // (the shipped default template covers the fallback). Requiring them here
+      // forced the brand to author copy the happy path discards.
       return null;
     }
     case "FOLLOW_UP": {
-      if (!isNonEmptyString(cfg["bodyTemplate"]))
-        return cfgErr(n, "MISSING_FOLLOWUP_BODY", "Follow-Up needs an email body.");
+      // Body is OPTIONAL for the same reason as INITIAL_OUTREACH: production
+      // generates the follow-up with the AI (executeFollowUp → agent.draftEmail),
+      // which writes the copy itself. bodyTemplate is only the fallback the engine
+      // renders if AI generation fails after retries (email.draft() substitutes a
+      // built-in generic body when it's blank). Intervals, by contrast, are NOT
+      // AI-generated — they drive scheduling — so they stay required.
       if (!Array.isArray(cfg["intervals"]) || (cfg["intervals"] as unknown[]).length === 0)
         return cfgErr(n, "MISSING_INTERVALS", "Follow-Up needs at least one interval.");
       return null;

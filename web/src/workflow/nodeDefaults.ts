@@ -62,19 +62,21 @@ export function defaultConfigFor(type: NodeType): NodeConfig {
         maxCount: 2,
         bodyTemplate:
           "Hi {{creatorName}},\n\nJust following up on our earlier message. Would love to connect!\n\nBest,\n{{brandName}} Team",
-        stopOnReply: true,
+        // No stopOnReply: follow-ups always stop on reply (hardcoded in runtime).
       };
     case "REPLY_DETECTION":
-      return {
-        lowConfidenceThreshold: 0.7,
-        manualReviewOnLowConfidence: true,
-      };
+      // No configurable fields — the low-confidence threshold (0.50) and the
+      // route-to-Manual-Review behavior are fixed engine constants, never read
+      // from config. (Former lowConfidenceThreshold / manualReviewOnLowConfidence
+      // defaults were dead.)
+      return {};
     case "NEGOTIATION":
       return {
         minBudget: 0,
         maxBudget: 500,
         maxRounds: 3,
-        approvalMode: "auto",
+        // No approvalMode: the engine always auto-accepts within budget; the old
+        // "manual" default promised a human gate that was never implemented.
       };
     case "REWARD_SETUP":
     case "PAYMENT_INFO":

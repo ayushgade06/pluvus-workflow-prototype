@@ -67,7 +67,6 @@ export async function executeContentBrief(
   // 1. Read the brand-supplied configuration.
   const briefFileRef = str(config, "briefFileRef");
   const briefFileName = str(config, "briefFileName") || "campaign-brief.pdf";
-  const referralLink = str(config, "referralLink");
   const creatorNotes = str(config, "creatorNotes");
   const rewardDescription = str(config, "rewardDescription");
 
@@ -149,7 +148,6 @@ export async function executeContentBrief(
       commissionRate,
       deliverables,
       timeline,
-      referralLink,
       creatorNotes,
       rewardDescription,
     }),
@@ -200,7 +198,6 @@ export async function executeContentBrief(
     eventType: "CONTENT_BRIEF_SENT",
     eventPayload: {
       briefFileName,
-      ...(referralLink ? { referralLink } : {}),
     } as JsonObject,
   };
 }

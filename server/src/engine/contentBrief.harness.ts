@@ -61,7 +61,6 @@ const PDF_BYTES = Buffer.from(
   "utf8",
 );
 
-const REFERRAL = "https://example.com/referral/casey-cb";
 const NOTES = "Please tag @acme in your first post.";
 const AGREED_RATE = 420;
 const COMMISSION = 12;
@@ -110,7 +109,6 @@ function mergedNodes(briefFileRef: string, briefFileName: string): NodeSnapshot[
         deliverables: DELIVERABLES,
         briefFileRef,
         briefFileName,
-        referralLink: REFERRAL,
         creatorNotes: NOTES,
       },
     },
@@ -133,7 +131,6 @@ function legacyNodes(briefFileRef: string, briefFileName: string): NodeSnapshot[
         senderName: "Acme",
         briefFileRef,
         briefFileName,
-        referralLink: REFERRAL,
         creatorNotes: NOTES,
       },
     },
@@ -234,7 +231,6 @@ async function main(): Promise<void> {
     assert.ok(briefEmail!.body.includes(`${COMMISSION}%`), "email must state the commission");
     assert.ok(briefEmail!.body.includes("2 Reels"), "email must list the deliverables");
     assert.ok(/\/payment\//.test(briefEmail!.body), "email must include the tokenized payout link");
-    assert.ok(briefEmail!.body.includes(REFERRAL), "email must include the referral link");
     assert.ok(briefEmail!.body.includes(NOTES), "email must include the creator notes");
     assert.ok(
       (briefEmail!.idempotencyKey ?? "").startsWith("content-brief:"),

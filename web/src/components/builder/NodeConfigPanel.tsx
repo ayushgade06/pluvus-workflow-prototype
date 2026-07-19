@@ -5,8 +5,6 @@ import {
   Input,
   Textarea,
   Select,
-  Toggle,
-  Slider,
   FormField,
   IconButton,
   ConfirmDialog,
@@ -18,7 +16,6 @@ import type {
   DraftNode,
   InitialOutreachConfig,
   FollowUpConfig,
-  ReplyDetectionConfig,
   NegotiationConfig,
   RewardSetupConfig,
   ContentBriefConfig,
@@ -237,11 +234,7 @@ function NodeForm({
       );
     case "REPLY_DETECTION":
       return (
-        <ReplyDetectionForm
-          nodeId={node.id}
-          config={node.config as ReplyDetectionConfig}
-          onUpdate={onUpdate}
-        />
+        <ReplyDetectionInfo />
       );
     case "NEGOTIATION":
       return (
@@ -309,19 +302,21 @@ function InitialOutreachForm({
   return (
     <FormStack>
       <InfoBox>
-        The first email sent to each creator. Supports template variables:{" "}
+        The first email sent to each creator is written by the AI, personalized from your campaign
+        details (brand, deliverables, reward, deal terms). The subject and body below are an{" "}
+        <strong>optional fallback</strong> — used only if AI generation is unavailable. Leave them
+        blank to use the built-in default. Fallback text supports template variables:{" "}
         <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>,{" "}
         <Code>{"{{rewardDescription}}"}</Code> (the campaign's product/sample reward, blank when
         none).
       </InfoBox>
-      <Section title="Message">
+      <Section title="Fallback message (optional)">
         <FormField label="Subject Line" htmlFor={subjectId}>
           <Input
             id={subjectId}
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
             onBlur={flush}
-            invalid={!subject.trim()}
             placeholder="e.g. Partnership opportunity with {{brandName}}"
           />
         </FormField>
@@ -332,8 +327,7 @@ function InitialOutreachForm({
             onChange={(e) => setBody(e.target.value)}
             onBlur={flush}
             rows={10}
-            invalid={!body.trim()}
-            placeholder="Write your outreach email here…"
+            placeholder="Leave blank to use the built-in default…"
           />
         </FormField>
       </Section>
@@ -358,7 +352,6 @@ function FollowUpForm({
   const [unit, setUnit] = useState(config.intervalUnit ?? "days");
   const [maxCount, setMaxCount] = useState(config.maxCount ?? 2);
   const [body, setBody] = useState(config.bodyTemplate ?? "");
-  const [stopOnReply, setStopOnReply] = useState(config.stopOnReply ?? true);
   const maxId = useId();
   const unitId = useId();
   const bodyId = useId();
@@ -368,18 +361,20 @@ function FollowUpForm({
     setUnit(config.intervalUnit ?? "days");
     setMaxCount(config.maxCount ?? 2);
     setBody(config.bodyTemplate ?? "");
-    setStopOnReply(config.stopOnReply ?? true);
   }, [nodeId]);
 
-  // Same payload shape; `over` lets us flush with values that haven't yet
-  // round-tripped through state (replaces the prior setTimeout(flush, 0) hack).
+  // `over` lets us flush with values that haven't yet round-tripped through
+  // state (replaces the prior setTimeout(flush, 0) hack). stopOnReply is no
+  // longer written: the "cancel follow-ups on reply" behavior is hardcoded in
+  // the runtime (an inbound reply always clears the follow-up dueAt), so the old
+  // toggle promised an off-switch that never existed. flush rebuilds the config
+  // from these fields only, so any legacy stopOnReply is naturally dropped.
   function flush(over?: Partial<FollowUpConfig>) {
     onUpdate(nodeId, {
       intervals,
       intervalUnit: unit,
       maxCount,
       bodyTemplate: body,
-      stopOnReply,
       ...over,
     });
   }
@@ -387,7 +382,10 @@ function FollowUpForm({
   return (
     <FormStack>
       <InfoBox>
-        Sends follow-up emails at configured intervals. Stops when the creator replies (if enabled).
+        Sends follow-up emails at configured intervals, and <strong>always stops as soon as the
+        creator replies</strong>. Each follow-up is written by the AI, personalized from your
+        campaign details — the body below is an <strong>optional fallback</strong>, used only if AI
+        generation is unavailable. Leave it blank to use the built-in default.
       </InfoBox>
 
       <Section title="Cadence">
@@ -467,28 +465,17 @@ function FollowUpForm({
           </Select>
         </FormField>
 
-        <FormField label="Stop on Reply">
-          <Toggle
-            checked={stopOnReply}
-            onChange={(checked) => {
-              setStopOnReply(checked);
-              flush({ stopOnReply: checked });
-            }}
-            label="Cancel scheduled follow-ups once a reply is received"
-          />
-        </FormField>
       </Section>
 
-      <Section title="Message">
-        <FormField label="Follow-Up Body" htmlFor={bodyId} hint="Sent for every follow-up in the cadence.">
+      <Section title="Fallback message (optional)">
+        <FormField label="Follow-Up Body" htmlFor={bodyId} hint="Fallback only — used for every follow-up if AI generation is unavailable.">
           <Textarea
             id={bodyId}
             value={body}
             onChange={(e) => setBody(e.target.value)}
             onBlur={() => flush()}
             rows={8}
-            invalid={!body.trim()}
-            placeholder="Just following up on my previous message…"
+            placeholder="Leave blank to use the built-in default…"
           />
         </FormField>
       </Section>
@@ -500,63 +487,36 @@ function FollowUpForm({
 // Reply Detection form
 // ---------------------------------------------------------------------------
 
-function ReplyDetectionForm({
-  nodeId,
-  config,
-  onUpdate,
-}: {
-  nodeId: string;
-  config: ReplyDetectionConfig;
-  onUpdate: (id: string, cfg: Record<string, unknown>) => void;
-}) {
-  const [threshold, setThreshold] = useState(config.lowConfidenceThreshold ?? 0.7);
-  const [manualReview, setManualReview] = useState(config.manualReviewOnLowConfidence ?? true);
-
-  useEffect(() => {
-    setThreshold(config.lowConfidenceThreshold ?? 0.7);
-    setManualReview(config.manualReviewOnLowConfidence ?? true);
-  }, [nodeId]);
-
-  function flush(over?: Partial<ReplyDetectionConfig>) {
-    onUpdate(nodeId, {
-      lowConfidenceThreshold: threshold,
-      manualReviewOnLowConfidence: manualReview,
-      ...over,
-    });
-  }
-
+// Reply Detection has NO configurable fields. The classifier's low-confidence
+// threshold is a fixed engine constant (LOW_CONFIDENCE_THRESHOLD = 0.50 in
+// server replyDetection.ts) and low-confidence replies ALWAYS route to Manual
+// Review — neither was ever read from node config. The old slider + toggle were
+// dead controls, so this is now a read-only summary of the actual behavior.
+function ReplyDetectionInfo() {
   return (
     <FormStack>
       <InfoBox>
-        AI classifies each reply as Positive, Negative, Question, Opt-Out, or Unknown. Replies below
-        the confidence threshold are sent to Manual Review.
+        AI classifies each reply as Positive, Negative, Question, Opt-Out, or Unknown, then routes it
+        to the matching next step. This step has no settings — the thresholds below are fixed.
       </InfoBox>
 
-      <Section title="Classification">
-        <FormField label={`Confidence Threshold · ${Math.round(threshold * 100)}%`}>
-          <Slider
-            min={0}
-            max={100}
-            value={Math.round(threshold * 100)}
-            aria-label="Confidence threshold percent"
-            onChange={(e) => setThreshold(Number(e.target.value) / 100)}
-            onMouseUp={() => flush()}
-            onTouchEnd={() => flush()}
-            minLabel="0% · accept anything"
-            maxLabel="100% · very strict"
-          />
-        </FormField>
+      <Section title="Confidence Threshold">
+        <div style={{ fontSize: font.size.xl, fontWeight: font.weight.bold, color: colors.text }}>
+          50%
+        </div>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 4 }}>
+          Fixed. A reply the AI classifies with less than 50% confidence is treated as Unknown.
+        </div>
+      </Section>
 
-        <FormField label="Low-Confidence Behavior">
-          <Toggle
-            checked={manualReview}
-            onChange={(checked) => {
-              setManualReview(checked);
-              flush({ manualReviewOnLowConfidence: checked });
-            }}
-            label="Send to Manual Review when confidence is below threshold"
-          />
-        </FormField>
+      <Section title="Low-Confidence Behavior">
+        <Badge color={stateColor["MANUAL_REVIEW"]} dot>
+          {stateLabel["MANUAL_REVIEW"]}
+        </Badge>
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, marginTop: 8 }}>
+          Always on. Any reply below the threshold (or that fails to classify) is sent to{" "}
+          <strong>Manual Review</strong> for a human to handle, rather than auto-advanced.
+        </div>
       </Section>
     </FormStack>
   );
@@ -578,42 +538,46 @@ function NegotiationForm({
   const [minBudget, setMinBudget] = useState(config.minBudget ?? 0);
   const [maxBudget, setMaxBudget] = useState(config.maxBudget ?? 1000);
   const [maxRounds, setMaxRounds] = useState(config.maxRounds ?? 3);
-  const [approvalMode, setApprovalMode] = useState<"auto" | "manual">(config.approvalMode ?? "auto");
   const [commissionRate, setCommissionRate] = useState(config.commissionRate ?? 0);
-  const [overCeilingTolerance, setOverCeilingTolerance] = useState(config.overCeilingTolerance ?? 0);
   const minId = useId();
   const maxId = useId();
   const roundsId = useId();
-  const modeId = useId();
   const commissionId = useId();
-  const toleranceId = useId();
 
   useEffect(() => {
     setMinBudget(config.minBudget ?? 0);
     setMaxBudget(config.maxBudget ?? 1000);
     setMaxRounds(config.maxRounds ?? 3);
-    setApprovalMode(config.approvalMode ?? "auto");
     setCommissionRate(config.commissionRate ?? 0);
-    setOverCeilingTolerance(config.overCeilingTolerance ?? 0);
   }, [nodeId]);
 
-  // Identical payload: commissionRate + overCeilingTolerance only included when > 0
-  // (0 is the omitted default — zero tolerance / no commission).
+  // commissionRate is only included when > 0 (0 is the omitted default = no
+  // commission). Over-budget tolerance has no UI control (hidden by product
+  // decision — the engine still honors it, fee-only; see server/agent
+  // overCeilingTolerance wiring, Phase C / #12). We PRESERVE any existing saved
+  // value by reading it straight from `config` here, so editing other fields
+  // doesn't silently drop it; new campaigns just never set it (defaults to 0 =
+  // escalate on any over-max ask).
   function flush(over?: Partial<NegotiationConfig>) {
     const next = {
       minBudget,
       maxBudget,
       maxRounds,
-      approvalMode,
       commissionRate,
-      overCeilingTolerance,
       ...over,
     };
-    const { commissionRate: rate, overCeilingTolerance: tolerance, ...rest } = next;
+    const { commissionRate: rate, ...rest } = next;
+    const savedTolerance = config.overCeilingTolerance;
+    // approvalMode is no longer written: it had no consumer (the engine always
+    // auto-accepts within budget), so the "manual" option promised a human gate
+    // that never existed. flush rebuilds the config from these fields only, so
+    // any legacy approvalMode is naturally dropped on the next save.
     onUpdate(nodeId, {
       ...rest,
       ...(rate > 0 ? { commissionRate: rate } : {}),
-      ...(tolerance > 0 ? { overCeilingTolerance: tolerance } : {}),
+      ...(typeof savedTolerance === "number" && savedTolerance > 0
+        ? { overCeilingTolerance: savedTolerance }
+        : {}),
     });
   }
 
@@ -675,22 +639,6 @@ function NegotiationForm({
             style={{ width: 90 }}
           />
         </FormField>
-        <FormField
-          label="Over-Budget Tolerance (%)"
-          htmlFor={toleranceId}
-          hint="0 = escalate the moment an ask exceeds the maximum budget. Above 0, an ask up to max×(1+tolerance) is countered at the max instead of escalated."
-        >
-          <Input
-            id={toleranceId}
-            type="number"
-            min={0}
-            max={100}
-            value={overCeilingTolerance}
-            onChange={(e) => setOverCeilingTolerance(Number(e.target.value))}
-            onBlur={() => flush()}
-            style={{ width: 90 }}
-          />
-        </FormField>
       </Section>
 
       <Section title="Approval">
@@ -705,20 +653,6 @@ function NegotiationForm({
             onBlur={() => flush()}
             style={{ width: 90 }}
           />
-        </FormField>
-        <FormField label="Approval Mode" htmlFor={modeId}>
-          <Select
-            id={modeId}
-            value={approvalMode}
-            onChange={(e) => {
-              const next = e.target.value as "auto" | "manual";
-              setApprovalMode(next);
-              flush({ approvalMode: next });
-            }}
-          >
-            <option value="auto">Auto — AI accepts/rejects within budget</option>
-            <option value="manual">Manual — human approves final terms</option>
-          </Select>
         </FormField>
       </Section>
     </FormStack>
@@ -914,30 +848,33 @@ function ContentBriefForm({
 }) {
   const [briefFileRef, setBriefFileRef] = useState(config.briefFileRef ?? "");
   const [briefFileName, setBriefFileName] = useState(config.briefFileName ?? "");
-  const [referralLink, setReferralLink] = useState(config.referralLink ?? "");
   const [creatorNotes, setCreatorNotes] = useState(config.creatorNotes ?? "");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const referralId = useId();
   const notesId = useId();
 
   useEffect(() => {
     setBriefFileRef(config.briefFileRef ?? "");
     setBriefFileName(config.briefFileName ?? "");
-    setReferralLink(config.referralLink ?? "");
     setCreatorNotes(config.creatorNotes ?? "");
     setUploadError(null);
   }, [nodeId]);
 
   // `over` lets us flush with values that haven't yet round-tripped through state
-  // (same idiom as the Follow-Up / Negotiation forms).
+  // (same idiom as the Follow-Up / Negotiation forms). The manual referralLink
+  // field was removed: attribution mints a UNIQUE per-creator tracking link
+  // (partnership.ts), delivered in the welcome email — a static brand-typed link
+  // here was redundant and tracked nothing. Any legacy saved value is dropped.
   function flush(over?: Partial<ContentBriefConfig>) {
+    // Drop any legacy referralLink so re-saving a pre-existing node clears it.
+    // The field is gone from ContentBriefConfig, but a config saved before the
+    // removal may still carry the key at runtime — strip it via a widened view.
+    const { referralLink: _drop, ...rest } = config as Record<string, unknown>;
     onUpdate(nodeId, {
-      ...config,
+      ...rest,
       briefFileRef,
       briefFileName,
-      referralLink,
       creatorNotes,
       ...over,
     });
@@ -981,8 +918,8 @@ function ContentBriefForm({
         Runs right after a successful negotiation. Sends the creator{" "}
         <strong>one email</strong> with the finalized offer (fee, commission &
         deliverables), a <strong>secure payout link</strong>, and the{" "}
-        <strong>campaign brief PDF</strong> (plus the referral link and any notes),
-        then waits for them to submit their payout details.
+        <strong>campaign brief PDF</strong> (plus any notes), then waits for them to
+        submit their payout details.
       </InfoBox>
 
       <Section title="Campaign Brief PDF">
@@ -1060,18 +997,6 @@ function ContentBriefForm({
               {uploadError}
             </div>
           )}
-        </FormField>
-      </Section>
-
-      <Section title="Referral Link">
-        <FormField label="Referral URL" htmlFor={referralId} hint="Optional. Shown in the email body.">
-          <Input
-            id={referralId}
-            value={referralLink}
-            onChange={(e) => setReferralLink(e.target.value)}
-            onBlur={() => flush()}
-            placeholder="https://example.com/referral/creator123"
-          />
         </FormField>
       </Section>
 
