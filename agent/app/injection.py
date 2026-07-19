@@ -129,12 +129,138 @@ _OPT_OUT_RE = re.compile("|".join(_OPT_OUT_PATTERNS), re.IGNORECASE)
 
 
 def looks_like_opt_out(text: str) -> bool:
-    """True when the text contains an unambiguous opt-out request.
+    """True when the text contains an opt-out KEYWORD (raw scan).
 
-    Used to FORCE intent=OPT_OUT in code, so an injection cannot suppress an
-    opt-out (a compliance violation if it did).
+    This is the low-level keyword matcher. It stays keyword-only so the two
+    classifiers (this and the TS MockClassificationProvider) agree on the same
+    lexicon, and so any compliance-critical FORCE that wants "did an opt-out word
+    appear at all" can use it.
+
+    Callers that DECIDE intent (the classify/negotiate opt-out gate) must use
+    ``is_unconditional_opt_out`` instead — it adds the negation/conditional
+    awareness (BUG-A3) that keeps a hot lead from being terminated by a
+    conditional/rhetorical opt-out phrasing.
     """
     return bool(_OPT_OUT_RE.search(text or ""))
+
+
+# ---------------------------------------------------------------------------
+# BUG-A3: conditional / negated / rhetorical opt-out awareness
+# ---------------------------------------------------------------------------
+# The hard opt-out gate fired at confidence 1.0 on ANY opt-out keyword, BEFORE
+# the model — killing hot leads whose "opt-out" was conditional or rhetorical:
+#   * "I am interested but remove me IF you cannot beat $400"  → a NEGOTIATING
+#     lead conditioning removal on a price, not an opt-out.
+#   * "Unsubscribe? No way, I love this brand!"                → the creator is
+#     REJECTING the idea of unsubscribing.
+# Neither is a CAN-SPAM/GDPR opt-out. The fix: a plain, unconditional opt-out
+# ("unsubscribe", "please remove me", "stop emailing me") STILL hard-gates (we do
+# NOT weaken compliance); a conditional/negated/rhetorical one routes to the model
+# instead of auto-terminating.
+#
+# Deliberately CONSERVATIVE and biased toward compliance: an opt-out is treated as
+# unconditional (→ still OPT_OUT) UNLESS a conditional/negation signal sits in the
+# SAME clause as the opt-out keyword. Ambiguity → OPT_OUT (never silently keep
+# emailing someone who may have opted out). "I'm interested but please remove me"
+# stays OPT_OUT — interest words alone do NOT downgrade it; only a genuine
+# conditional/rhetorical STRUCTURE around the opt-out token does.
+
+# Split a reply into clauses so a conditional/negation signal is only credited when
+# it governs the SAME clause as the opt-out keyword (not a different sentence).
+_CLAUSE_SPLIT_RE = re.compile(r"[.?!;,]+|\bbut\b|\bhowever\b|\bthough\b", re.IGNORECASE)
+
+# The opt-out keyword sits inside a CONDITION: "remove me IF ...", "... UNLESS ...",
+# "only ... if". A conditional removal is a negotiation lever, not an opt-out.
+_CONDITIONAL_OPT_OUT_RE = re.compile(
+    r"\b(?:if|unless|only if|as long as|provided that|in case)\b",
+    re.IGNORECASE,
+)
+
+# The opt-out word is REJECTED / negated: "unsubscribe? no", "opt out? never",
+# "no way", "not going to", "why would I". These read as the creator DISMISSING
+# the idea of opting out — the opposite of an opt-out.
+_REJECTED_OPT_OUT_RE = re.compile(
+    r"\?\s*(?:no|never|nope|no way|of course not|absolutely not|why would i)\b"
+    r"|\bno way\b"
+    r"|\b(?:not|never)\s+(?:going to|gonna|want(?:ing)? to|planning to)\s+"
+    r"(?:unsubscribe|opt[\s-]?out|leave|cancel)\b"
+    r"|\bwhy would i (?:unsubscribe|opt[\s-]?out|leave|want out)\b"
+    r"|\bdon'?t want to (?:unsubscribe|opt[\s-]?out|leave)\b",
+    re.IGNORECASE,
+)
+
+
+def _clause_containing_opt_out(text: str) -> str | None:
+    """Return the CLAUSE (sentence/segment) that carries the opt-out keyword, or
+    None when there is no opt-out keyword at all. Used so a conditional/negation
+    signal only counts when it sits with the opt-out token, not elsewhere in a
+    long reply."""
+    if not text:
+        return None
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if clause and _OPT_OUT_RE.search(clause):
+            return clause
+    return None
+
+
+def opt_out_is_conditional_or_rhetorical(text: str) -> bool:
+    """True when an opt-out keyword is present but phrased CONDITIONALLY or
+    RHETORICALLY (so it must NOT auto-terminate; route to the model instead).
+
+    Two independent signals, each judged in the clause that holds the opt-out word:
+      * conditional — an "if/unless/only if" governs the removal, OR the removal
+        keyword is immediately followed by an "if" condition (e.g. "remove me if
+        you cannot beat $400"), OR the whole reply is a single "…remove me if…"
+        with the condition after the keyword.
+      * rejected/rhetorical — the opt-out word is negated ("unsubscribe? no way").
+
+    Conservative: returns False (→ treat as a real opt-out) whenever neither
+    signal is clearly present, so compliance is never weakened on ambiguity.
+    """
+    if not text:
+        return False
+    if not _OPT_OUT_RE.search(text):
+        return False
+
+    clause = _clause_containing_opt_out(text)
+    if clause is None:
+        return False
+
+    # Rhetorical/negated rejection of the opt-out, anywhere in the reply (the
+    # "?"-then-"no" shape can straddle the clause split, so scan the full text too).
+    if _REJECTED_OPT_OUT_RE.search(clause) or _REJECTED_OPT_OUT_RE.search(text):
+        return True
+
+    # Conditional removal: an if/unless in the SAME clause as the opt-out keyword.
+    if _CONDITIONAL_OPT_OUT_RE.search(clause):
+        return True
+
+    # Also catch "<opt-out keyword> ... if/unless ..." where the clause splitter
+    # kept them together but the condition trails the keyword on the SAME segment
+    # of the ORIGINAL text (e.g. "remove me if you can't beat $400" — no comma).
+    m = _OPT_OUT_RE.search(text)
+    if m:
+        tail = text[m.end():]
+        # Only the immediate continuation (same sentence), stop at hard breaks.
+        tail_clause = re.split(r"[.?!;]", tail, maxsplit=1)[0]
+        if _CONDITIONAL_OPT_OUT_RE.search(tail_clause):
+            return True
+
+    return False
+
+
+def is_unconditional_opt_out(text: str) -> bool:
+    """True when the text is a GENUINE, unconditional opt-out that must hard-gate
+    to intent=OPT_OUT (CAN-SPAM/GDPR), model-independently.
+
+    = an opt-out keyword is present AND it is NOT conditional/negated/rhetorical.
+    This is what the classify/negotiate opt-out gate uses (BUG-A3): a plain
+    "unsubscribe / remove me / stop" still forces OPT_OUT; "remove me if you can't
+    beat $400" or "unsubscribe? no way" falls through to the model.
+    """
+    if not looks_like_opt_out(text):
+        return False
+    return not opt_out_is_conditional_or_rhetorical(text)
 
 
 # ---------------------------------------------------------------------------

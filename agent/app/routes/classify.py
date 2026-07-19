@@ -17,8 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.injection import (
+    is_unconditional_opt_out,
     looks_like_injection,
-    looks_like_opt_out,
     looks_like_question,
     mentions_rate,
     normalize_untrusted_text,
@@ -220,7 +220,13 @@ def classify_message(message: str) -> ClassifyResponse:
     clean = sanitize_creator_text(message)
 
     # 2 — OPT_OUT is decided by code, never by the (injectable) model.
-    if looks_like_opt_out(gated):
+    # BUG-A3: a PLAIN, unconditional opt-out ("unsubscribe", "remove me", "stop
+    # emailing me") still hard-gates — compliance is not weakened. But a
+    # CONDITIONAL ("remove me IF you can't beat $400") or RHETORICAL ("unsubscribe?
+    # no way, I love this brand!") opt-out is NOT a CAN-SPAM/GDPR opt-out — it is a
+    # hot lead. Those fall through to the model (question/rate gates below, then the
+    # LLM) instead of being terminated at OPT_OUT.
+    if is_unconditional_opt_out(gated):
         return ClassifyResponse(
             intent="OPT_OUT",
             confidence=1.0,

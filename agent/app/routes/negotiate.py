@@ -59,7 +59,11 @@ from app.telemetry import (
     set_active_prompt_version,
     usage_payload,
 )
-from app.topic_gate import detect_escalation_topic, detect_escalation_topic_ex
+from app.topic_gate import (
+    detect_escalation_per_clause,
+    detect_escalation_topic,
+    detect_escalation_topic_ex,
+)
 
 logger = logging.getLogger("agent.negotiate")
 
@@ -1130,6 +1134,7 @@ def _apply_decision_guards(
     tolerance_ceiling: float | None = None,
     is_final_round: bool,
     creator_ask: float | None = None,
+    prior_offer: float | None = None,
 ) -> NegotiationDecision:
     """Bound the LLM's chosen action + rate to the campaign's money invariants.
 
@@ -1157,6 +1162,17 @@ def _apply_decision_guards(
     (both the ACCEPT-over-cap check and the CRITICAL-4 final-round guard) uses the
     tolerance ceiling, so an in-tolerance over-ceiling ask closes AT the ceiling
     instead of escalating.
+
+    ``prior_offer`` (BUG-A4) is the concrete rate WE last put on the table (our
+    standing offer). It is used ONLY on an ACCEPT where the creator named NO rate
+    this turn: a weak model sometimes "accepts" at a DRIFTED number higher than the
+    figure we already offered — paying more than our own standing offer for no
+    reason. When the creator stated no ask, we clamp an ACCEPT DOWN to our prior
+    offer (never above it), so the close honors the number we actually presented
+    rather than the model's drift. When the creator DID name a rate this turn, that
+    number governs (the anti-over-pay COUNTER guards below already handle it) and
+    prior_offer is not applied. Defaults to None (no prior offer / not supplied) so
+    existing call sites and tests are unchanged.
     """
     if tolerance_ceiling is None:
         tolerance_ceiling = ceiling_rate
@@ -1180,11 +1196,21 @@ def _apply_decision_guards(
             # The model "accepted" beyond even the tolerance band — do NOT agree
             # over budget; escalate to a human (mirrors the deterministic path).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
+        # BUG-A4: when the creator named NO rate this turn but we have a standing
+        # offer, prefer that prior offer over the model's (possibly drifted) number
+        # — never close ABOVE the figure we already put on the table for no reason.
+        # Clamp the accept rate DOWN to the prior offer first; the band clamp below
+        # still applies (a stale prior offer under the floor is raised to it). When
+        # the creator DID name a rate, that path is governed by creator_ask, so we
+        # leave the model's number alone here.
+        effective_rate = rate
+        if creator_ask is None and prior_offer is not None and prior_offer < effective_rate:
+            effective_rate = prior_offer
         # Clamp a below-floor acceptance up to the floor (never pay below it) AND
         # an in-tolerance over-ceiling acceptance down to the ceiling (Phase C:
         # tolerance means "meet them at the cap", never agree above the ceiling).
         return NegotiationDecision(
-            action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+            action="ACCEPT", proposed_rate=min(max(effective_rate, floor_rate), ceiling_rate)
         )
 
     # COUNTER / PRESENT_OFFER: clamp the offer into [floor, ceiling].
@@ -1628,6 +1654,7 @@ def _llm_negotiate_decision(
     recommended_offer: float,
     current_offer: float,
     is_final_round: bool,
+    prior_offer: float | None = None,
 ) -> NegotiateResponse:
     """The NEGOTIATION_STRATEGY=llm path: the model decides action + rate.
 
@@ -1761,6 +1788,7 @@ def _llm_negotiate_decision(
             tolerance_ceiling=tolerance_ceiling,
             is_final_round=is_final_round,
             creator_ask=None,
+            prior_offer=prior_offer,
         )
     else:
         decision = _apply_decision_guards(
@@ -1771,6 +1799,9 @@ def _llm_negotiate_decision(
             tolerance_ceiling=tolerance_ceiling,
             is_final_round=is_final_round,
             creator_ask=creator_ask,
+            # BUG-A4: prefer our standing offer over a drifted model ACCEPT rate when
+            # the creator named no rate this turn.
+            prior_offer=prior_offer,
         )
 
     # HARD-N1 §4 (the load-bearing rule from PRINCIPLES.md): a guard can change the
@@ -1995,29 +2026,53 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     # still escalates. When we DO escalate, populate creatorQuestions with a
     # model-free extraction so the Manual Queue shows the operator exactly what the
     # creator asked (finding #2 — never drop creatorQuestions on an escalate).
+    # BUG-A1: PER-CLAUSE topic gating. The whole-reply gate collapsed a bundled
+    # multi-question turn ("What is the fee, when do I get paid, and I need an
+    # NDA?") to a bare ESCALATE the instant ONE clause touched an escalate-topic —
+    # losing the answerable fee/timing questions. detect_escalation_per_clause runs
+    # the SAME intent-aware gate per clause and distinguishes:
+    #   * escalate_now=True  → escalate NOW (a demand on an escalate-topic with
+    #     NOTHING answerable to salvage: "I will sue you", "I need a signed NDA
+    #     before we start"). The always-escalate DEMAND path is preserved exactly.
+    #   * escalate_now=False WITH an escalation_topic → a bundled turn: FLOW to the
+    #     negotiator so it answers the fee/timing clauses, and SURFACE the escalated
+    #     clause(s) into creatorQuestions so the human still sees the sensitive ask.
+    #   * escalation_topic=None → nothing sensitive; normal flow.
     _norm_reply = normalize_untrusted_text(req.creatorReply)
-    _topic, _answered_topic = detect_escalation_topic_ex(_norm_reply)
-    if _answered_topic is not None:
-        logger.info(
-            "negotiate: sensitive topic (%s) phrased as a QUESTION (round=%s); "
-            "answering from knowledge fields instead of escalating",
-            _answered_topic,
-            req.round,
-        )
-    if _topic is not None:
+    _gate = detect_escalation_per_clause(_norm_reply)
+    # Clauses we recognized as escalate-topic but are NOT escalating on (they ride
+    # along in creatorQuestions when the turn flows to the model). Empty on the
+    # escalate-now and no-topic paths. Threaded to the response merge below.
+    surfaced_escalation_questions: list[str] = []
+    if _gate.escalate_now:
         logger.info(
             "negotiate: always-escalate topic (%s) in creator reply (round=%s); escalating without a model call",
-            _topic,
+            _gate.escalation_topic,
             req.round,
         )
         return NegotiateResponse(
             action="ESCALATE",
-            reasoning=f"always-escalate topic ({_topic}); routed to a human regardless of confidence",
-            escalationReason=_topic,
+            reasoning=f"always-escalate topic ({_gate.escalation_topic}); routed to a human regardless of confidence",
+            escalationReason=_gate.escalation_topic,
             # Never drop what the creator asked (F-Q1/Q2/T3 #2): surface the
             # extracted questions so the operator triaging the Manual Queue sees
             # the full ask, and the answerable ones can be one-click answered.
             creatorQuestions=_extract_questions_heuristic(req.creatorReply),
+        )
+    if _gate.escalation_topic is not None:
+        # A1 flow path: a sensitive clause exists but there are answerable clauses,
+        # so we do NOT bare-escalate. The negotiator answers the answerable clauses;
+        # the escalated clause is surfaced so the human/operator sees it (and the
+        # server can still route it to review). We normalize the raw escalated
+        # clause text into question shape for creatorQuestions.
+        surfaced_escalation_questions = _normalize_questions(_gate.escalated_clauses)
+        logger.info(
+            "negotiate: BUG-A1 bundled turn — sensitive clause (%s) alongside %d answerable "
+            "clause(s) (round=%s); answering the answerable questions and surfacing the "
+            "escalated clause in creatorQuestions instead of a bare handoff",
+            _gate.escalation_topic,
+            len(_gate.answerable_clauses),
+            req.round,
         )
 
     floor_rate = req.campaignConstraints.termFloor.rate or 0
@@ -2082,16 +2137,46 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     # single semantic used consistently across this module (see _rounds_exhausted).
     is_final_round = req.maxRounds > 0 and (req.round + 1) >= req.maxRounds
 
+    # BUG-A1 flow path: when a bundled turn carried a sensitive clause we chose NOT
+    # to bare-escalate, merge the surfaced escalated clause(s) into the decision's
+    # creatorQuestions (deduped, preserving order) and stamp escalationReason so the
+    # server still routes the sensitive item to a human while the answerable
+    # questions are answered. A no-op when nothing was surfaced.
+    def _with_surfaced_escalation(resp: NegotiateResponse) -> NegotiateResponse:
+        if not surfaced_escalation_questions:
+            return resp
+        # Dedup case- and trailing-punctuation-insensitively so a surfaced clause
+        # the model ALSO extracted (e.g. "...NDA before we start" vs the same with a
+        # period) isn't listed twice. Surfaced (escalated) clauses come first so the
+        # human sees the sensitive item at the top of the Manual Queue.
+        merged: list[str] = []
+        seen: set[str] = set()
+        for q in surfaced_escalation_questions + list(resp.creatorQuestions):
+            if not q:
+                continue
+            key = q.strip().rstrip(".?!").casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(q)
+        resp.creatorQuestions = merged
+        if resp.escalationReason is None:
+            resp.escalationReason = _gate.escalation_topic
+        return resp
+
     if _negotiation_strategy() == "llm":
         try:
-            return _llm_negotiate_decision(
-                req,
-                floor_rate=floor_rate,
-                ceiling_rate=ceiling_rate,
-                tolerance_ceiling=tolerance_ceiling,
-                recommended_offer=recommended_offer,
-                current_offer=current_offer,
-                is_final_round=is_final_round,
+            return _with_surfaced_escalation(
+                _llm_negotiate_decision(
+                    req,
+                    floor_rate=floor_rate,
+                    ceiling_rate=ceiling_rate,
+                    tolerance_ceiling=tolerance_ceiling,
+                    recommended_offer=recommended_offer,
+                    current_offer=current_offer,
+                    is_final_round=is_final_round,
+                    prior_offer=prior_offer,
+                )
             )
         except Exception as exc:  # noqa: BLE001 — ANY model failure degrades, never 500s
             # MED-L1: widen the fallback catch to ANY failure, not just
@@ -2110,14 +2195,16 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
                 exc,
             )
 
-    return _rules_negotiate(
-        req,
-        floor_rate=floor_rate,
-        ceiling_rate=ceiling_rate,
-        tolerance_ceiling=tolerance_ceiling,
-        recommended_offer=recommended_offer,
-        prior_offer=prior_offer,
-        is_final_round=is_final_round,
+    return _with_surfaced_escalation(
+        _rules_negotiate(
+            req,
+            floor_rate=floor_rate,
+            ceiling_rate=ceiling_rate,
+            tolerance_ceiling=tolerance_ceiling,
+            recommended_offer=recommended_offer,
+            prior_offer=prior_offer,
+            is_final_round=is_final_round,
+        )
     )
 
 
