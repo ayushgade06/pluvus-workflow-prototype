@@ -1,5 +1,5 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm";
-import { db, type Db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import {
   conversions,
   obligations,
@@ -57,7 +57,7 @@ export class ObligationNotPayableError extends Error {
 export async function createCommissionPayout(
   partnershipId: string,
   dest: PayoutDestination,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout> {
   return client.transaction(async (tx) => {
     // Lock every unpaid, non-refunded, commission-bearing conversion for this
@@ -123,7 +123,7 @@ export async function createCommissionPayout(
 export async function createFixedFeePayout(
   obligationId: string,
   dest: PayoutDestination,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout> {
   return client.transaction(async (tx) => {
     const locked = await tx.execute<{
@@ -177,7 +177,7 @@ export async function createFixedFeePayout(
 
 export async function findPayoutById(
   id: string,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client.select().from(payouts).where(eq(payouts.id, id)).limit(1);
   return rows[0] ?? null;
@@ -185,7 +185,7 @@ export async function findPayoutById(
 
 export async function listPayoutsByPartnership(
   partnershipId: string,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout[]> {
   return client
     .select()
@@ -197,7 +197,7 @@ export async function listPayoutsByPartnership(
 /** SENT payouts whose sentAt is older than `cutoff` — the auto-settle sweep source. */
 export async function listSentPayoutsOlderThan(
   cutoff: Date,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout[]> {
   return client
     .select()
@@ -210,7 +210,7 @@ export async function listSentPayoutsOlderThan(
  *  instance (I-7) without a second round-trip per payout. */
 export async function listSentPayoutsOlderThanWithInstance(
   cutoff: Date,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Array<{ payout: Payout; instanceId: string }>> {
   const rows = await client
     .select({ payout: payouts, instanceId: partnerships.instanceId })
@@ -235,7 +235,7 @@ export async function markPayoutSent(
     reference: string | null;
     note: string | null;
   },
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client
     .update(payouts)
@@ -257,7 +257,7 @@ export async function markPayoutSent(
 export async function updatePayoutConfirmToken(
   id: string,
   data: { confirmTokenHash: string; confirmTokenExpiresAt: Date },
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client
     .update(payouts)
@@ -274,7 +274,7 @@ export async function updatePayoutConfirmToken(
 export async function markPayoutConfirmed(
   id: string,
   audit: { confirmIp: string | null; confirmUserAgent: string | null },
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const now = new Date();
   const rows = await client
@@ -295,7 +295,7 @@ export async function markPayoutConfirmed(
 export async function markPayoutDisputed(
   id: string,
   audit: { confirmIp: string | null; confirmUserAgent: string | null },
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client
     .update(payouts)
@@ -313,7 +313,7 @@ export async function markPayoutDisputed(
 /** CONFIRMED|DISPUTED → SETTLED (brand resolves). */
 export async function markPayoutSettled(
   id: string,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client
     .update(payouts)
@@ -331,7 +331,7 @@ export async function markPayoutSettled(
 /** Auto-settle a SENT payout that got no creator response (scheduler sweep). */
 export async function autoSettlePayout(
   id: string,
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Payout | null> {
   const rows = await client
     .update(payouts)

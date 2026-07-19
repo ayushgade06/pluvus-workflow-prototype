@@ -28,6 +28,7 @@ import {
   NoUnpaidCommissionError,
   ObligationNotPayableError,
   findPayoutById,
+  listPayoutsByPartnership,
   markPayoutSent,
   markPayoutConfirmed,
   markPayoutDisputed,
@@ -36,6 +37,9 @@ import {
   listSentPayoutsOlderThan,
 } from "./payouts.js";
 import { createObligation } from "./obligations.js";
+import { appendEvent } from "./events.js";
+import { markConversionRefunded } from "./conversions.js";
+import { isUniqueViolation } from "./errors.js";
 import { mintFeeObligation } from "../engine/executors/partnership.js";
 
 let n = 0;
@@ -240,6 +244,160 @@ async function main(): Promise<void> {
       .from(schema.payouts)
       .where(eq(schema.payouts.partnershipId, partnershipId));
     assert.equal(payouts.length, 1, "the second attempt created no second payout");
+  });
+
+  // ── BUG-D1: DB backstop against a double-minted fee obligation ─────────────
+  await test("second fee Obligation for a partnership is rejected by the unique index (BUG-D1)", async () => {
+    const { partnershipId } = await seedPartnership(pgdb, { suffix: "d1", agreedFeeCents: 30000 });
+    // First auto-minted fee obligation: fine.
+    await createObligation(
+      { partnershipId, description: "Agreed collaboration fee", amountCents: 30000 },
+      pgdb,
+    );
+    // Second "Agreed collaboration fee" row for the SAME partnership — the exact
+    // shape the mint race would produce — must be rejected by the partial unique
+    // index (not silently double-inserted, which is the double-fee bug).
+    await assert.rejects(
+      () =>
+        createObligation(
+          { partnershipId, description: "Agreed collaboration fee", amountCents: 30000 },
+          pgdb,
+        ),
+      (err) => isUniqueViolation(err),
+      "a second fee obligation must raise a unique violation",
+    );
+    const rows = await pgdb
+      .select()
+      .from(schema.obligations)
+      .where(eq(schema.obligations.partnershipId, partnershipId));
+    assert.equal(rows.length, 1, "exactly one fee obligation exists (no double-fee)");
+  });
+
+  await test("the fee unique index is PARTIAL — a differently-described obligation is still allowed (BUG-D1)", async () => {
+    const { partnershipId } = await seedPartnership(pgdb, { suffix: "d1b", agreedFeeCents: 20000 });
+    await createObligation(
+      { partnershipId, description: "Agreed collaboration fee", amountCents: 20000 },
+      pgdb,
+    );
+    // A manual/extra obligation (different description) is NOT the auto-minted fee
+    // row, so the partial index does not constrain it — future Phase-4+ manual
+    // obligations must remain possible.
+    await createObligation(
+      { partnershipId, description: "Bonus for extra deliverable", amountCents: 5000 },
+      pgdb,
+    );
+    const rows = await pgdb
+      .select()
+      .from(schema.obligations)
+      .where(eq(schema.obligations.partnershipId, partnershipId));
+    assert.equal(rows.length, 2, "the fee row + a distinct manual row both persist");
+  });
+
+  // ── BUG-D-events: money mutation + ledger event are atomic (one txn) ────────
+  // The routes now wrap the money mutation and its audit event append in ONE
+  // db.transaction (the injectable client). These tests replicate that exact
+  // pattern against real Postgres to prove the two commit together — and, more
+  // importantly, that a FAILED event append ROLLS BACK the money mutation (the
+  // property the old best-effort/swallowed append could not guarantee).
+  await test("fixed-fee payout + PAYOUT_CREATED event commit together (BUG-D-events)", async () => {
+    const { partnershipId, instanceId } = await seedPartnership(pgdb, {
+      suffix: "dev1",
+      agreedFeeCents: 25000,
+    });
+    const ob = await createObligation(
+      { partnershipId, description: "Agreed collaboration fee", amountCents: 25000 },
+      pgdb,
+    );
+    const payout = await pgdb.transaction(async (tx) => {
+      const p = await createFixedFeePayout(ob.id, DEST, tx);
+      await appendEvent(
+        {
+          instanceId,
+          type: "PAYOUT_CREATED",
+          payload: { payoutId: p.id, payoutType: p.payoutType, amountCents: p.amountCents },
+        },
+        tx,
+      );
+      return p;
+    });
+    // Both landed.
+    assert.ok(await findPayoutById(payout.id, pgdb), "payout row committed");
+    const evs = await pgdb
+      .select()
+      .from(schema.events)
+      .where(
+        and(eq(schema.events.instanceId, instanceId), eq(schema.events.type, "PAYOUT_CREATED")),
+      );
+    assert.equal(evs.length, 1, "exactly one PAYOUT_CREATED event committed with the payout");
+  });
+
+  await test("a failing ledger event ROLLS BACK the money mutation (BUG-D-events)", async () => {
+    const { partnershipId, instanceId } = await seedPartnership(pgdb, {
+      suffix: "dev2",
+      agreedFeeCents: 25000,
+    });
+    const ob = await createObligation(
+      { partnershipId, description: "Agreed collaboration fee", amountCents: 25000 },
+      pgdb,
+    );
+    // Force the event append to fail INSIDE the txn (a bad instanceId violates the
+    // Event.instanceId FK). The whole unit must roll back — no payout, and the
+    // obligation must stay PENDING (createFixedFeePayout flips it PAID in the txn).
+    await assert.rejects(
+      () =>
+        pgdb.transaction(async (tx) => {
+          await createFixedFeePayout(ob.id, DEST, tx);
+          await appendEvent(
+            {
+              instanceId: "does-not-exist",
+              type: "PAYOUT_CREATED",
+              payload: {},
+            },
+            tx,
+          );
+        }),
+      "the FK violation on the event must reject the transaction",
+    );
+    const payouts = await listPayoutsByPartnership(partnershipId, pgdb);
+    assert.equal(payouts.length, 0, "no payout committed (money mutation rolled back)");
+    const [after] = await pgdb
+      .select()
+      .from(schema.obligations)
+      .where(eq(schema.obligations.id, ob.id));
+    assert.equal(after!.status, "PENDING", "obligation stayed PENDING (not left half-paid)");
+    void instanceId;
+  });
+
+  await test("conversion refund + CONVERSION_REFUNDED event commit together (BUG-D-events)", async () => {
+    const { partnershipId, instanceId } = await seedPartnership(pgdb, { suffix: "dev3" });
+    const convId = await seedConversion(pgdb, {
+      partnershipId,
+      externalId: "dev3-c1",
+      commissionCents: 500,
+    });
+    await pgdb.transaction(async (tx) => {
+      await markConversionRefunded(convId, tx);
+      await appendEvent(
+        {
+          instanceId,
+          type: "CONVERSION_REFUNDED",
+          payload: { conversionId: convId },
+        },
+        tx,
+      );
+    });
+    const [conv] = await pgdb
+      .select()
+      .from(schema.conversions)
+      .where(eq(schema.conversions.id, convId));
+    assert.equal(conv!.refunded, true, "conversion is refunded");
+    const evs = await pgdb
+      .select()
+      .from(schema.events)
+      .where(
+        and(eq(schema.events.instanceId, instanceId), eq(schema.events.type, "CONVERSION_REFUNDED")),
+      );
+    assert.equal(evs.length, 1, "the refund event committed with the refund");
   });
 
   // ── Status-guard rejections on the transitions ─────────────────────────────

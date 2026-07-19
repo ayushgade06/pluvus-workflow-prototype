@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { db } from "../db/drizzle.js";
 import {
   appendEvent,
   createConversion,
@@ -166,29 +167,33 @@ router.post("/conversion/:externalId/refund", async (req: Request, res: Response
     return;
   }
 
-  await markConversionRefunded(conversion.id);
-
-  // Append CONVERSION_REFUNDED event (I-7), best-effort (I-8).
+  // BUG-D-events: fold the refund (money mutation) and the CONVERSION_REFUNDED
+  // audit event into ONE transaction, so a crash between them can no longer leave
+  // a conversion refunded with no ledger event (or vice versa). Resolve the
+  // instance for attribution BEFORE the txn (a stable read); when it is unknown
+  // (unattributed conversion / missing partnership), we still refund but there is
+  // no instance to attribute the event to — exactly the prior behavior.
+  let instanceId: string | undefined;
   if (conversion.partnershipId) {
     const partnership = await findPartnershipByReferralCode(
       conversion.referralCode ?? "",
     ).catch(() => null);
-    const instanceId = partnership?.instanceId;
+    instanceId = partnership?.instanceId;
+  }
+
+  await db.transaction(async (tx) => {
+    await markConversionRefunded(conversion.id, tx);
     if (instanceId) {
-      try {
-        await appendEvent({
+      await appendEvent(
+        {
           instanceId,
           type: "CONVERSION_REFUNDED",
           payload: { externalId, conversionId: conversion.id },
-        });
-      } catch (err) {
-        console.error(
-          `[attribution] CONVERSION_REFUNDED event failed for instanceId=${instanceId}:`,
-          err,
-        );
-      }
+        },
+        tx,
+      );
     }
-  }
+  });
 
   res.status(200).json({ refunded: true });
 });

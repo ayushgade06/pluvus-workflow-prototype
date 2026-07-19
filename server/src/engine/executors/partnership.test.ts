@@ -7,9 +7,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildTrackingLink } from "./partnership.js";
+import { blockedByAttributionMint } from "./guardEscalation.js";
 import { renderPartnershipWelcomeEmail } from "./partnershipWelcomeEmail.js";
 import { generateReferralCode } from "../../db/partnerships.js";
 import { isUniqueViolation } from "../../db/errors.js";
+import { assertTransition } from "../stateMachine.js";
 
 // ---------------------------------------------------------------------------
 // Referral code shape
@@ -104,6 +106,44 @@ describe("isUniqueViolation", () => {
 
   it("returns false for a plain Error with no code", () => {
     assert.ok(!isUniqueViolation(new Error("plain")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG-E2: a failed attribution/obligation mint on the payout-form submission
+// must escalate to MANUAL_REVIEW rather than "complete" the deal. The full
+// executor path (executeContentBriefSubmission / executePaymentSubmission) is
+// DB-backed and lives in the harnesses; here we lock the decision helper's
+// contract — the shape both executors return when resolvePartnership yields no
+// partnership — since a regression that made this terminal-success would silently
+// lose a creator's money ledger with no recovery path.
+// ---------------------------------------------------------------------------
+
+describe("BUG-E2: blockedByAttributionMint (mint-failure escalation)", () => {
+  const result = blockedByAttributionMint("CONTENT_BRIEF");
+
+  it("routes to MANUAL_REVIEW, never a success terminal", () => {
+    assert.equal(result.nextState, "MANUAL_REVIEW");
+    // Guard against the exact regression: it must NOT be the success terminal.
+    assert.notEqual(result.nextState, "CONTENT_BRIEF_SENT");
+    assert.notEqual(result.nextState, "PAYMENT_RECEIVED");
+  });
+
+  it("PAYMENT_PENDING → MANUAL_REVIEW is a legal transition (both submission executors enter from PAYMENT_PENDING)", () => {
+    assert.doesNotThrow(() => assertTransition("PAYMENT_PENDING", "MANUAL_REVIEW"));
+  });
+
+  it("records an auditable escalation reason for the manual queue", () => {
+    const payload = result.eventPayload as Record<string, unknown>;
+    assert.equal(result.eventType, "MANUAL_REVIEW_FLAGGED");
+    assert.equal(payload["outcome"], "ESCALATE");
+    assert.equal(payload["reason"], "attribution_mint_failed");
+    assert.equal(payload["node"], "CONTENT_BRIEF");
+  });
+
+  it("stamps completedAt (terminal handoff into the manual queue)", () => {
+    assert.ok(result.completedAt instanceof Date);
+    assert.equal(result.nextNodeId, null);
   });
 });
 

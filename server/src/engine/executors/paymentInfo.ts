@@ -10,7 +10,7 @@ import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
 import { resolveBrandName } from "../campaignContext.js";
-import { blockedByMissingBrand } from "./guardEscalation.js";
+import { blockedByMissingBrand, blockedByAttributionMint } from "./guardEscalation.js";
 import { nextNodeAfter } from "./graphNav.js";
 import { resolvePartnership } from "./partnership.js";
 
@@ -139,7 +139,7 @@ export async function executePaymentSubmission(
   email: IEmailProvider,
   _agent: IAgentProvider,
 ): Promise<NodeResult> {
-  const { instance } = ctx;
+  const { instance, node } = ctx;
 
   if (instance.currentState !== "PAYMENT_PENDING") {
     throw new Error(
@@ -163,13 +163,28 @@ export async function executePaymentSubmission(
   // and the state is a hand-off rather than a completion.
   const nextNodeId = nextNodeAfter(ctx);
 
-  // Phase 1: mint the Partnership when this is the terminal node (no Content Brief
-  // follows). Non-fatal — a failure must not fail the payout submission.
+  // Phase 1: mint the Partnership + fee Obligation (the money ledger) when this is
+  // the terminal node (no Content Brief follows). BUG-E2: if that mint fails
+  // (throws, or resolvePartnership returns null on a DB blip), do NOT fall through
+  // to the PAYMENT_RECEIVED terminal — a "completed" deal with no ledger row has
+  // no recovery path (PAYMENT_RECEIVED-as-terminal here is a dead end for the mint;
+  // only re-running the node recovers it). Route to MANUAL_REVIEW so a human can
+  // re-run and complete the mint. The payout data is already persisted, so nothing
+  // is lost. (A swallowed welcome-email failure inside resolvePartnership still
+  // returns the partnership, so it does NOT trip this — only a real mint failure.)
   if (nextNodeId === null) {
+    let partnership;
     try {
-      await resolvePartnership(ctx, email);
+      partnership = await resolvePartnership(ctx, email);
     } catch (err) {
-      console.error("[paymentInfo] resolvePartnership failed (non-fatal)", err);
+      console.error("[paymentInfo] resolvePartnership threw — escalating to MANUAL_REVIEW", err);
+      return blockedByAttributionMint(node.type);
+    }
+    if (!partnership) {
+      console.error(
+        `[paymentInfo] resolvePartnership returned null for ${instance.id} — escalating to MANUAL_REVIEW`,
+      );
+      return blockedByAttributionMint(node.type);
     }
   }
 

@@ -37,6 +37,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createId } from "@paralleldrive/cuid2";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -601,7 +602,19 @@ export const obligations = pgTable(
     createdAt: tsNow("createdAt"),
     paidAt: ts("paidAt"),
   },
-  (table) => [index("Obligation_partnershipId_idx").on(table.partnershipId)],
+  (table) => [
+    index("Obligation_partnershipId_idx").on(table.partnershipId),
+    // BUG-D1: a partnership has at most ONE auto-minted fee obligation. This
+    // partial unique index enforces that invariant at the DB level so a
+    // concurrent mint race (BullMQ retry vs reconciliation) cannot slip a second
+    // "Agreed collaboration fee" row past mintFeeObligation's check-then-insert →
+    // the brand never pays the fee twice. Partial (scoped to the fee row's fixed
+    // description) so future manual/extra obligations remain unconstrained.
+    // Mirrors migration 20260719120000_bug_d1_obligation_fee_unique.
+    uniqueIndex("Obligation_partnershipId_fee_key")
+      .on(table.partnershipId)
+      .where(sql`${table.description} = 'Agreed collaboration fee'`),
+  ],
 );
 
 export const payouts = pgTable(

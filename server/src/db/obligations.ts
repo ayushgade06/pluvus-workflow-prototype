@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { db, type Db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import { obligations, type Obligation } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ export async function createObligation(
     description: string;
     amountCents: number;
   },
-  client: Db = db,
+  client: Db | DbTx = db,
 ): Promise<Obligation> {
   const rows = await client
     .insert(obligations)

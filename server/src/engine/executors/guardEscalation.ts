@@ -27,6 +27,30 @@ export function blockedByGuard(round: number, hits: GuardHit[]): NodeResult {
   };
 }
 
+// BUG-E2: the payout-form submission mints the Partnership + fee Obligation (the
+// money ledger). If that mint fails (a DB blip, or resolvePartnership returns
+// null), the OLD code swallowed it and STILL returned the success terminal
+// (CONTENT_BRIEF_SENT / PAYMENT_RECEIVED) — a "completed" deal with no
+// Partnership, no link, and no Obligation: the creator is owed money with no
+// ledger row, no retry, and no reconciliation (the terminal state is excluded
+// from RECONCILE_STATES). Instead, route to MANUAL_REVIEW: the deal is NOT
+// falsely completed, the brand is emailed (runtime does this on entry), and a
+// human can re-run the node to complete the mint. The creator's payout data is
+// already persisted (PaymentInfo is PAYMENT_RECEIVED), so nothing is lost.
+export function blockedByAttributionMint(node: string): NodeResult {
+  return {
+    nextState: "MANUAL_REVIEW",
+    nextNodeId: null,
+    completedAt: new Date(),
+    eventType: "MANUAL_REVIEW_FLAGGED",
+    eventPayload: {
+      outcome: "ESCALATE",
+      reason: "attribution_mint_failed",
+      node,
+    },
+  };
+}
+
 // L4: fail loud when a creator-facing email has no resolvable brand name (config
 // AND campaign both missing it). Rather than send "Thanks, your brand" to a real
 // creator, route the instance to MANUAL_REVIEW so a human fixes the config. This
