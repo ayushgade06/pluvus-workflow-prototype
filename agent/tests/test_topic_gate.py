@@ -257,6 +257,50 @@ def test_negotiate_usage_rights_DEMAND_escalates():
     assert r.escalationReason == "usage_rights_or_licensing"
 
 
+def test_negotiate_commission_change_DEMAND_escalates():
+    # F-23: a demand to CHANGE the commission % is a structural rewrite of a fixed,
+    # non-negotiable term → escalate (pricing_exception), even when bundled with a
+    # fee concession. Commission is never a lever the agent may trade.
+    r = _neg("10% commission is laughable. I want 40% commission or this doesn't happen.")
+    assert r.action == "ESCALATE"
+    assert r.escalationReason == "pricing_exception"
+
+
+def test_negotiate_commission_only_DEMAND_escalates():
+    # F-23: converting to a commission-only deal is a structure rewrite → escalate.
+    r = _neg("Forget the flat fee — make it commission-only at 30%.")
+    assert r.action == "ESCALATE"
+    assert r.escalationReason == "pricing_exception"
+
+
+def test_negotiate_commission_QUESTION_does_not_escalate_on_topic(monkeypatch):
+    # F-23 guard-rail: the demand-only policy must NOT catch a plain commission
+    # QUESTION — no new %, no change verb, no ultimatum. It flows to the model,
+    # which answers "10%, fixed". Mirrors the usage-rights question test.
+    from app.routes import negotiate as neg_mod
+
+    class _FakeLLM:
+        def invoke(self, _prompt):
+            class _R:
+                content = (
+                    '{"action": "PRESENT_OFFER", "rate": 300, '
+                    '"response": "Our commission is 10%.", '
+                    '"reasoning": "answering the commission question", '
+                    '"creatorRateMentioned": null, '
+                    '"creatorQuestions": ["what is the commission?"], '
+                    '"pushedFixedTerms": []}'
+                )
+            return _R()
+
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
+    monkeypatch.setattr(
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None, **_kw: _FakeLLM()
+    )
+    r = _neg("Quick question — what's the commission on this deal?")
+    assert r.escalationReason != "pricing_exception"
+    assert r.action == "PRESENT_OFFER"
+
+
 def test_negotiate_usage_rights_QUESTION_does_not_escalate_on_topic(monkeypatch):
     # F-Q1/Q2/T3: a pure QUESTION about exclusivity no longer escalates on the
     # topic gate — it flows to the model (which answers from the knowledge fields).

@@ -287,12 +287,13 @@ def test_reasoning_overwritten_on_escalate_even_if_model_describes_counter(monke
     assert "human" in resp.reasoning.lower()
 
 
-def test_reasoning_overwritten_on_commission_for_fee_swap_accept(monkeypatch):
-    # F-M13: creator says "20% commission and I'll take $250"; $250 ≤ standing $350
-    # → ACCEPT@250 (budget-optimal). The model's reasoning contradicts it ("we
-    # remain firm on $350"). The guard converts the model's COUNTER to ACCEPT (the
-    # anti-over-pay guard on an at/below-offer ask), so the decision is ALTERED and
-    # the reasoning is overwritten to name the real ACCEPT@250.
+def test_commission_change_demand_escalates_even_with_fee_concession(monkeypatch):
+    # F-23 (policy: any commission-% CHANGE demand → human, uniformly). The creator
+    # bundles a commission rewrite ("bump commission to 20%") WITH a fee concession
+    # ("$250 flat", below our $350). Even though $250 is budget-optimal, commission
+    # is a fixed, non-negotiable term — a demand to change it is a structural change
+    # only a human may approve. The deterministic topic gate fires BEFORE any model
+    # call, so this escalates regardless of what the model would have returned.
     _patch_llm(
         monkeypatch,
         ['{"action": "COUNTER", "rate": 350, '
@@ -303,11 +304,28 @@ def test_reasoning_overwritten_on_commission_for_fee_swap_accept(monkeypatch):
     resp = neg_mod._langgraph_negotiate(
         _req("Bump my commission to 20% and I'll take just $250 flat.", round_=1, max_rounds=4)
     )
-    assert resp.action == "ACCEPT"
-    assert resp.proposedTerms == {"rate": 250.0}
-    # Reasoning must reflect the ACCEPT@250, not "remain firm on $350".
-    assert "350" not in resp.reasoning
-    assert "250" in resp.reasoning
+    assert resp.action == "ESCALATE"
+    # Reasoning must be action-consistent (an ESCALATE reason) and never leak a rate.
+    assert "250" not in (resp.reasoning or "")
+    assert "350" not in (resp.reasoning or "")
+
+
+def test_plain_commission_question_is_not_escalated(monkeypatch):
+    # F-23 guard-rail: the demand-only policy must NOT catch a plain commission
+    # QUESTION. "what's the commission?" carries no new %, no change verb, no
+    # ultimatum → it flows to the model, which answers "10%, fixed". A regression
+    # here would flood the Manual Queue with answerable questions.
+    _patch_llm(
+        monkeypatch,
+        ['{"action": "PRESENT_OFFER", "rate": 350, '
+         '"response": "Our commission is 10%.", '
+         '"reasoning": "Answering the creator\'s commission question.", '
+         '"creatorRateMentioned": null}'],
+    )
+    resp = neg_mod._langgraph_negotiate(
+        _req("Quick question — what's the commission on this deal?", round_=1, max_rounds=4)
+    )
+    assert resp.action != "ESCALATE"
 
 
 def test_reasoning_kept_when_decision_unaltered(monkeypatch):

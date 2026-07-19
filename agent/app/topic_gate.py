@@ -98,6 +98,18 @@ _TOPIC_PATTERNS: dict[str, list[str]] = {
         r"\b(?:bonus|incentive|kicker|upfront (?:deposit|payment))\b.*\b(?:if|when|for (?:hitting|reaching)|on top)\b",
         r"\b(?:equity|profit share|revenue share|rev share|ownership stake)\b",
         r"\b(?:custom|special|different)\b.*\b(?:fee structure|payment structure|deal structure|commission structure)\b",
+        # F-23: a demand to CHANGE the commission % (or split, or make it
+        # commission-only). Commission is a fixed, non-negotiable term at the
+        # brand's configured %, so a rewrite is a structural change only a human
+        # may approve. The bare mention of "commission" is NOT enough (a plain
+        # "what's the commission?" is answerable and stays out of this pattern
+        # via the intent-aware split below); this matches only a specific new %
+        # or an explicit change/removal of the commission term. (Note: no "\b"
+        # after "%" — "%" is not a word char, so "%\b" fails before a space.)
+        r"\bcommission\b.*?\d{1,3}\s*(?:%|percent)",
+        r"\d{1,3}\s*(?:%|percent).*?\bcommission\b",
+        r"\b(?:commission[\s-]?only|no (?:flat|base) fee,? just commission)\b",
+        r"\b(?:raise|bump|increase|change|adjust|renegotiat\w*|rewrite)\b.*\bcommission\b",
     ],
     # Commercial commitments the agent can't grant — usage rights / exclusivity /
     # licensing / whitelisting / content usage (Q3: escalate).
@@ -165,21 +177,34 @@ _COMPILED: dict[str, re.Pattern[str]] = {
 # knowledge-backed sub-topics (_ANSWERABLE_SUBTOPIC) to be suppressed, so a
 # whitelisting / paid-media / ownership question (a genuine commitment we cannot
 # answer from a field) still escalates even though it lives under the same topic.
-_ANSWERABLE_AS_QUESTION: frozenset[str] = frozenset({"usage_rights_or_licensing"})
-
-# The sub-slice of `usage_rights_or_licensing` we can actually ANSWER from the
-# campaign knowledge fields (usageRights / exclusivity): usage-rights duration,
-# category exclusivity, and license/perpetual DURATION questions. Whitelisting,
-# paid-media/spark-ads, and content OWNERSHIP are deliberately EXCLUDED — those are
-# commitment-bearing asks with no configured answer, so a question about them stays
-# an escalate. Only a QUESTION matching this pattern (and NOT a demand) is
-# suppressed from escalation.
-_ANSWERABLE_SUBTOPIC = re.compile(
-    r"\b(?:usage rights?|content rights?|image rights?|likeness)\b"
-    r"|\b(?:exclusiv(?:e|ity)|non[\s-]?compete|category exclusiv)\b"
-    r"|\b(?:licens(?:e|ing)|sublicens|perpetual (?:license|use|rights?)|in perpetuity)\b",
-    re.IGNORECASE,
+_ANSWERABLE_AS_QUESTION: frozenset[str] = frozenset(
+    {"usage_rights_or_licensing", "pricing_exception"}
 )
+
+# The sub-slice of an answerable topic we can actually ANSWER from the campaign
+# knowledge fields, keyed by topic:
+#   * usage_rights_or_licensing — usage-rights duration, category exclusivity, and
+#     license/perpetual DURATION questions (from usageRights / exclusivity fields).
+#     Whitelisting, paid-media/spark-ads, and content OWNERSHIP are EXCLUDED — those
+#     are commitment-bearing asks with no configured answer, so a question about them
+#     stays an escalate.
+#   * pricing_exception — ONLY a plain commission question ("what's the commission?",
+#     "is commission negotiable?"). The commission % is a configured, fixed field, so
+#     a QUESTION is answerable ("10%, fixed"). Everything else under pricing_exception
+#     (equity, guarantees, tiered/performance structures, bonuses) has NO configured
+#     answer and always escalates — so the sub-topic pattern here matches commission
+#     ONLY. A DEMAND to change the commission (F-23) still escalates via the intent
+#     split below; only a bare question is suppressed.
+# Only a QUESTION matching the topic's pattern (and NOT a demand) is suppressed.
+_ANSWERABLE_SUBTOPIC_BY_TOPIC: dict[str, re.Pattern[str]] = {
+    "usage_rights_or_licensing": re.compile(
+        r"\b(?:usage rights?|content rights?|image rights?|likeness)\b"
+        r"|\b(?:exclusiv(?:e|ity)|non[\s-]?compete|category exclusiv)\b"
+        r"|\b(?:licens(?:e|ing)|sublicens|perpetual (?:license|use|rights?)|in perpetuity)\b",
+        re.IGNORECASE,
+    ),
+    "pricing_exception": re.compile(r"\bcommission\b", re.IGNORECASE),
+}
 
 # DEMAND / removal / ultimatum language: the creator is not asking about a term,
 # they are trying to CHANGE, REMOVE, REQUIRE, or CONDITION THE DEAL on it. Any of
@@ -202,9 +227,22 @@ _DEMAND_SIGNAL = re.compile(
     # ultimatum / condition-the-deal-on-it
     r"|or (?:i'?m|i am|we'?re)\s+(?:out|done|walking)"
     r"|or (?:this|the deal)\s+(?:doesn'?t|won'?t|is off)"
+    r"|or this (?:doesn'?t|does not|won'?t) happen"
     r"|take it or leave it"
     r"|(?:only|won'?t do it|not doing it)\s+(?:if|unless|without)\b"
     r"|deal ?breaker"
+    # explicit "non-negotiable" / "that's final" — the creator has closed the
+    # door on the term, so even a "?"-containing sentence is a demand, not a
+    # question (tightens F-10: "…exclusivity clause? …$3000 fee. Non-negotiable").
+    r"|non[\s-]?negotiable"
+    r"|that'?s final\b"
+    # F-23: commission-change demand shapes. A NEW commission % ("I want 40%",
+    # "make it 20% commission", "bump my commission to 25%") is a demand to
+    # rewrite a fixed term. Kept adjacent to commission/percent so a plain
+    # "what's the commission?" (no new number, no imperative) is NOT a demand.
+    r"|(?:want|need|make it|bump|raise|increase|give me)\b[^.]{0,20}?\d{1,3}\s*(?:%|percent)"
+    r"|\d{1,3}\s*(?:%|percent)[^.]{0,20}?\b(?:commission|or (?:this|the deal|it))"
+    r"|commission[\s-]?only\b"
     r")",
     re.IGNORECASE,
 )
@@ -300,12 +338,15 @@ def detect_escalation_topic_ex(text: str) -> tuple[str | None, str | None]:
     if topic is None or TOPIC_POLICY.get(topic) != "escalate":
         return None, None
     # Intent-aware suppression: only for an answerable topic, only when the matched
-    # text is a knowledge-backed sub-topic (usage/exclusivity/license — NOT
-    # whitelisting/paid-media/ownership), and only when it reads as a QUESTION (not
-    # a demand/removal/ultimatum). All three must hold, or we escalate.
+    # text is that topic's knowledge-backed sub-topic (usage/exclusivity/license —
+    # NOT whitelisting/paid-media/ownership; commission — NOT equity/guarantees/
+    # tiered structures), and only when it reads as a QUESTION (not a demand/
+    # removal/ultimatum). All three must hold, or we escalate.
+    subtopic = _ANSWERABLE_SUBTOPIC_BY_TOPIC.get(topic)
     if (
         topic in _ANSWERABLE_AS_QUESTION
-        and _ANSWERABLE_SUBTOPIC.search(text)
+        and subtopic is not None
+        and subtopic.search(text)
         and classify_topic_intent(text, topic) == "question"
     ):
         return None, topic
