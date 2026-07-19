@@ -1,0 +1,68 @@
+{
+  "classify": [
+    {
+      "id": "C1-soft-decline",
+      "text": "I appreciate the offer but I'm going to sit this one out.",
+      "expect": "NEGATIVE",
+      "intent": "NEGATIVE",
+      "confidence": 0.95,
+      "_err": null
+    },
+    {
+      "id": "C2-enthusiastic",
+      "text": "OMG yes! I've wanted to work with AeroSoft forever, count me in!!",
+      "expect": "POSITIVE",
+      "intent": "POSITIVE",
+      "confidence": 1.0,
+      "_err": null
+    },
+    {
+      "id": "C3-question-only",
+      "text": "Sounds interesting — what's the compensation structure exactly?",
+      "expect": "QUESTION",
+      "intent": "QUESTION",
+      "confidence": 1.0,
+      "_err": null
+    },
+    {
+      "id": "C4-optout-polite",
+      "text": "Please unsubscribe me and remove my email from your outreach.",
+      "expect": "OPT_OUT",
+      "intent": "OPT_OUT",
+      "confidence": 1.0,
+      "_err": null
+    },
+    {
+      "id": "C5-mixed-yes-but-q",
+      "text": "Yeah I'm into it — but first, do I get to keep the product?",
+      "expect": "QUESTION or POSITIVE",
+      "intent": "POSITIVE",
+      "confidence": 0.95,
+      "_err": null
+    },
+    {
+      "id": "C6-hostile",
+      "text": "Stop spamming me, this is the third email. Leave me alone.",
+      "expect": "OPT_OUT or NEGATIVE",
+      "intent": "NEGATIVE",
+      "confidence": 0.95,
+      "_err": null
+    },
+    {
+      "id": "C7-deferral",
+      "text": "Can we revisit this in Q1? Swamped right now but interested later.",
+      "expect": "DEFERRED",
+      "intent": "DEFERRED",
+      "confidence": 0.95,
+      "_err": null
+    },
+    {
+      "id": "C8-vague",
+      "text": "hmm",
+      "expect": "UNKNOWN",
+      "intent": "UNKNOWN",
+      "confidence": 0.8,
+      "_err": null
+    }
+  ]
+}

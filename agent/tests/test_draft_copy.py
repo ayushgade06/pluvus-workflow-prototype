@@ -10,7 +10,12 @@ Pure functions, no LLM / no network.
 
 import pytest
 
-from app.routes.negotiate import _format_rate, _scrub_brand
+from app.routes.negotiate import (
+    DraftRequest,
+    _format_rate,
+    _scrub_brand,
+    _template_draft_fallback,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -119,3 +124,97 @@ def test_scrub_multiple_placeholders_in_one_body():
     out = _scrub_brand(body, "Barclays")
     assert "[" not in out and "<" not in out
     assert "Barclays" in out
+
+
+# ---------------------------------------------------------------------------
+# F-D5 — the deterministic template fallback for a draft that fails structured
+# output. Model-free; states the fee + fixed-term ack + known facts, never invents.
+# ---------------------------------------------------------------------------
+
+
+def _draft_req(**kw):
+    base = dict(
+        purpose="counter_offer",
+        creatorName="Jordan",
+        senderName="AeroSoft",
+        proposedTerms={"rate": 400},
+    )
+    base.update(kw)
+    return DraftRequest(**base)
+
+
+def test_template_fallback_states_fee_and_signs_off():
+    resp = _template_draft_fallback(_draft_req(), "AeroSoft", {}, {})
+    assert resp is not None
+    assert "$400" in resp.body
+    assert "AeroSoft" in resp.body
+    assert resp.subject
+
+
+def test_template_fallback_acknowledges_pushed_perk_as_fixed():
+    # D5 shape: creator asked for a second pair; pushedFixedTerms=["perk"].
+    resp = _template_draft_fallback(
+        _draft_req(pushedFixedTerms=["perk"], creatorQuestions=["Can I get two pairs?"]),
+        "AeroSoft", {}, {},
+    )
+    assert resp is not None
+    assert "perk" in resp.body.lower()
+    assert "fixed" in resp.body.lower()
+
+
+def test_template_fallback_states_known_fact_when_asked():
+    known = {"Payment terms / schedule": "Net-30 after the content goes live."}
+    resp = _template_draft_fallback(
+        _draft_req(creatorQuestions=["When do I get paid?"]),
+        "AeroSoft", {"paymentTerms": "Net-30 after the content goes live."}, known,
+    )
+    assert resp is not None
+    assert "Net-30" in resp.body
+
+
+def test_template_fallback_acknowledges_creator_ask():
+    resp = _template_draft_fallback(
+        _draft_req(creatorRequestedRate=460), "AeroSoft", {}, {}
+    )
+    assert resp is not None
+    assert "$460" in resp.body  # acknowledged
+    assert "$400" in resp.body  # our offer
+
+
+def test_template_fallback_returns_none_without_a_rate():
+    # No number to state on a money turn → cannot template; caller re-raises.
+    resp = _template_draft_fallback(
+        _draft_req(proposedTerms=None), "AeroSoft", {}, {}
+    )
+    assert resp is None
+
+
+def test_template_fallback_returns_none_for_non_offer_purpose():
+    resp = _template_draft_fallback(
+        _draft_req(purpose="follow_up"), "AeroSoft", {}, {}
+    )
+    assert resp is None
+
+
+def test_template_fallback_never_leaks_a_bound():
+    # Only the guarded offer figure appears — no floor/ceiling is available to the
+    # template (it isn't passed any), so it structurally cannot leak one.
+    resp = _template_draft_fallback(_draft_req(proposedTerms={"rate": 400}), "AeroSoft", {}, {})
+    assert resp is not None
+    assert "200" not in resp.body and "500" not in resp.body
+
+
+def test_end_to_end_draft_falls_back_to_template_on_structured_error(monkeypatch):
+    # Force the draft model to fail JSON output; the offer turn must ship the
+    # template fallback rather than raising (which would escalate).
+    from app.routes import negotiate as neg
+    from app.structured import StructuredOutputError
+
+    def _boom(*_a, **_k):
+        raise StructuredOutputError("model kept emitting prose", raw="not json")
+
+    monkeypatch.setattr(neg, "invoke_structured", _boom)
+    monkeypatch.setattr(neg, "get_llm", lambda *a, **k: object())
+    resp = neg._langgraph_draft(_draft_req(creatorQuestions=["Can I get two pairs?"], pushedFixedTerms=["perk"]))
+    assert "$400" in resp.body
+    assert "perk" in resp.body.lower()

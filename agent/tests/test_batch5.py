@@ -146,6 +146,50 @@ def test_draft_questions_to_verify_merges_and_dedups():
 
 
 # ---------------------------------------------------------------------------
+# F-Q4 — the known-fact value-signal must prove the VALUE was stated, so a
+# deferral of an answer we actually have (attribution/usage) can't false-pass and
+# get silently dropped. Mirrors the B-34 payment-terms tightening.
+# ---------------------------------------------------------------------------
+
+
+def test_fq4_attribution_deferral_is_flagged_not_false_passed():
+    # The Q4 shape: creator asks the attribution window; a DEFERRAL that just says
+    # "we'll confirm the attribution window later" must be flagged as deferred
+    # (forcing a re-draft / splice), NOT counted as answered.
+    q = ["What's the attribution window on the affiliate link?"]
+    deferred_body = "We'll confirm the attribution window together on the next step."
+    answered_body = "You get a 30-day attribution window on the affiliate link."
+    assert neg._deferred_known_facts(deferred_body, q, {"attributionWindow"}) == ["attributionWindow"]
+    assert neg._deferred_known_facts(answered_body, q, {"attributionWindow"}) == []
+
+
+def test_fq4_usage_rights_deferral_is_flagged():
+    q = ["How long are the usage rights?"]
+    deferred_body = "We'll confirm the usage rights and licensing with you shortly."
+    answered_body = "AeroSoft gets 30-day usage rights and may reshare on its own channels."
+    assert neg._deferred_known_facts(deferred_body, q, {"usageRights"}) == ["usageRights"]
+    assert neg._deferred_known_facts(answered_body, q, {"usageRights"}) == []
+
+
+def test_fq4_only_enforced_when_fact_present():
+    # If we don't HAVE the attribution value this turn, the verifier doesn't force
+    # it (honest deferral is the correct behavior when the fact is unknown).
+    q = ["What's the attribution window?"]
+    body = "We'll confirm the attribution window later."
+    assert neg._deferred_known_facts(body, q, set()) == []
+
+
+def test_fq4_co_asked_attribution_splices_when_still_deferred():
+    # The end-state guarantee: even if a re-draft STILL defers, the exact value is
+    # spliced in so a co-asked known-fact question is never silently dropped.
+    body = "Thanks! On the commission — that's fixed at 10%. Best,\nAeroSoft"
+    known = {"Attribution / cookie window": "30-day attribution window on the affiliate link."}
+    spliced = neg._splice_known_facts(body, ["attributionWindow"], known)
+    assert "30-day attribution window" in spliced
+    assert spliced != body
+
+
+# ---------------------------------------------------------------------------
 # HARD-N2: draft-history render
 # ---------------------------------------------------------------------------
 

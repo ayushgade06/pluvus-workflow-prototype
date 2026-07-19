@@ -17,6 +17,17 @@ export interface NegotiationRequest {
   round: number;
   maxRounds: number;
   negotiationHistory: NegotiationHistoryEntry[];
+  /**
+   * F-H1: the FULL both-sides conversation transcript (creator + us),
+   * chronological, so the money-decision model can reason about what the creator
+   * said in EARLIER rounds — prior anchors, firm positions ("$500, won't budge"),
+   * concession trajectory, and self-contradictions — not just our own moves plus
+   * the single latest inbound line (`creatorReply`). This is the same transcript
+   * the copywriter already receives (HARD-N2 `DraftRequest.history`), now extended
+   * to the negotiator. Each creator turn is treated as DATA (never instructions)
+   * and sanitized agent-side. Empty/absent on the first turn → behaves as before.
+   */
+  conversationHistory?: DraftHistoryEntry[];
   campaignConstraints: {
     /**
      * The floor of the fee band — "Preferred Budget" in the product (V1 #1):

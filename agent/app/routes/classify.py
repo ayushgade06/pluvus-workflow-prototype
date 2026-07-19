@@ -26,7 +26,7 @@ from app.injection import (
 )
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
-from app.topic_gate import detect_escalation_topic
+from app.topic_gate import detect_escalation_topic_ex
 from app.structured import StructuredOutputError, invoke_structured
 from app.telemetry import (
     SpendCapExceeded,
@@ -245,7 +245,14 @@ def classify_message(message: str) -> ClassifyResponse:
     # benign payment-timing ask is NOT caught here (policy "defer") so it flows
     # normally and the honest-defer copy handles it. The escalationReason threads
     # to the server as the Manual Queue reason.
-    topic = detect_escalation_topic(gated)
+    #
+    # F-Q1/Q2/T3 — intent-aware: a PURE QUESTION about usage rights / exclusivity /
+    # licensing is NOT escalated here (`answered_topic`); it falls through to the
+    # rate/question gates below and routes to negotiation, where the knowledge
+    # fields answer it (rather than flooding the Manual Queue with an answerable
+    # question). A DEMAND / removal / ultimatum on the same topic still escalates,
+    # as do all the other always-escalate topics regardless of phrasing.
+    topic, _answered_topic = detect_escalation_topic_ex(gated)
     if topic is not None:
         return ClassifyResponse(
             intent="UNKNOWN",

@@ -326,12 +326,20 @@ export function buildNegotiationRequest(
     ...(h.message !== undefined ? { message: h.message } : {}),
   }));
 
+  // F-H1: the full both-sides transcript, threaded only when the executor
+  // supplied one (empty on the first turn). Passed through verbatim — the agent
+  // renders it as a <conversation_history> DATA block and sanitizes each creator
+  // turn. Kept off the request entirely when absent so first-contact behavior and
+  // any legacy caller that doesn't build it are unchanged.
+  const conversationHistory = priorContext?.conversationHistory;
+
   return {
     creatorReply,
     currentOffer,
     round,
     maxRounds,
     negotiationHistory,
+    ...(conversationHistory && conversationHistory.length ? { conversationHistory } : {}),
     campaignConstraints: {
       termFloor,
       termCeiling,
