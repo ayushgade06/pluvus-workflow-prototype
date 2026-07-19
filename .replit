@@ -113,6 +113,6 @@ localPort = 8000
 externalPort = 8000
 
 [deployment]
-deploymentTarget = "vm"
+deploymentTarget = "cloudrun"
 run = ["bash", "start-prod.sh"]
 build = ["bash", "-c", "npm run build && cd agent && pip install -e '.[ai]'"]

@@ -41,3 +41,7 @@ npm-debug.log*
 # Brand file uploads (Content Brief PDFs) — stored locally, never committed
 server/uploads/
 uploads/
+
+.claude-user
+**/.*.claude-user
+**/.claude
