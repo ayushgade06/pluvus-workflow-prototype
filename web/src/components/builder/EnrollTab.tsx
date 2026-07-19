@@ -32,6 +32,9 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   const [result, setResult] = useState<EnrollResponse | null>(null);
   const [importResult, setImportResult] = useState<CreatorImportResponse | null>(null);
   const [importing, setImporting] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [addForm, setAddForm] = useState({ email: "", name: "", handle: "", platform: "" });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
@@ -70,6 +73,47 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
       setImporting(false);
       // Reset the input so re-selecting the same file re-triggers onChange.
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  // Single-creator add — same import endpoint as the CSV path, one row.
+  async function handleAdd() {
+    const email = addForm.email.trim();
+    if (!email) return;
+    setAdding(true);
+    setImportResult(null);
+    setResult(null);
+    try {
+      const res = await importCreators([
+        {
+          email,
+          ...(addForm.name.trim() ? { name: addForm.name.trim() } : {}),
+          ...(addForm.handle.trim() ? { handle: addForm.handle.trim() } : {}),
+          ...(addForm.platform.trim() ? { platform: addForm.platform.trim() } : {}),
+        },
+      ]);
+      if (res.errors.length > 0) {
+        toast.error(`Could not add creator: ${res.errors[0]!.reason}`);
+        return;
+      }
+      await invalidateCreators();
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const c of res.creators) next.add(c.id);
+        return next;
+      });
+      const added = res.creators[0];
+      toast.success(
+        res.updated > 0
+          ? `Updated existing creator ${added?.email ?? email} — pre-selected below.`
+          : `Added ${added?.name ?? email} — pre-selected below.`,
+      );
+      setAddForm({ email: "", name: "", handle: "", platform: "" });
+      setShowAdd(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Add creator failed");
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -206,6 +250,9 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             if (f) void handleFile(f);
           }}
         />
+        <Button variant="secondary" onClick={() => setShowAdd((v) => !v)}>
+          {showAdd ? "Close" : "Add creator"}
+        </Button>
         <Button
           variant="secondary"
           onClick={() => fileInputRef.current?.click()}
@@ -217,6 +264,67 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           {allSelected ? "Deselect all" : "Select all"}
         </Button>
       </div>
+
+      {/* Inline single-creator add form */}
+      {showAdd && (
+        <form
+          className="ds-fade-in"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleAdd();
+          }}
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            flexShrink: 0,
+            padding: "12px 14px",
+            background: colors.panel,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radii.md,
+          }}
+        >
+          <Input
+            value={addForm.email}
+            onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
+            placeholder="email@example.com"
+            aria-label="New creator email"
+            type="email"
+            required
+            autoFocus
+            style={{ flex: 2 }}
+          />
+          <Input
+            value={addForm.name}
+            onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="Name (optional)"
+            aria-label="New creator name"
+            style={{ flex: 2 }}
+          />
+          <Input
+            value={addForm.handle}
+            onChange={(e) => setAddForm((f) => ({ ...f, handle: e.target.value }))}
+            placeholder="Handle (optional)"
+            aria-label="New creator handle"
+            style={{ flex: 1 }}
+          />
+          <Input
+            value={addForm.platform}
+            onChange={(e) => setAddForm((f) => ({ ...f, platform: e.target.value }))}
+            placeholder="Platform (optional)"
+            aria-label="New creator platform"
+            style={{ flex: 1 }}
+          />
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={adding || !addForm.email.trim()}
+            style={{ flexShrink: 0 }}
+          >
+            {adding ? "Adding…" : "Add"}
+          </Button>
+        </form>
+      )}
 
       {/* Creator list */}
       <div
