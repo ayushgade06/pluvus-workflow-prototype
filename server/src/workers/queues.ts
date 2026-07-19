@@ -54,8 +54,13 @@ const DEFAULT_JOB_OPTIONS = {
   },
   // Remove completed jobs after 24 h to keep Redis lean
   removeOnComplete: { age: 86_400 },
-  // Keep last 100 failed jobs for diagnostics
-  removeOnFail: { count: 100 },
+  // BUG-Q1: the durable record of an exhausted job is the DeadLetterJob row
+  // written by on("failed"); Redis is NOT the system of record for failures. But
+  // the old removeOnFail{count:100} evicted the 101st failure from Redis — and if
+  // that eviction raced ahead of the async DLQ write, the job vanished before it
+  // was recorded. Keep failed jobs generously (age + a high count) so the DLQ
+  // write always wins, and a human can still inspect the raw failed job in Redis.
+  removeOnFail: { age: 7 * 86_400, count: 10_000 },
 };
 
 // ---------------------------------------------------------------------------

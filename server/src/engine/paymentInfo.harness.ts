@@ -139,36 +139,48 @@ async function main(): Promise<void> {
     assert.equal(await state(instance.id), "PAYMENT_PENDING", "Payment Info should enter PAYMENT_PENDING");
     console.log("  ✓ REWARD_CONFIRMED → PAYMENT_PENDING (payout-request email sent)");
 
-    // A PaymentInfo row + token now exists, resolving back to this instance.
+    // A PaymentInfo row now exists. BUG-S1: the row stores the sha256 HASH of the
+    // token; the RAW token lives in the sent email link (and the PAYMENT_INFO_SENT
+    // event). Extract the raw token from the outbound email to resolve the row.
     const payment = await findPaymentInfoByInstance(instance.id);
     assert.ok(payment, "a PaymentInfo row must be created");
     assert.equal(payment!.status, "PAYMENT_PENDING");
-    const resolved = await findPaymentInfoByToken(payment!.token);
-    assert.ok(resolved, "the token must resolve back to a PaymentInfo row");
-    assert.equal(resolved!.instance.id, instance.id, "token resolves to the right instance");
-    assert.equal(resolved!.instance.creator.name, "Casey Creator");
-    console.log("  ✓ token resolves back to creator + instance");
 
-    // The payout-request email carries the tokenized link.
-    const msgs = await listMessagesByInstance(instance.id);
-    const requestEmail = msgs.find(
+    const rawTokenOf = (body: string): string => {
+      const m = body.match(/\/payment\/([^\s/]+)/);
+      assert.ok(m, "the email must contain a /payment/<token> link");
+      return m![1]!;
+    };
+    const msgs0 = await listMessagesByInstance(instance.id);
+    const requestEmail = msgs0.find(
       (m) => m.direction === "OUTBOUND" && (m.subject ?? "") === "Payment Information Required",
     );
     assert.ok(requestEmail, "a 'Payment Information Required' email must be sent");
+    const rawToken = rawTokenOf(requestEmail!.body);
+
+    // The stored value is the HASH, never the raw token (BUG-S1).
+    assert.notEqual(payment!.token, rawToken, "the DB must store the hash, not the raw token");
+
+    const resolved = await findPaymentInfoByToken(rawToken);
+    assert.ok(resolved, "the RAW token must resolve back to a PaymentInfo row");
+    assert.equal(resolved!.instance.id, instance.id, "token resolves to the right instance");
+    assert.equal(resolved!.instance.creator.name, "Casey Creator");
+    console.log("  ✓ raw token resolves back to creator + instance (hash stored at rest)");
+
     assert.ok(
-      requestEmail!.body.includes(paymentFormLink(payment!.token)),
-      "the email must include the tokenized payout-form link",
+      requestEmail!.body.includes(paymentFormLink(rawToken)),
+      "the email must include the tokenized payout-form link (raw token)",
     );
     console.log("  ✓ payout-request email includes the tokenized form link");
 
-    // Idempotency: re-running the step must NOT mint a new token or re-send. We
-    // reset to REWARD_CONFIRMED and step again; the token stays the same.
+    // Idempotency: re-running the step must NOT rotate the token or re-send. We
+    // reset to REWARD_CONFIRMED and step again; the stored hash stays the same.
     await db.update(executionInstances)
       .set({ currentState: "REWARD_CONFIRMED", currentNodeId: "node-reward-setup" })
       .where(eq(executionInstances.id, instance.id));
     await runtime.stepInstance(instance.id);
     const paymentAfter = await findPaymentInfoByInstance(instance.id);
-    assert.equal(paymentAfter!.token, payment!.token, "re-run must reuse the same token (no new link)");
+    assert.equal(paymentAfter!.token, payment!.token, "re-run must reuse the same token hash (no new link)");
     const requestEmails = (await listMessagesByInstance(instance.id)).filter(
       (m) => m.direction === "OUTBOUND" && (m.idempotencyKey ?? "").startsWith("payment:request:"),
     );
@@ -257,8 +269,13 @@ async function main(): Promise<void> {
       console.log("  ✓ physical product: payout email nudges the creator about shipping");
 
       // The hosted page gate reads shipsPhysicalProduct off the version's nodeGraph.
-      const shipPayment = await findPaymentInfoByInstance(shipInstance.id);
-      const resolvedShip = await findPaymentInfoByToken(shipPayment!.token);
+      // BUG-S1: resolve via the RAW token from the email link, not the stored hash.
+      const shipRawToken = (() => {
+        const m = shipReq!.body.match(/\/payment\/([^\s/]+)/);
+        assert.ok(m, "the ship email must contain a /payment/<token> link");
+        return m![1]!;
+      })();
+      const resolvedShip = await findPaymentInfoByToken(shipRawToken);
       assert.equal(
         shipsPhysicalProductOf(resolvedShip),
         true,
@@ -266,7 +283,7 @@ async function main(): Promise<void> {
       );
       assert.match(
         renderPaymentFormPage({
-          token: shipPayment!.token,
+          token: shipRawToken,
           creatorName: "Casey Creator",
           brandName: "Acme",
           showShippingAddress: shipsPhysicalProductOf(resolvedShip),

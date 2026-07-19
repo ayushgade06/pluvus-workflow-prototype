@@ -44,19 +44,59 @@ export function isProductionEnv(nodeEnv: string | undefined): boolean {
   return (nodeEnv ?? "").toLowerCase() === "production";
 }
 
+// ---------------------------------------------------------------------------
+// BUG-SEC3: fail-closed-by-default for unset secrets/keys
+// ---------------------------------------------------------------------------
+// The per-request checks (attribution checkSecret, requireOperatorKey, agent
+// auth) historically ran OPEN when their secret was unset, and the boot guard
+// only fired on exactly NODE_ENV="production". So a NODE_ENV=staging (or unset)
+// public deploy booted WIDE OPEN — anyone who learned the URL could settle money,
+// delete campaigns, read all PII, or inject fake conversions.
+//
+// Inverted: an unset secret is only allowed to run open when we are DEMONSTRABLY
+// in local development or test — NODE_ENV is exactly "development" or "test" — OR
+// the operator has EXPLICITLY opted into the open posture with
+// ALLOW_OPEN_SECRETS=true. Everything else (staging, preview, empty/unset
+// NODE_ENV, a typo) fails CLOSED: the check treats a missing secret as "deny".
+
+/** True when NODE_ENV is explicitly a local dev/test environment. */
+function isLocalDevOrTest(nodeEnv: string | undefined): boolean {
+  const v = (nodeEnv ?? "").toLowerCase();
+  return v === "development" || v === "test";
+}
+
+/**
+ * May an unset secret/key run in the OPEN posture in this environment?
+ *
+ *  - true  → NODE_ENV is development/test, or ALLOW_OPEN_SECRETS=true → open ok.
+ *  - false → any other environment (production, staging, preview, unset, typo)
+ *            → an unset secret must FAIL CLOSED, not silently run open.
+ *
+ * Pure + injectable for unit testing without touching process.env.
+ */
+export function openPostureAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  if ((env["ALLOW_OPEN_SECRETS"] ?? "").toLowerCase() === "true") return true;
+  return isLocalDevOrTest(env["NODE_ENV"]);
+}
+
 /**
  * Pure core: given the environment, return the list of missing required
  * secrets. Empty array ⇒ nothing to complain about. Exported for unit testing
  * without touching the live process.
  *
- * In a NON-production env this always returns [] — dev/harness/test keep their
- * open-when-unset convenience.
+ * BUG-SEC3: previously this only reported missing secrets when NODE_ENV was
+ * exactly "production" — so a staging/preview/unset-NODE_ENV public deploy booted
+ * with the secrets unset and ran WIDE OPEN. Inverted to match the per-request
+ * gates: an env that is NOT allowed to run open (i.e. not local dev/test and not
+ * ALLOW_OPEN_SECRETS=true) must have every required secret present, or the boot
+ * guard refuses to start. Only a demonstrably local dev/test env (or the explicit
+ * opt-in) keeps the open-when-unset convenience.
  */
 export function missingProductionSecrets(
   env: NodeJS.ProcessEnv,
   required: RequiredSecret[] = PRODUCTION_REQUIRED_SECRETS,
 ): RequiredSecret[] {
-  if (!isProductionEnv(env["NODE_ENV"])) return [];
+  if (openPostureAllowed(env)) return [];
   return required.filter((s) => {
     const v = env[s.name];
     return v === undefined || v.trim() === "";

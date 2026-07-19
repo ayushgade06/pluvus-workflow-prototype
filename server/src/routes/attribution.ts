@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { openPostureAllowed } from "../config/requiredSecrets.js";
 import { db } from "../db/drizzle.js";
 import {
   appendEvent,
@@ -29,15 +30,24 @@ let _warnedMissingSecret = false;
 function checkSecret(req: Request, res: Response): boolean {
   const secret = process.env["ATTRIBUTION_WEBHOOK_SECRET"];
   if (!secret) {
+    // BUG-SEC3: an unset secret only runs OPEN in local dev/test (or with an
+    // explicit ALLOW_OPEN_SECRETS=true). Anywhere else — staging, preview,
+    // unset/typo'd NODE_ENV — fail CLOSED so nobody can POST fake conversions and
+    // inflate creator commissions (money we pay) on a mis-configured public deploy.
+    if (!openPostureAllowed()) {
+      res.status(401).json({ error: "Attribution authentication is not configured" });
+      return false;
+    }
     if (!_warnedMissingSecret) {
       console.warn(
         "[attribution] ATTRIBUTION_WEBHOOK_SECRET is not set — " +
-          "conversion webhook accepts unauthenticated requests. " +
+          "conversion webhook accepts unauthenticated requests. This is allowed only " +
+          "because NODE_ENV is development/test or ALLOW_OPEN_SECRETS=true. " +
           "Set this env var in any non-local environment.",
       );
       _warnedMissingSecret = true;
     }
-    return true; // open posture (same as AGENT_API_KEY when unset)
+    return true; // open posture — permitted only in dev/test (guarded above)
   }
 
   const provided = req.headers["x-attribution-secret"];

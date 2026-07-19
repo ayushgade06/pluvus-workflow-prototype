@@ -155,6 +155,68 @@ async function main(): Promise<void> {
     assert.equal(advanced.dueAt?.toISOString(), "2026-07-20T00:00:00.000Z");
   });
 
+  await test("BUG-E1: version is bumped on every conditional write", async () => {
+    const [before] = await pgdb
+      .select()
+      .from(schema.executionInstances)
+      .where(eq(schema.executionInstances.id, instance!.id));
+    const startVersion = before!.version;
+    const updated = await updateInstanceStateConditional(
+      instance!.id,
+      "AWAITING_REPLY",
+      { currentState: "AWAITING_REPLY" }, // an X→X self-transition
+      pgdb,
+    );
+    assert.ok(updated);
+    assert.equal(updated.version, startVersion + 1, "version monotonically increments");
+  });
+
+  await test("BUG-E1: two concurrent X→X self-transitions — version OCC lets only ONE win", async () => {
+    // Fresh creator so the (workflowVersionId, creatorId) unique index is happy.
+    const [creator2] = await pgdb
+      .insert(schema.creators)
+      .values({ name: "OCC Two", email: "occ-two@test.local" })
+      .returning();
+    // Seed a fresh instance parked in NEGOTIATING (a real self-transition state).
+    const [inst2] = await pgdb
+      .insert(schema.executionInstances)
+      .values({
+        workflowVersionId: version!.id,
+        creatorId: creator2!.id,
+        currentState: "NEGOTIATING",
+      })
+      .returning();
+    const v = inst2!.version;
+
+    // Both "workers" read the same snapshot (state NEGOTIATING, version v) and
+    // both attempt NEGOTIATING → NEGOTIATING. Without the version check, both
+    // would match `currentState = NEGOTIATING` and BOTH commit (the E1 bug).
+    const first = await updateInstanceStateConditional(
+      inst2!.id,
+      "NEGOTIATING",
+      { currentState: "NEGOTIATING", negotiationRound: 1 },
+      pgdb,
+      v,
+    );
+    const second = await updateInstanceStateConditional(
+      inst2!.id,
+      "NEGOTIATING",
+      { currentState: "NEGOTIATING", negotiationRound: 2 },
+      pgdb,
+      v, // same stale version the loser read
+    );
+
+    assert.ok(first, "the first X→X writer wins");
+    assert.equal(second, null, "the second X→X writer sees the stale version → no-op null");
+
+    const [after] = await pgdb
+      .select()
+      .from(schema.executionInstances)
+      .where(eq(schema.executionInstances.id, inst2!.id));
+    assert.equal(after!.version, v + 1, "only ONE write landed (version bumped once)");
+    assert.equal(after!.negotiationRound, 1, "the winner's patch stuck; the loser's did not");
+  });
+
   await pg.close();
   console.log(`\n${n} passed\n`);
 }

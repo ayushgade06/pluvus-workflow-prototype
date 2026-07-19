@@ -8,6 +8,7 @@ import { findInstanceById, findMessageByExternalId, markMessageProcessed } from 
 import { isTerminal } from "../engine/stateMachine.js";
 import { replyIntentEnum, type ReplyIntent } from "../db/schema.js";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
+import { deadLetterIfExhausted } from "./deadLetter.js";
 
 // ---------------------------------------------------------------------------
 // InboundEmail worker
@@ -313,6 +314,10 @@ export function createInboundEmailWorker(): Worker<InboundEmailJobData> {
       `[inbound-email] job ${job?.id ?? "?"} failed (attempt ${job?.attemptsMade ?? "?"}/${job?.opts?.attempts ?? "?"}):`,
       err.message,
     );
+    // BUG-Q1/Q2: on the final exhausted attempt, persist the job durably. This is
+    // the ONLY recovery path for a lost creator reply — the inbound re-drive sweep
+    // re-enqueues it (an AWAITING_REPLY instance is otherwise unreachable).
+    void deadLetterIfExhausted(QUEUE_INBOUND_EMAIL, job, err);
   });
 
   worker.on("error", (err) => {

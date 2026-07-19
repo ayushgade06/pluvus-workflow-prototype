@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isProductionEnv,
+  openPostureAllowed,
   missingProductionSecrets,
   assertRequiredSecrets,
 } from "./requiredSecrets.js";
@@ -25,10 +26,31 @@ test("P1: isProductionEnv is true only for production (case-insensitive)", () =>
   assert.equal(isProductionEnv(undefined), false);
 });
 
-test("P1: non-production never reports missing secrets (dev/test stays open)", () => {
+test("BUG-SEC3: openPostureAllowed only in dev/test or with explicit opt-in", () => {
+  assert.equal(openPostureAllowed({ NODE_ENV: "development" }), true);
+  assert.equal(openPostureAllowed({ NODE_ENV: "test" }), true);
+  // Fail CLOSED for everything else — the footgun cases.
+  assert.equal(openPostureAllowed({ NODE_ENV: "production" }), false);
+  assert.equal(openPostureAllowed({ NODE_ENV: "staging" }), false);
+  assert.equal(openPostureAllowed({ NODE_ENV: "preview" }), false);
+  assert.equal(openPostureAllowed({}), false, "unset NODE_ENV must NOT run open");
+  // Explicit escape hatch.
+  assert.equal(openPostureAllowed({ ALLOW_OPEN_SECRETS: "true" }), true);
+  assert.equal(openPostureAllowed({ NODE_ENV: "staging", ALLOW_OPEN_SECRETS: "true" }), true);
+});
+
+test("BUG-SEC3: dev/test (or opt-in) never report missing secrets (stay open)", () => {
   assert.deepEqual(missingProductionSecrets({ NODE_ENV: "development" }, REQ), []);
   assert.deepEqual(missingProductionSecrets({ NODE_ENV: "test" }, REQ), []);
-  assert.deepEqual(missingProductionSecrets({}, REQ), []);
+  assert.deepEqual(
+    missingProductionSecrets({ NODE_ENV: "staging", ALLOW_OPEN_SECRETS: "true" }, REQ),
+    [],
+  );
+});
+
+test("BUG-SEC3: staging/unset NODE_ENV with the secret unset now reports it missing (fail closed)", () => {
+  assert.equal(missingProductionSecrets({ NODE_ENV: "staging" }, REQ).length, 1);
+  assert.equal(missingProductionSecrets({}, REQ).length, 1, "unset NODE_ENV must fail closed");
 });
 
 test("P1: production with the secret unset reports it missing", () => {

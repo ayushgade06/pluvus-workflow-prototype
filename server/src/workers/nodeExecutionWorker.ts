@@ -7,6 +7,7 @@ import { emailProvider, agentProvider } from "../engine/providerFactory.js";
 import { findInstanceById } from "../db/index.js";
 import { isTerminal } from "../engine/stateMachine.js";
 import { acquireLock, releaseLock } from "../scheduler/lock.js";
+import { deadLetterIfExhausted } from "./deadLetter.js";
 
 // ---------------------------------------------------------------------------
 // NodeExecution worker
@@ -230,6 +231,9 @@ export function createNodeExecutionWorker(): Worker<NodeExecutionJobData> {
       `[node-execution] job ${job?.id ?? "?"} failed (attempt ${job?.attemptsMade ?? "?"}/${job?.opts?.attempts ?? "?"}):`,
       err.message,
     );
+    // BUG-Q1: on the final exhausted attempt, persist the job durably so it
+    // survives a Redis eviction and can be inspected/re-driven.
+    void deadLetterIfExhausted(QUEUE_NODE_EXECUTION, job, err);
   });
 
   worker.on("error", (err) => {

@@ -3,12 +3,14 @@ import { isUniqueViolation } from "../../db/errors.js";
 import {
   createPaymentInfo,
   findPaymentInfoByInstance,
-  generatePaymentToken,
+  listEventsByInstance,
+  updatePaymentTokenHash,
 } from "../../db/index.js";
 import type { ExecutionContext, NodeResult } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderPaymentRequestEmail, paymentFormLink } from "./paymentEmail.js";
+import { mintPaymentToken } from "./paymentToken.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { blockedByMissingBrand, blockedByAttributionMint } from "./guardEscalation.js";
 import { nextNodeAfter } from "./graphNav.js";
@@ -31,26 +33,69 @@ import { resolvePartnership } from "./partnership.js";
 // and hands control back to the engine to advance to the next connected node.
 
 /**
- * Resolve (or create) the PaymentInfo row + token for this instance.
+ * Recover the RAW payment token for an instance from the persisted
+ * PAYMENT_INFO_SENT event payload (the durable carrier of the raw token — the DB
+ * row stores only its hash, BUG-S1). Returns the newest event's token, or null
+ * when no such event exists yet (the row was created but the step hasn't
+ * committed its event). The event payload stamps `{ token, formLink }`.
+ */
+async function rawTokenFromEvent(instanceId: string): Promise<string | null> {
+  const events = await listEventsByInstance(instanceId, { type: "PAYMENT_INFO_SENT" });
+  // listEventsByInstance orders ascending by occurredAt; the last is newest.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const payload = events[i]?.payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const t = (payload as Record<string, unknown>)["token"];
+      if (typeof t === "string" && t) return t;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve (or create) the PaymentInfo row for this instance and return the RAW
+ * token used to build the hosted-form link. Idempotent.
  *
- * Idempotent: a re-run of the PAYMENT step (e.g. a BullMQ retry) must not mint a
- * second token / link. If a row already exists we reuse its token; otherwise we
- * create one, tolerating a concurrent create (P2002) by re-reading.
+ * BUG-S1: the DB stores only sha256(token); the raw token is what the email link
+ * needs. So:
+ *   - No row yet → mint a fresh token, persist its HASH + expiry, return the RAW.
+ *   - Row already exists (a BullMQ retry) → recover the RAW token from the
+ *     persisted PAYMENT_INFO_SENT event so the retry reuses the SAME link the
+ *     creator already received.
+ *   - Row exists but no event carries the raw token yet (a crash between row
+ *     create and event commit, before any email went out) → re-mint, update the
+ *     row's hash + expiry, and return the fresh raw token. sendOnce still governs
+ *     the single actual send, so this cannot double-email.
  */
 export async function resolvePaymentToken(instanceId: string): Promise<string> {
   const existing = await findPaymentInfoByInstance(instanceId);
-  if (existing) return existing.token;
+  if (existing) {
+    const recovered = await rawTokenFromEvent(instanceId);
+    if (recovered) return recovered;
+    // No event yet → the previous attempt didn't get far enough to send a link.
+    // Re-mint and rotate the stored hash so the link we send now is valid.
+    const minted = mintPaymentToken();
+    await updatePaymentTokenHash(instanceId, minted.tokenHash, minted.expiresAt);
+    return minted.rawToken;
+  }
+  const minted = mintPaymentToken();
   try {
-    const created = await createPaymentInfo({
+    await createPaymentInfo({
       instanceId,
-      token: generatePaymentToken(),
+      tokenHash: minted.tokenHash,
+      expiresAt: minted.expiresAt,
     });
-    return created.token;
+    return minted.rawToken;
   } catch (err) {
-    // Another attempt created the row first (unique instanceId) — reuse it.
+    // Another attempt created the row first (unique instanceId) — reuse its link.
     if (isUniqueViolation(err)) {
-      const row = await findPaymentInfoByInstance(instanceId);
-      if (row) return row.token;
+      const recovered = await rawTokenFromEvent(instanceId);
+      if (recovered) return recovered;
+      // The concurrent creator hasn't committed its event yet; rotate to a known
+      // token so the caller has a valid link (sendOnce dedupes the email).
+      const rotate = mintPaymentToken();
+      await updatePaymentTokenHash(instanceId, rotate.tokenHash, rotate.expiresAt);
+      return rotate.rawToken;
     }
     throw err;
   }
