@@ -1,5 +1,6 @@
 import express from "express";
 import type { Express } from "express";
+import path from "path";
 import { sql } from "drizzle-orm";
 import { db } from "./db/drizzle.js";
 import queuesRouter from "./routes/queues.js";
@@ -30,6 +31,21 @@ import { requireOperatorKey } from "./middleware/requireOperatorKey.js";
 
 export function createApp(): Express {
   const app = express();
+
+  // ---------------------------------------------------------------------------
+  // /api prefix rewrite — mirrors the Vite dev proxy for production static builds.
+  // In dev, Vite proxies /api/* → localhost:3001/* (stripping the prefix).
+  // In production, Express serves the static build directly, so we replicate
+  // that stripping here so the same relative URLs work in both environments.
+  // ---------------------------------------------------------------------------
+  app.use((req, _res, next) => {
+    if (req.url.startsWith("/api/")) {
+      req.url = req.url.slice(4); // "/api/foo" → "/foo"
+    } else if (req.url === "/api") {
+      req.url = "/";
+    }
+    next();
+  });
 
   // Webhooks (Phase 6) — MUST be mounted before express.json(). Nylas signs the
   // RAW request body; signature verification needs the exact bytes, so this route
@@ -99,6 +115,22 @@ export function createApp(): Express {
   // (GET renders, POST mutates — I-5). Token-gated; must reach creators with no
   // operator key. Distinct from the operator /payouts router above.
   app.use("/payout", payoutConfirmRouter);
+
+  // ---------------------------------------------------------------------------
+  // Static SPA serving (production only)
+  // In development, Vite serves the frontend separately on its own port.
+  // In production, Express serves the built web/dist directly after all API
+  // routes so API paths are matched first.
+  // ---------------------------------------------------------------------------
+  if (process.env["NODE_ENV"] === "production") {
+    const webDist = path.resolve(process.cwd(), "web/dist");
+    app.use(express.static(webDist));
+    // SPA catch-all: serve index.html for any unmatched GET so client-side
+    // routing (React Router) handles the path.
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(webDist, "index.html"));
+    });
+  }
 
   return app;
 }

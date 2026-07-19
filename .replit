@@ -11,12 +11,9 @@ expertMode = true
 [userenv.shared]
 AGENT_PROVIDER = "langgraph"
 AGENT_SERVICE_URL = "http://localhost:8000"
-EMAIL_PROVIDER = "mock"
 ENABLE_QUEUE_INJECTION = "false"
 LLM_PROVIDER = "openrouter"
 NEGOTIATION_PROVIDER = "langgraph"
-NODE_ENV = "development"
-PORT = "3001"
 PROCESS_ROLE = "all"
 REDIS_URL = "redis://localhost:6379"
 WORKER_CONCURRENCY = "2"
@@ -25,11 +22,23 @@ OPENROUTER_MAX_RETRIES = "2"
 OPENROUTER_MODEL = "anthropic/claude-opus-4.8"
 OPENROUTER_MODEL_DRAFT = "deepseek/deepseek-chat"
 OPENROUTER_TIMEOUT_SECONDS = "60"
-AGENT_ENV = "development"
 LLM_DAILY_SPEND_ALERT_USD = "25"
 LLM_MAX_REQUEST_COST_USD = "0.50"
 NEGOTIATION_STRATEGY = "llm"
 VITE_OPERATOR_API_KEY = "OacUIV_6YbVtLPbzJH0W7gLw0UYDjAFS"
+
+[userenv.development]
+AGENT_ENV = "development"
+EMAIL_PROVIDER = "mock"
+NODE_ENV = "development"
+PORT = "3001"
+
+[userenv.production]
+AGENT_ENV = "production"
+EMAIL_PROVIDER = "nylas"
+NODE_ENV = "production"
+PAYMENT_BASE_URL = "https://pluvus-workflow-prototype.replit.app"
+PORT = "3000"
 
 [workflows]
 runButton = "Project"
@@ -88,6 +97,10 @@ args = "cd agent && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
 waitForPort = 8000
 
 [[ports]]
+localPort = 3000
+externalPort = 80
+
+[[ports]]
 localPort = 3001
 externalPort = 3001
 
@@ -96,12 +109,10 @@ localPort = 5000
 externalPort = 5000
 
 [[ports]]
-localPort = 6379
-externalPort = 80
-
-[[ports]]
 localPort = 8000
 externalPort = 8000
 
 [deployment]
-deploymentTarget = "cloudrun"
+deploymentTarget = "vm"
+run = ["bash", "start-prod.sh"]
+build = ["bash", "-c", "npm run build && cd agent && pip install -e '.[ai]'"]

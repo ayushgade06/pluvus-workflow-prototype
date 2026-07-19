@@ -24,9 +24,11 @@ export function redisConnection(): BullMQConnection {
     return {
       host: u.hostname || "127.0.0.1",
       port: u.port ? Number(u.port) : 6379,
-      username: u.username || undefined,
-      password: u.password ? decodeURIComponent(u.password) : undefined,
-      tls: u.protocol === "rediss:" ? {} : undefined,
+      // exactOptionalPropertyTypes: never assign `undefined` to optional keys —
+      // spread the key only when a real value exists.
+      ...(u.username ? { username: u.username } : {}),
+      ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
+      ...(u.protocol === "rediss:" ? { tls: {} as Record<string, unknown> } : {}),
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     };
