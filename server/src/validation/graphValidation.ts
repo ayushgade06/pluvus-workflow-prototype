@@ -442,6 +442,13 @@ function validateNodeConfig(n: GNode): ValidationIssue | null {
           "INVALID_BUDGET_RANGE",
           "Negotiation maximum budget is below the preferred budget.",
         );
+      // BUG-W1: bound the money/loop knobs SERVER-SIDE. These were enforced only
+      // in the builder UI, so a raw POST could publish maxRounds:9999 (unbounded
+      // negotiation loop / LLM spend) or commissionRate:500 (a 5x payout). Reject
+      // out-of-range values at publish. Absent values fall back to safe code
+      // defaults, so only a PRESENT out-of-range value is an error.
+      const boundsIssue = validateNegotiationBounds(n, cfg);
+      if (boundsIssue) return boundsIssue;
       // HARD-N3: a fee band with a positive ceiling must have a positive floor. A
       // zero (or negative) min with a positive max opens the recommended offer at
       // $0 (floor-anchored) and lets the agent send a $0 fee — the $0-offer bug.
@@ -455,17 +462,93 @@ function validateNodeConfig(n: GNode): ValidationIssue | null {
         );
       return null;
     }
-    case "CONTENT_BRIEF":
+    case "CONTENT_BRIEF": {
       if (!nonEmpty(cfg["briefFileRef"]))
         return err(
           n,
           "MISSING_BRIEF_ATTACHMENT",
           "Content Brief requires an uploaded Campaign Brief PDF.",
         );
+      // BUG-W1: commissionRate is mirrored onto this node from the negotiation
+      // node — bound it here too so a hand-crafted POST can't slip a 500%
+      // commission onto the paying node.
+      const commissionIssue = validatePercent(
+        n,
+        cfg["commissionRate"],
+        "INVALID_COMMISSION_RATE",
+        "commission rate",
+      );
+      if (commissionIssue) return commissionIssue;
       return null;
+    }
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// BUG-W1 — server-side bounds on the money/loop knobs.
+// ---------------------------------------------------------------------------
+// Each knob is optional (an absent value uses a safe code default), so ONLY a
+// present value out of range is an error. Bounds:
+//   maxRounds             ∈ [1, 10]   (integer; 0/absent = code default 5)
+//   commissionRate        ∈ [0, 100]  (a percentage)
+//   overCeilingTolerance  ∈ [0, 100]  (a percentage of the ceiling)
+
+const MAX_ROUNDS_MIN = 1;
+const MAX_ROUNDS_MAX = 10;
+
+function validateNegotiationBounds(
+  n: GNode,
+  cfg: Record<string, unknown>,
+): ValidationIssue | null {
+  const maxRounds = cfg["maxRounds"];
+  if (maxRounds !== undefined && maxRounds !== null) {
+    if (
+      typeof maxRounds !== "number" ||
+      !Number.isInteger(maxRounds) ||
+      maxRounds < MAX_ROUNDS_MIN ||
+      maxRounds > MAX_ROUNDS_MAX
+    ) {
+      return err(
+        n,
+        "INVALID_MAX_ROUNDS",
+        `Negotiation maxRounds must be a whole number between ${MAX_ROUNDS_MIN} and ${MAX_ROUNDS_MAX}.`,
+      );
+    }
+  }
+
+  const commissionIssue = validatePercent(
+    n,
+    cfg["commissionRate"],
+    "INVALID_COMMISSION_RATE",
+    "commission rate",
+  );
+  if (commissionIssue) return commissionIssue;
+
+  const toleranceIssue = validatePercent(
+    n,
+    cfg["overCeilingTolerance"],
+    "INVALID_OVER_CEILING_TOLERANCE",
+    "over-ceiling tolerance",
+  );
+  if (toleranceIssue) return toleranceIssue;
+
+  return null;
+}
+
+/** Validate an optional percentage field is a number in [0, 100]. Absent → ok. */
+function validatePercent(
+  n: GNode,
+  value: unknown,
+  code: string,
+  label: string,
+): ValidationIssue | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+    return err(n, code, `Negotiation ${label} must be a number between 0 and 100.`);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import { renderPartnershipWelcomeEmail } from "./partnershipWelcomeEmail.js";
 import { resolveAgreedFee, firstNumber } from "./agreedFee.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { paymentBaseUrl } from "./paymentEmail.js";
+import { isSafeRedirectUrl } from "../../validation/targetUrl.js";
 
 // ---------------------------------------------------------------------------
 // Partnership minting (Phase 1)
@@ -38,6 +39,11 @@ export function buildTrackingLink(
   referralCode: string,
 ): string | null {
   if (!targetUrl) return null;
+  // BUG-SEC5 defense-in-depth: even though campaign create/update now validates
+  // the scheme, re-check here so a legacy row (stored before validation existed)
+  // or a non-http(s) value can never produce a trackingLink the /t redirect would
+  // 302 to. A rejected URL yields null → the redirect 404s instead of bouncing.
+  if (!isSafeRedirectUrl(targetUrl)) return null;
   try {
     const url = new URL(targetUrl);
     url.searchParams.set(hiddenParamKey, referralCode);

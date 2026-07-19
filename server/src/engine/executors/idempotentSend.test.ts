@@ -98,11 +98,12 @@ async function main() {
     assert.equal(sends(), 1, "send() must be called exactly once across both attempts");
   });
 
-  await test("crash AFTER reserve, BEFORE send → retry detects reservation, no duplicate", async () => {
-    const { deps } = makeDeps();
+  await test("BUG-E3: crash AFTER reserve, BEFORE send → retry RE-SENDS (no dropped email)", async () => {
+    const { deps, rows } = makeDeps();
     const { email, sends } = makeEmail();
     // Simulate attempt 1 crashing after reserve but before send by reserving
-    // directly (no send/finalize), leaving a reserved-but-unsent row.
+    // directly (no send/finalize), leaving a reserved-but-unsent row (its
+    // externalMessageId is null).
     await deps.createMessage({
       instance: { connect: { id: "i1" } },
       direction: "OUTBOUND",
@@ -110,12 +111,36 @@ async function main() {
       body: draft.body,
       idempotencyKey: "outreach:i1",
     } as any);
-    // Retry: reserve hits P2002 → skip send. This is the safe "missed send"
-    // case (reserved row has no externalMessageId), NOT a duplicate.
+    assert.equal(rows.get("outreach:i1").externalMessageId, null, "precondition: reserved, unsent");
+    // Retry: reserve hits P2002. Because the reserved row was never sent, we must
+    // RE-ATTEMPT the send now (not drop the contract-forming email) and finalize
+    // the existing reserved row.
     const r = await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
-    assert.equal(r.alreadySent, true);
-    assert.equal(r.messageId, ""); // no provider id yet
-    assert.equal(sends(), 0, "must not send when a reservation already exists");
+    assert.equal(r.alreadySent, false, "a reserved-but-unsent row must be re-sent, not skipped");
+    assert.equal(r.messageId, "ext-1"); // now has a provider id
+    assert.equal(sends(), 1, "the crashed-before-send message is sent exactly once on retry");
+    // The EXISTING reserved row was finalized (no duplicate row created).
+    assert.equal(rows.size, 1, "no duplicate Message row");
+    assert.equal(rows.get("outreach:i1").externalMessageId, "ext-1");
+  });
+
+  await test("BUG-E3: after the recovery send, a further retry does NOT send again", async () => {
+    const { deps } = makeDeps();
+    const { email, sends } = makeEmail();
+    // Reserved-but-unsent, then a retry recovers it (sends once)...
+    await deps.createMessage({
+      instanceId: "i1",
+      direction: "OUTBOUND",
+      subject: draft.subject,
+      body: draft.body,
+      idempotencyKey: "outreach:i1",
+    } as any);
+    await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
+    // ...a THIRD attempt now sees a completed row → must not send again.
+    const r3 = await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
+    assert.equal(r3.alreadySent, true);
+    assert.equal(r3.messageId, "ext-1");
+    assert.equal(sends(), 1, "recovery send happens exactly once across all retries");
   });
 
   await test("distinct keys send independently", async () => {

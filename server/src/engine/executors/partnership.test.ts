@@ -85,6 +85,23 @@ describe("buildTrackingLink", () => {
     const link = buildTrackingLink("not-a-url", "_from", "ada_abc123");
     assert.equal(link, null);
   });
+
+  // BUG-SEC5 defense-in-depth: a non-http(s) scheme must never yield a
+  // trackingLink (which the /t redirect would 302 to).
+  it("returns null for a javascript: scheme", () => {
+    assert.equal(buildTrackingLink("javascript:alert(1)", "_from", "ada_abc123"), null);
+  });
+
+  it("returns null for a data: scheme", () => {
+    assert.equal(
+      buildTrackingLink("data:text/html,<script>1</script>", "_from", "ada_abc123"),
+      null,
+    );
+  });
+
+  it("returns null for a file: scheme", () => {
+    assert.equal(buildTrackingLink("file:///etc/passwd", "_from", "ada_abc123"), null);
+  });
 });
 
 // ---------------------------------------------------------------------------

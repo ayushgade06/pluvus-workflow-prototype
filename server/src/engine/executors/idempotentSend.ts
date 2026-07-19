@@ -57,11 +57,17 @@ const defaultDeps: SendOnceDeps = {
  * On a fresh send: reserves the row, sends, finalizes, returns the provider
  * identifiers with alreadySent=false.
  *
- * On a retry after a prior send: the reservation insert hits P2002; we read the
- * already-reserved row and return its identifiers with alreadySent=true, WITHOUT
- * sending again. (If the prior attempt crashed after reserving but before
- * sending, the row has no externalMessageId yet; we surface empty strings and
- * alreadySent=true — a safe missed send, never a duplicate.)
+ * On a retry after a prior COMPLETED send: the reservation insert hits P2002; we
+ * read the already-reserved row, see it carries a provider externalMessageId, and
+ * return its identifiers with alreadySent=true WITHOUT sending again.
+ *
+ * BUG-E3: if the prior attempt crashed AFTER reserving but BEFORE sending, the
+ * reserved row has NO externalMessageId — the email was never actually sent. The
+ * old behavior returned alreadySent=true here, permanently DROPPING a
+ * contract-forming email (Content Brief / payout-request / welcome), leaving the
+ * instance to advance and then wait forever on a link the creator never received.
+ * We now RE-ATTEMPT the send in that case and finalize the existing reserved row,
+ * so a reserve-then-crash is recovered on the BullMQ retry instead of lost.
  */
 export async function sendOnce(
   email: IEmailProvider,
@@ -88,13 +94,31 @@ export async function sendOnce(
     });
   } catch (err) {
     if (isUniqueViolation(err)) {
-      // Already reserved/sent on a prior attempt — do not send again.
+      // A prior attempt already reserved this key. Distinguish two cases:
       const prior = await deps.findMessageByIdempotencyKey(idempotencyKey);
-      return {
-        messageId: prior?.externalMessageId ?? "",
-        threadId: prior?.threadId ?? "",
-        alreadySent: true,
-      };
+      const priorSent =
+        typeof prior?.externalMessageId === "string" && prior.externalMessageId !== "";
+      if (priorSent) {
+        // (a) The prior attempt COMPLETED the send — do not send again.
+        return {
+          messageId: prior!.externalMessageId!,
+          threadId: prior?.threadId ?? "",
+          alreadySent: true,
+        };
+      }
+      if (prior) {
+        // (b) BUG-E3: reserved but NEVER sent (prior attempt crashed between
+        // reserve and send). Re-attempt the send now and finalize the existing
+        // reserved row, rather than dropping the email. This is safe: the row's
+        // unique idempotencyKey still prevents a duplicate row, and a genuinely
+        // sent message would have taken branch (a) above.
+        const { messageId, threadId } = await email.send(draft, creator, recipient);
+        await deps.updateMessageSent(prior.id, { externalMessageId: messageId, threadId });
+        return { messageId, threadId, alreadySent: false };
+      }
+      // Defensive: unique violation but no row found on re-read (shouldn't happen).
+      // Surface a safe "already sent" rather than risk a duplicate.
+      return { messageId: "", threadId: "", alreadySent: true };
     }
     throw err;
   }
