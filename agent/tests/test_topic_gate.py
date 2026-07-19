@@ -431,6 +431,92 @@ def test_per_clause_pure_usage_question_does_not_escalate():
     assert r.escalation_topic is None
 
 
+# ---------------------------------------------------------------------------
+# BUG-A1 follow-up: a QUOTED commission % is a question, not a demand
+# ---------------------------------------------------------------------------
+# Regression for the live finding: a creator asking whether the brand's OWN
+# quoted commission ("the 10% commission") is on top of or instead of the fixed
+# fee was wrongly classified as a pricing_exception DEMAND and escalated. Quoting
+# the configured rate to ask about deal structure is a clarifying QUESTION we can
+# answer from the campaign fields — it must flow to the negotiator. A demand to
+# CHANGE the commission (F-23) must still escalate.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Is the 10% commission on top of the fixed fee, or instead of it?",
+        "Just to confirm, is the 10% commission in addition to the flat fee?",
+        "What is the 10% commission based on?",
+        "Is the commission on top of the fee or instead of it?",
+    ],
+)
+def test_quoted_commission_question_is_not_a_demand(text):
+    # classify_topic_intent must read these as questions, and the whole-text gate
+    # must not escalate them.
+    assert classify_topic_intent(text, "pricing_exception") == "question"
+    assert detect_escalation_topic(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I want 40% commission or the deal is off.",
+        "Make it 20% commission.",
+        "Bump my commission to 25%.",
+        "Raise the commission to 30 percent.",
+        "Raise the commission.",
+        "Can we do commission-only, no flat fee?",
+    ],
+)
+def test_commission_change_demand_still_escalates(text):
+    # F-23 must be preserved: a real change/removal of the commission escalates.
+    assert classify_topic_intent(text, "pricing_exception") == "demand"
+    assert detect_escalation_topic(text) == "pricing_exception"
+
+
+def test_per_clause_multiq_with_quoted_commission_flows():
+    # The exact shape from the live run: fixed-fee + payment-timing questions plus a
+    # commission-structure clarifying question. No clause is a demand, so the whole
+    # turn flows to negotiation (escalate_now False, no topic) instead of collapsing
+    # to MANUAL_REVIEW.
+    r = detect_escalation_per_clause(
+        "What fixed fee are you offering for the Reel plus 3 Stories? "
+        "When would payment be sent, before or after the content goes live? "
+        "Is the 10% commission on top of the fixed fee, or instead of it?"
+    )
+    assert r.escalate_now is False
+    assert r.escalation_topic is None
+    assert r.escalated_clauses == []
+
+
+def test_classify_multiq_with_quoted_commission_does_not_escalate(monkeypatch):
+    # /classify wiring (BUG-A1): the bundled multi-question turn with a quoted-
+    # commission clause must NOT be force-escalated by the topic gate. The gate lets
+    # it fall through to the LLM path; a QUESTION classification then routes it to
+    # negotiation. We stub the LLM (no Ollama) so the test asserts the gate change,
+    # not model behavior.
+    from app.routes import classify as classify_mod
+
+    class _FakeLLM:
+        def invoke(self, _prompt):
+            class _R:
+                content = '{"intent": "QUESTION", "confidence": 0.9, "reasoning": "asking about deal"}'
+
+            return _R()
+
+    monkeypatch.setattr(classify_mod, "get_llm", lambda temperature=0, **_kw: _FakeLLM())
+
+    resp = classify_mod.classify_message(
+        "Yes, interested! What fixed fee are you offering for the Reel plus 3 Stories, "
+        "and is the 10% commission on top of the fixed fee or instead of it?"
+    )
+    # The topic gate no longer force-escalates on the quoted commission clause.
+    assert resp.escalationReason is None
+    # And the reply reaches negotiation (not a bare MANUAL_REVIEW handoff).
+    assert resp.intent != "UNKNOWN"
+
+
 def test_negotiate_multiq_with_nda_flows_and_surfaces(monkeypatch):
     # /negotiate wiring for A1: the bundled multi-question turn no longer bare-
     # escalates. It flows to the model (answers fee/timing) and surfaces the NDA

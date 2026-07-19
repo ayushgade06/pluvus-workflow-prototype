@@ -35,6 +35,28 @@ import { homedir } from "node:os";
 const PORT = process.env.PORT || "3001";
 const BASE = `http://localhost:${PORT}`;
 
+// Operator-route gate (P2 single-operator go-live): the server requires an
+// X-Operator-Key header on the operator routers (/campaigns, /workflows, ...).
+// Read it from the environment, or fall back to reading the repo-root .env so a
+// bare `node reclone.mjs` still authenticates in local dev. Mirrors the
+// add-conversion skill helper.
+function readEnvFile() {
+  try {
+    const text = readFileSync(join(process.cwd(), ".env"), "utf8");
+    const out = {};
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
+      if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+const _envFile = readEnvFile();
+const OPERATOR_KEY = process.env.OPERATOR_API_KEY || _envFile.OPERATOR_API_KEY || "";
+const operatorHeaders = OPERATOR_KEY ? { "X-Operator-Key": OPERATOR_KEY } : {};
+
 // Default escalation / brand-decision notify address. Forced onto every clone so
 // manual-escalation emails (AWAITING_BRAND_DECISION) land in an inbox we watch —
 // deliberately DIFFERENT from the creator inbox and the Nylas sender mailbox
@@ -87,7 +109,10 @@ async function req(method, path, body) {
   try {
     res = await fetch(BASE + path, {
       method,
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers: {
+        ...operatorHeaders,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (err) {
@@ -139,7 +164,7 @@ async function uploadPdf(pdf) {
   form.append("file", new Blob([bytes], { type: "application/pdf" }), pdf.name);
   let res;
   try {
-    res = await fetch(BASE + "/uploads", { method: "POST", body: form });
+    res = await fetch(BASE + "/uploads", { method: "POST", headers: operatorHeaders, body: form });
   } catch (err) {
     throw new Error(`Upload failed to reach ${BASE}/uploads (${err.code || err.message}).`);
   }

@@ -107,6 +107,74 @@ def test_accept_in_band_is_kept():
     assert d.proposed_rate == 300.0
 
 
+# ---------------------------------------------------------------------------
+# ACCEPT must land on a number ON THE TABLE — the live "$250" drift bug.
+# ---------------------------------------------------------------------------
+# A weak model on the final round returned ACCEPT at a number NEITHER side
+# proposed ($250) when the creator asked $400 and our standing offer was $200.
+# The old guard only re-based the rate when creator_ask was None, so an in-band
+# drift was rubber-stamped and the deal closed at a fabricated price. An ACCEPT
+# where the creator named an in-band rate must close AT the creator's ask.
+
+
+def test_accept_drifted_below_creator_ask_snaps_to_ask():
+    # THE BUG: model ACCEPT $250, creator asked $400 (in-band) → accept AT $400,
+    # not the model's invented $250.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 250,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=400.0, tolerance_ceiling=500.0, prior_offer=200.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 400.0
+
+
+def test_accept_drifted_above_creator_ask_never_overpays():
+    # Model ACCEPT $450 but the creator only asked $300 → never pay more than the
+    # creator asked; close at $300.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 450,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=300.0, tolerance_ceiling=500.0, prior_offer=200.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 300.0
+
+
+def test_accept_at_creator_ask_is_kept():
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 400,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=400.0, tolerance_ceiling=500.0, prior_offer=200.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 400.0
+
+
+def test_accept_over_ceiling_creator_ask_escalates():
+    # The creator's OWN ask is over tolerance → cannot close; hand to a human even
+    # if the model rate looks in-band.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 250,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=650.0, tolerance_ceiling=500.0, prior_offer=200.0,
+    )
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
+
+
+def test_accept_rogue_over_ceiling_model_rate_still_escalates():
+    # A wildly over-ceiling MODEL rate is a red flag on the money path and still
+    # escalates even when the creator's ask is in-band (belt-and-braces safety).
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 900,
+        floor_rate=100.0, ceiling_rate=500.0, is_final_round=False,
+        creator_ask=480.0, tolerance_ceiling=500.0, prior_offer=100.0,
+    )
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
+
+
 def test_counter_above_ceiling_is_clamped_to_ceiling():
     d = guard("COUNTER", 900)
     assert d.action == "COUNTER"

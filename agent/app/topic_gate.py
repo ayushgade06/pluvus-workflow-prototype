@@ -240,8 +240,18 @@ _DEMAND_SIGNAL = re.compile(
     # "make it 20% commission", "bump my commission to 25%") is a demand to
     # rewrite a fixed term. Kept adjacent to commission/percent so a plain
     # "what's the commission?" (no new number, no imperative) is NOT a demand.
-    r"|(?:want|need|make it|bump|raise|increase|give me)\b[^.]{0,20}?\d{1,3}\s*(?:%|percent)"
-    r"|\d{1,3}\s*(?:%|percent)[^.]{0,20}?\b(?:commission|or (?:this|the deal|it))"
+    r"|(?:want|need|make it|bump|raise|increase|change|adjust|give me)\b[^.]{0,20}?\d{1,3}\s*(?:%|percent)"
+    # A change-verb DIRECTED AT the commission ("raise/change/bump the commission")
+    # is a demand even without a new number. A bare quoted rate ("the 10% commission
+    # you mentioned") is NOT — the creator is referencing the brand's own configured
+    # rate, e.g. to ask whether it's on top of the fee. So we require an explicit
+    # change verb here rather than matching a percent adjacent to "commission" (the
+    # old form escalated any reply that merely QUOTED the 10% commission).
+    r"|(?:raise|bump|increase|lower|change|adjust|rewrite|drop|remove|renegotiat\w*)\b[^.]{0,20}?\bcommission\b"
+    # Ultimatum: "…40% or the deal's off". Kept to real deal-conditioning objects
+    # (this / the deal) — NOT a bare "it", which false-matched "on top of the fee,
+    # or instead of it" (a benign clarifying question).
+    r"|\d{1,3}\s*(?:%|percent)[^.]{0,20}?\bor (?:this|the deal)\b"
     r"|commission[\s-]?only\b"
     r")",
     re.IGNORECASE,

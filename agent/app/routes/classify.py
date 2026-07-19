@@ -26,7 +26,7 @@ from app.injection import (
 )
 from app.llm import get_llm
 from app.security import rate_limiter, require_api_key
-from app.topic_gate import detect_escalation_topic_ex
+from app.topic_gate import detect_escalation_per_clause
 from app.structured import StructuredOutputError, invoke_structured
 from app.telemetry import (
     SpendCapExceeded,
@@ -258,13 +258,25 @@ def classify_message(message: str) -> ClassifyResponse:
     # fields answer it (rather than flooding the Manual Queue with an answerable
     # question). A DEMAND / removal / ultimatum on the same topic still escalates,
     # as do all the other always-escalate topics regardless of phrasing.
-    topic, _answered_topic = detect_escalation_topic_ex(gated)
-    if topic is not None:
+    #
+    # BUG-A1: use the PER-CLAUSE gate (not the whole-text gate) so a bundled
+    # multi-question turn — "what's the fee, when do I get paid, and is the 10%
+    # commission on top of the fee?" — is NOT collapsed to MANUAL_REVIEW the instant
+    # ONE clause touches a sensitive topic. detect_escalation_per_clause escalates
+    # NOW only when a sensitive clause has NOTHING answerable alongside it
+    # (escalate_now=True — a bare demand/ultimatum). Otherwise the turn flows to the
+    # rate/question gates below and on to negotiation, which answers the answerable
+    # clauses and surfaces the sensitive one into creatorQuestions. This mirrors the
+    # per-clause handling in negotiate.py so classify and negotiate agree on what
+    # escalates. The always-escalate DEMAND path (legal/dispute/pricing-change) is
+    # preserved exactly: those still set escalate_now=True with no answerable clause.
+    gate = detect_escalation_per_clause(gated)
+    if gate.escalate_now:
         return ClassifyResponse(
             intent="UNKNOWN",
             confidence=0.0,
-            reasoning=f"always-escalate topic ({topic}); routed to a human regardless of confidence",
-            escalationReason=topic,
+            reasoning=f"always-escalate topic ({gate.escalation_topic}); routed to a human regardless of confidence",
+            escalationReason=gate.escalation_topic,
         )
 
     # 3.5 — rate statement → FORCE POSITIVE. A creator stating a price ("I charge

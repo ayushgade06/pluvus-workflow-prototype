@@ -1194,18 +1194,37 @@ def _apply_decision_guards(
     if action == "ACCEPT":
         if rate > tolerance_ceiling:
             # The model "accepted" beyond even the tolerance band — do NOT agree
-            # over budget; escalate to a human (mirrors the deterministic path).
+            # over budget; escalate to a human (mirrors the deterministic path). A
+            # wildly over-ceiling model number is a red flag on the money path even
+            # when the creator's own ask is in-band, so we hand it to a human rather
+            # than silently close (kept keyed on the model rate for that safety).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-        # BUG-A4: when the creator named NO rate this turn but we have a standing
-        # offer, prefer that prior offer over the model's (possibly drifted) number
-        # — never close ABOVE the figure we already put on the table for no reason.
-        # Clamp the accept rate DOWN to the prior offer first; the band clamp below
-        # still applies (a stale prior offer under the floor is raised to it). When
-        # the creator DID name a rate, that path is governed by creator_ask, so we
-        # leave the model's number alone here.
-        effective_rate = rate
-        if creator_ask is None and prior_offer is not None and prior_offer < effective_rate:
-            effective_rate = prior_offer
+        # BUG (live $250): an ACCEPT must close at a number that is ACTUALLY ON THE
+        # TABLE — the creator's own ask, or the offer WE last put down — never a
+        # figure the model invented in between. A weak model on the final round
+        # "accepts" at a drifted number ($250) when the creator asked $400 and our
+        # standing offer was $200; the old guard only clamped when creator_ask was
+        # None, so an in-band drift ($200<=250<=500) was rubber-stamped, closing the
+        # deal at a price NEITHER side proposed. Mirror the deterministic path
+        # (_step_negotiation ACCEPTANCE): the creator's stated in-band ask IS the
+        # number they agree to — accept AT it (never above their ask, never above
+        # the ceiling). Only when the creator named NO rate do we fall back to our
+        # prior standing offer (BUG-A4: never close above the figure we offered).
+        if creator_ask is not None:
+            # Accept at the creator's ask (clamped to band). Meeting them at their
+            # own in-band number is the honest close; the model's rate is ignored so
+            # it can neither under-pay ($250 vs a $400 ask) nor over-pay them. The
+            # over-tolerance case already escalated above (creator asks over cap are
+            # caught here too because the model can only ACCEPT at/above their ask on
+            # a real close; a rogue in-band model rate no longer masks it — but for
+            # belt-and-braces we also re-check the ask against the tolerance ceiling).
+            if creator_ask > tolerance_ceiling:
+                return NegotiationDecision(action="ESCALATE", proposed_rate=None)
+            effective_rate = creator_ask
+        else:
+            effective_rate = rate
+            if prior_offer is not None and prior_offer < effective_rate:
+                effective_rate = prior_offer
         # Clamp a below-floor acceptance up to the floor (never pay below it) AND
         # an in-tolerance over-ceiling acceptance down to the ceiling (Phase C:
         # tolerance means "meet them at the cap", never agree above the ceiling).
