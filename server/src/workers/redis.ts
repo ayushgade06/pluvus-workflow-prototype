@@ -10,6 +10,9 @@
 export interface BullMQConnection {
   host: string;
   port: number;
+  username?: string;
+  password?: string;
+  tls?: Record<string, unknown>;
   maxRetriesPerRequest: null;
   enableReadyCheck: boolean;
 }
@@ -21,6 +24,9 @@ export function redisConnection(): BullMQConnection {
     return {
       host: u.hostname || "127.0.0.1",
       port: u.port ? Number(u.port) : 6379,
+      username: u.username || undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+      tls: u.protocol === "rediss:" ? {} : undefined,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     };

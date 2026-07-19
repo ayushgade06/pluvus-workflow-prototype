@@ -25,6 +25,10 @@ OPENROUTER_MAX_RETRIES = "2"
 OPENROUTER_MODEL = "anthropic/claude-opus-4.8"
 OPENROUTER_MODEL_DRAFT = "deepseek/deepseek-chat"
 OPENROUTER_TIMEOUT_SECONDS = "60"
+AGENT_ENV = "development"
+LLM_DAILY_SPEND_ALERT_USD = "25"
+LLM_MAX_REQUEST_COST_USD = "0.50"
+NEGOTIATION_STRATEGY = "llm"
 
 [workflows]
 runButton = "Project"
