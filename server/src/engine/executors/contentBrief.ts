@@ -10,7 +10,7 @@ import { resolveAgreedFee, firstNumber, firstString } from "./agreedFee.js";
 import { resolvePaymentToken } from "./paymentInfo.js";
 import { paymentFormLink } from "./paymentEmail.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
-import { blockedByGuard, blockedByMissingBrand } from "./guardEscalation.js";
+import { blockedByGuard, blockedByMissingBrand, blockedByAttributionMint } from "./guardEscalation.js";
 import { resolveBrandName } from "../campaignContext.js";
 
 // ---------------------------------------------------------------------------
@@ -242,12 +242,29 @@ export async function executeContentBriefSubmission(
 
   const briefFileName = str(config, "briefFileName") || "campaign-brief.pdf";
 
-  // Phase 1: mint (or reuse) the Partnership row and send the welcome email.
-  // Non-fatal — a failure here must not fail the payout submission.
+  // Phase 1: mint (or reuse) the Partnership row + fee Obligation (the money
+  // ledger) and send the welcome email. BUG-E2: this mint is what records the
+  // money the brand owes the creator. If it fails (throws, or resolvePartnership
+  // returns null on a DB blip), we must NOT fall through to the success terminal
+  // — that would "complete" the deal with no ledger row and no recovery path
+  // (CONTENT_BRIEF_SENT is terminal + excluded from RECONCILE_STATES). Route to
+  // MANUAL_REVIEW instead so a human can re-run and complete the mint. The
+  // creator's payout data is already persisted (PaymentInfo is PAYMENT_RECEIVED),
+  // so nothing is lost and the node is safe to re-run. (An internal welcome-email
+  // failure inside resolvePartnership is swallowed there and still returns the
+  // partnership, so it does NOT trip this escalation — only a real mint failure.)
+  let partnership;
   try {
-    await resolvePartnership(ctx, email);
+    partnership = await resolvePartnership(ctx, email);
   } catch (err) {
-    console.error("[contentBrief] resolvePartnership failed (non-fatal)", err);
+    console.error("[contentBrief] resolvePartnership threw — escalating to MANUAL_REVIEW", err);
+    return blockedByAttributionMint(node.type);
+  }
+  if (!partnership) {
+    console.error(
+      `[contentBrief] resolvePartnership returned null for ${instance.id} — escalating to MANUAL_REVIEW`,
+    );
+    return blockedByAttributionMint(node.type);
   }
 
   // Content Brief is the terminal node — the payout submission completes the run.

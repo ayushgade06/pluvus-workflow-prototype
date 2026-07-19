@@ -37,6 +37,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createId } from "@paralleldrive/cuid2";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -189,6 +190,14 @@ export const brandNotificationStatusEnum = pgEnum("BrandNotificationStatus", [
   "SKIPPED",
 ]);
 
+// BUG-Q1: a dead-lettered job is PENDING until the re-drive sweep re-enqueues it
+// (→ REDRIVEN) or an operator marks it DISCARDED.
+export const deadLetterStatusEnum = pgEnum("DeadLetterStatus", [
+  "PENDING",
+  "REDRIVEN",
+  "DISCARDED",
+]);
+
 export const paymentInfoStatusEnum = pgEnum("PaymentInfoStatus", [
   "PAYMENT_PENDING",
   "PAYMENT_RECEIVED",
@@ -229,6 +238,7 @@ export type WorkflowStatus = (typeof workflowStatusEnum.enumValues)[number];
 export type OutboxStatus = (typeof outboxStatusEnum.enumValues)[number];
 export type BrandNotificationStatus =
   (typeof brandNotificationStatusEnum.enumValues)[number];
+export type DeadLetterStatus = (typeof deadLetterStatusEnum.enumValues)[number];
 export type PaymentInfoStatus =
   (typeof paymentInfoStatusEnum.enumValues)[number];
 export type PayoutMethod = (typeof payoutMethodEnum.enumValues)[number];
@@ -332,6 +342,12 @@ export const executionInstances = pgTable(
     currentNodeId: text("currentNodeId"),
     followUpCount: integer("followUpCount").notNull().default(0),
     negotiationRound: integer("negotiationRound").notNull().default(0),
+    // BUG-E1: monotonic OCC counter. updateInstanceStateConditional predicates on
+    // (currentState AND version) and bumps version on every write, so two
+    // concurrent writes — including an X→X self-transition, which currentState
+    // alone can't distinguish — can never both commit. The first wins; the second
+    // matches the stale version, updates 0 rows, and no-ops.
+    version: integer("version").notNull().default(0),
     dueAt: ts("dueAt"),
     enrolledAt: tsNow("enrolledAt"),
     completedAt: ts("completedAt"),
@@ -420,6 +436,42 @@ export const outboxJobs = pgTable(
     uniqueIndex("OutboxJob_dedupeKey_key").on(table.dedupeKey),
     index("OutboxJob_status_createdAt_idx").on(table.status, table.createdAt),
     index("OutboxJob_instanceId_idx").on(table.instanceId),
+  ],
+);
+
+// BUG-Q1/Q2: durable dead-letter store for BullMQ jobs that exhausted their
+// retries. A worker's on("failed") handler writes a row here on the final failed
+// attempt, so the job survives a Redis eviction/flush and can be re-driven (the
+// inbound-email re-drive sweep recovers a lost creator reply). instanceId is a
+// plain nullable TEXT with NO foreign key on purpose (see the migration).
+export const deadLetterJobs = pgTable(
+  "DeadLetterJob",
+  {
+    id: cuidId("id"),
+    queue: text("queue").notNull(),
+    jobId: text("jobId"),
+    jobName: text("jobName"),
+    payload: jsonb("payload").$type<JsonValue>().notNull(),
+    instanceId: text("instanceId"),
+    failReason: text("failReason"),
+    attemptsMade: integer("attemptsMade").notNull().default(0),
+    status: deadLetterStatusEnum("status").notNull().default("PENDING"),
+    redriveCount: integer("redriveCount").notNull().default(0),
+    createdAt: tsNow("createdAt"),
+    redrivenAt: ts("redrivenAt"),
+  },
+  (table) => [
+    index("DeadLetterJob_queue_status_createdAt_idx").on(
+      table.queue,
+      table.status,
+      table.createdAt,
+    ),
+    index("DeadLetterJob_instanceId_idx").on(table.instanceId),
+    // Idempotent dead-lettering: a (queue, jobId) is recorded at most once. jobId
+    // can be null, so this is a PARTIAL unique index over rows that have one.
+    uniqueIndex("DeadLetterJob_queue_jobId_key")
+      .on(table.queue, table.jobId)
+      .where(sql`${table.jobId} IS NOT NULL`),
   ],
 );
 
@@ -601,7 +653,19 @@ export const obligations = pgTable(
     createdAt: tsNow("createdAt"),
     paidAt: ts("paidAt"),
   },
-  (table) => [index("Obligation_partnershipId_idx").on(table.partnershipId)],
+  (table) => [
+    index("Obligation_partnershipId_idx").on(table.partnershipId),
+    // BUG-D1: a partnership has at most ONE auto-minted fee obligation. This
+    // partial unique index enforces that invariant at the DB level so a
+    // concurrent mint race (BullMQ retry vs reconciliation) cannot slip a second
+    // "Agreed collaboration fee" row past mintFeeObligation's check-then-insert →
+    // the brand never pays the fee twice. Partial (scoped to the fee row's fixed
+    // description) so future manual/extra obligations remain unconstrained.
+    // Mirrors migration 20260719120000_bug_d1_obligation_fee_unique.
+    uniqueIndex("Obligation_partnershipId_fee_key")
+      .on(table.partnershipId)
+      .where(sql`${table.description} = 'Agreed collaboration fee'`),
+  ],
 );
 
 export const payouts = pgTable(
@@ -674,6 +738,10 @@ export const insertOutboxJobSchema = createInsertSchema(outboxJobs).omit({
   id: true,
   createdAt: true,
 });
+export const insertDeadLetterJobSchema = createInsertSchema(deadLetterJobs).omit({
+  id: true,
+  createdAt: true,
+});
 export const insertBrandNotificationSchema = createInsertSchema(
   brandNotifications,
 ).omit({ id: true, createdAt: true });
@@ -717,6 +785,7 @@ export type ExecutionInstance = typeof executionInstances.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Event = typeof events.$inferSelect;
 export type OutboxJob = typeof outboxJobs.$inferSelect;
+export type DeadLetterJob = typeof deadLetterJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
 export type Partnership = typeof partnerships.$inferSelect;
@@ -736,6 +805,7 @@ export type InsertExecutionInstance = z.infer<
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type InsertEvent = z.infer<typeof insertEventSchema>;
 export type InsertOutboxJob = z.infer<typeof insertOutboxJobSchema>;
+export type InsertDeadLetterJob = z.infer<typeof insertDeadLetterJobSchema>;
 export type InsertBrandNotification = z.infer<
   typeof insertBrandNotificationSchema
 >;
@@ -756,6 +826,7 @@ export type ExecutionInstanceInsert = typeof executionInstances.$inferInsert;
 export type MessageInsert = typeof messages.$inferInsert;
 export type EventInsert = typeof events.$inferInsert;
 export type OutboxJobInsert = typeof outboxJobs.$inferInsert;
+export type DeadLetterJobInsert = typeof deadLetterJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
 export type PartnershipInsert = typeof partnerships.$inferInsert;

@@ -13,6 +13,7 @@ import {
   updateWorkflow,
 } from "../db/workflows.js";
 import { getTemplate } from "../templates/index.js";
+import { validateTargetUrl } from "../validation/targetUrl.js";
 
 const router = Router();
 
@@ -102,6 +103,15 @@ router.post("/", async (req: Request, res: Response) => {
     typeof notifyEmail === "string" ? notifyEmail.trim() : "";
   if (trimmedNotify && !isEmailish(trimmedNotify)) {
     res.status(400).json({ error: "notifyEmail must be a valid email address" });
+    return;
+  }
+
+  // BUG-SEC5: reject an open-redirect / SSRF-prone targetUrl before it is stored.
+  // Only http(s) with a host is accepted; javascript:/data:/file:/unparseable are
+  // rejected. An absent/empty value is allowed (a campaign may have no target).
+  const targetUrlCheck = validateTargetUrl(typeof targetUrl === "string" ? targetUrl : null);
+  if (!targetUrlCheck.valid) {
+    res.status(422).json({ error: targetUrlCheck.reason ?? "invalid targetUrl" });
     return;
   }
 

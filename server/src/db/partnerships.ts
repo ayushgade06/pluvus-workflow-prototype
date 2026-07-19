@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import {
   campaigns,
   creators,
@@ -173,16 +173,19 @@ export async function findPaymentInfoSummaryByInstance(
   };
 }
 
-export async function createPartnership(data: {
-  instanceId: string;
-  campaignId?: string | null;
-  creatorId: string;
-  referralCode: string;
-  trackingLink?: string | null;
-  commissionRate?: number | null;
-  agreedFeeCents?: number | null;
-}): Promise<Partnership> {
-  const rows = await db
+export async function createPartnership(
+  data: {
+    instanceId: string;
+    campaignId?: string | null;
+    creatorId: string;
+    referralCode: string;
+    trackingLink?: string | null;
+    commissionRate?: number | null;
+    agreedFeeCents?: number | null;
+  },
+  client: Db | DbTx = db,
+): Promise<Partnership> {
+  const rows = await client
     .insert(partnerships)
     .values({
       instanceId: data.instanceId,

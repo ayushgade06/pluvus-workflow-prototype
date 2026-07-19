@@ -244,12 +244,16 @@ export class WorkflowRuntime {
     // write won; a StaleInstanceError is thrown OUTSIDE the tx so the rollback
     // has already happened by the time callers see it.
     const updated = await db.transaction(async (tx) => {
-      // Persist state change — OCC: only succeeds if currentState hasn't changed.
+      // Persist state change — OCC: only succeeds if (currentState AND version)
+      // still match the snapshot we loaded. BUG-E1: passing the loaded version
+      // guards X→X self-transitions (a negotiation round staying NEGOTIATING, or a
+      // re-run landing on the same state) that currentState alone can't.
       const row = await updateInstanceStateConditional(
         instanceId,
         instance.currentState,
         patch,
         tx,
+        instance.version,
       );
       if (!row) {
         // Another worker already advanced this instance. Roll back the (empty)
@@ -424,6 +428,7 @@ export class WorkflowRuntime {
           dueAt: null,
         },
         tx,
+        instance.version, // BUG-E1: version-guarded OCC (guards X→X too).
       );
       if (!row) return null;
 

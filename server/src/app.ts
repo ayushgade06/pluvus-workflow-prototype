@@ -1,10 +1,13 @@
 import express from "express";
 import type { Express } from "express";
+import helmet from "helmet";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { db } from "./db/drizzle.js";
+import { globalRateLimiter, publicRateLimiter } from "./middleware/rateLimit.js";
+import { errorHandler } from "./middleware/errorHandler.js";
 import queuesRouter from "./routes/queues.js";
 import webhooksRouter from "./routes/webhooks.js";
 import observabilityRouter from "./routes/observability.js";
@@ -34,11 +37,57 @@ import { requireOperatorKey } from "./middleware/requireOperatorKey.js";
 export function createApp(): Express {
   const app = express();
 
+  // -------------------------------------------------------------------------
+  // Security headers (BUG-SEC2) + info-disclosure hardening.
+  // -------------------------------------------------------------------------
+  // Live audit: X-Powered-By: Express leaked and there were ZERO security
+  // headers. `helmet` adds the standard defensive set (X-Content-Type-Options,
+  // X-Frame-Options via frameguard, Referrer-Policy, etc.) and disables the
+  // powered-by banner. The CSP is relaxed for the served SPA: the Vite build ships
+  // inline styles and the dashboard talks to same-origin /api, so a strict default
+  // CSP would break it. We keep a CSP present but permissive enough for the SPA
+  // (self + inline styles/scripts + same-origin XHR). HSTS is left to the TLS
+  // terminator (Render) — enabling it here on a possibly-HTTP local origin is a
+  // footgun; the reverse proxy owns HSTS in prod.
+  app.disable("x-powered-by");
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "default-src": ["'self'"],
+          "script-src": ["'self'", "'unsafe-inline'"],
+          "style-src": ["'self'", "'unsafe-inline'"],
+          "img-src": ["'self'", "data:"],
+          "connect-src": ["'self'"],
+          "frame-ancestors": ["'none'"],
+          // The SPA sets no <base>; upgrade-insecure-requests would break a plain
+          // http:// local origin. Leave it to the proxy.
+          "upgrade-insecure-requests": null,
+        },
+      },
+      // HSTS handled by the TLS terminator; do not force it from the app.
+      hsts: false,
+      // Allow the SPA to be embedded/served without COEP tripping asset loads.
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
+
+  // -------------------------------------------------------------------------
+  // Rate limiting (BUG-SEC1) — generous global bucket on every request.
+  // -------------------------------------------------------------------------
+  // A tighter bucket for the unauthenticated public/magic-link/webhook routes is
+  // applied at their mount points below. Both return a clean 429 JSON body and
+  // are env-tunable (set *_MAX=0 to disable, e.g. for load tests).
+  app.use(globalRateLimiter());
+
   // Webhooks (Phase 6) — MUST be mounted before express.json(). Nylas signs the
   // RAW request body; signature verification needs the exact bytes, so this route
   // uses a raw body parser. GET (challenge) carries no body, so the raw parser is
-  // a harmless no-op there.
-  app.use("/webhooks", express.raw({ type: "*/*", limit: "2mb" }), webhooksRouter);
+  // a harmless no-op there. Carries the tighter public rate-limit bucket
+  // (BUG-SEC1) — signed, but still an unauthenticated external POST surface.
+  const publicLimiter = publicRateLimiter();
+  app.use("/webhooks", publicLimiter, express.raw({ type: "*/*", limit: "2mb" }), webhooksRouter);
 
   app.use(express.json());
 
@@ -92,16 +141,18 @@ export function createApp(): Express {
   app.use("/payouts", requireOperatorKey, payoutsRouter);
 
   // OPEN routers (creator magic-link / webhooks / public — NEVER gated) --------
+  // These are the unauthenticated, token-guessable surface, so each carries the
+  // tighter public rate-limit bucket (BUG-SEC1) on top of the global one.
   // Phase 15 — Payment Info: hosted payout-information page (creator magic-link).
-  app.use("/payment", paymentRouter);
+  app.use("/payment", publicLimiter, paymentRouter);
   // Phase 2 (Attribution) — public short-link redirect + conversion webhook
   // (/attribution has its OWN X-Attribution-Secret gate, P1).
-  app.use("/t", trackingRouter);
-  app.use("/attribution", attributionRouter);
+  app.use("/t", publicLimiter, trackingRouter);
+  app.use("/attribution", publicLimiter, attributionRouter);
   // Phase 3 (Payout ledger) — creator-facing confirm/dispute magic-link pages
   // (GET renders, POST mutates — I-5). Token-gated; must reach creators with no
   // operator key. Distinct from the operator /payouts router above.
-  app.use("/payout", payoutConfirmRouter);
+  app.use("/payout", publicLimiter, payoutConfirmRouter);
 
   // -------------------------------------------------------------------------
   // Static SPA (single-origin deploy) — serve the built dashboard.
@@ -140,6 +191,13 @@ export function createApp(): Express {
       res.sendFile(resolve(webDist, "index.html"));
     });
   }
+
+  // -------------------------------------------------------------------------
+  // Global error handler (BUG-API1) — MUST be mounted LAST. Turns any unhandled
+  // error (incl. the body-parser JSON SyntaxError from express.json() above) into
+  // a clean JSON response with no stack/path leak unless NODE_ENV=development.
+  // -------------------------------------------------------------------------
+  app.use(errorHandler);
 
   return app;
 }

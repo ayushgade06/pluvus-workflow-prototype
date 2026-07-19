@@ -1,5 +1,6 @@
 import { isUniqueViolation } from "../../db/errors.js";
 import {
+  db,
   appendEvent,
   findPartnershipByInstance,
   createPartnership,
@@ -16,6 +17,7 @@ import { renderPartnershipWelcomeEmail } from "./partnershipWelcomeEmail.js";
 import { resolveAgreedFee, firstNumber } from "./agreedFee.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { paymentBaseUrl } from "./paymentEmail.js";
+import { isSafeRedirectUrl } from "../../validation/targetUrl.js";
 
 // ---------------------------------------------------------------------------
 // Partnership minting (Phase 1)
@@ -37,6 +39,11 @@ export function buildTrackingLink(
   referralCode: string,
 ): string | null {
   if (!targetUrl) return null;
+  // BUG-SEC5 defense-in-depth: even though campaign create/update now validates
+  // the scheme, re-check here so a legacy row (stored before validation existed)
+  // or a non-http(s) value can never produce a trackingLink the /t redirect would
+  // 302 to. A rejected URL yields null → the redirect 404s instead of bouncing.
+  if (!isSafeRedirectUrl(targetUrl)) return null;
   try {
     const url = new URL(targetUrl);
     url.searchParams.set(hiddenParamKey, referralCode);
@@ -70,11 +77,22 @@ export async function mintFeeObligation(
   if (!Number.isFinite(agreedFeeCents) || agreedFeeCents <= 0) return false;
   const existing = await listObligationsByPartnership(partnershipId);
   if (existing.length > 0) return false;
-  await createObligation({
-    partnershipId,
-    description: FEE_OBLIGATION_DESCRIPTION,
-    amountCents: agreedFeeCents,
-  });
+  // BUG-D1: the check above is advisory only — two concurrent mints (a BullMQ
+  // retry racing the reconciliation sweep) can both read zero and both reach
+  // this insert. The partial unique index Obligation_partnershipId_fee_key is
+  // the real backstop: the loser's INSERT raises a unique violation, which we
+  // swallow to a safe no-op here (the fee obligation already exists, so there is
+  // nothing to do and nothing was double-created). Any other error propagates.
+  try {
+    await createObligation({
+      partnershipId,
+      description: FEE_OBLIGATION_DESCRIPTION,
+      amountCents: agreedFeeCents,
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) return false;
+    throw err;
+  }
   return true;
 }
 
@@ -140,6 +158,11 @@ export async function resolvePartnership(
   const hiddenParamKey = campaign?.hiddenParamKey ?? "_from";
 
   // Step 4: mint (with collision retry) or re-read on concurrent unique violation (I-3).
+  // BUG-D-events: the winning mint attempt inserts the Partnership row AND appends
+  // its PARTNERSHIP_ACTIVATED audit event in ONE transaction (inside mintWithRetry),
+  // so the partnership and its ledger event commit or roll back together. A
+  // concurrent reread (the losing path) does NOT re-append the event — the winner
+  // already did, atomically — which also fixes the prior double-event on that path.
   let partnership: Partnership;
   try {
     partnership = await mintWithRetry(
@@ -155,6 +178,8 @@ export async function resolvePartnership(
   } catch (err) {
     if (isUniqueViolation(err)) {
       // A concurrent path already created the row (instanceId unique) — re-read.
+      // The event was appended by that winning path's transaction, so we do not
+      // append it again here.
       const reread = await findPartnershipByInstance(instance.id);
       if (reread) {
         partnership = reread;
@@ -168,30 +193,22 @@ export async function resolvePartnership(
     }
   }
 
-  // Step 5: append PARTNERSHIP_ACTIVATED event (I-7).
-  try {
-    await appendEvent({
-      instanceId: instance.id,
-      type: "PARTNERSHIP_ACTIVATED",
-      payload: {
-        referralCode: partnership.referralCode,
-        trackingLink: partnership.trackingLink ?? null,
-        commissionRate: partnership.commissionRate ?? null,
-        agreedFeeCents: partnership.agreedFeeCents ?? null,
-      },
-    });
-  } catch (err) {
-    console.error("[partnership] PARTNERSHIP_ACTIVATED event append failed (non-fatal)", err);
-  }
-
-  // Step 5.5: mint the fixed-fee Obligation (Phase 3). A partnership with an
+  // Step 5: mint the fixed-fee Obligation (Phase 3). A partnership with an
   // agreed fee owes it; the Obligation is the ledger row the brand later pays as
-  // a FIXED_FEE payout. Idempotent + non-fatal — a failed mint must never fail
-  // the payout submission (I-8), and a re-run must not create a second row.
+  // a FIXED_FEE payout. Idempotent (re-runs never create a second row — BUG-D1's
+  // partial unique index is the backstop).
+  //
+  // BUG-E2: when the partnership HAS an agreed fee, the Obligation IS the money
+  // the brand owes — so a failure to mint it must NOT return a "successful"
+  // partnership. Returning null routes the caller (the terminal-hop submission
+  // executors) to MANUAL_REVIEW instead of the success terminal, so the deal is
+  // never marked complete with the fee ledger row missing. A partnership with no
+  // agreed fee owes no obligation, so a no-op mint is success.
   try {
     await mintFeeObligation(partnership.id, partnership.agreedFeeCents);
   } catch (err) {
-    console.error("[partnership] fee obligation mint failed (non-fatal)", err);
+    console.error("[partnership] fee obligation mint failed — treating as mint failure", err);
+    return null;
   }
 
   // Step 6: send the welcome email (idempotent, I-6).
@@ -237,6 +254,13 @@ export async function resolvePartnership(
 
 // Internal helper that does the full retry loop building the tracking link
 // per attempt (code changes each attempt so the link must change too).
+//
+// BUG-D-events: each attempt inserts the Partnership row AND appends its
+// PARTNERSHIP_ACTIVATED audit event inside ONE db.transaction, so the row and its
+// ledger event commit or roll back together. A unique violation (duplicate
+// referral code) rolls the whole attempt back — event included — and the loop
+// retries with a fresh code; a duplicate instanceId rolls back and propagates so
+// the caller re-reads the concurrent winner (which appended its own event).
 async function mintWithRetry(
   creatorName: string,
   instanceId: string,
@@ -251,14 +275,33 @@ async function mintWithRetry(
     const code = generateReferralCode(creatorName);
     const trackingLink = buildTrackingLink(targetUrl, hiddenParamKey, code);
     try {
-      return await createPartnership({
-        instanceId,
-        campaignId,
-        creatorId,
-        referralCode: code,
-        trackingLink,
-        commissionRate,
-        agreedFeeCents,
+      return await db.transaction(async (tx) => {
+        const partnership = await createPartnership(
+          {
+            instanceId,
+            campaignId,
+            creatorId,
+            referralCode: code,
+            trackingLink,
+            commissionRate,
+            agreedFeeCents,
+          },
+          tx,
+        );
+        await appendEvent(
+          {
+            instanceId,
+            type: "PARTNERSHIP_ACTIVATED",
+            payload: {
+              referralCode: partnership.referralCode,
+              trackingLink: partnership.trackingLink ?? null,
+              commissionRate: partnership.commissionRate ?? null,
+              agreedFeeCents: partnership.agreedFeeCents ?? null,
+            },
+          },
+          tx,
+        );
+        return partnership;
       });
     } catch (err) {
       if (isUniqueViolation(err) && attempt < MAX_CODE_ATTEMPTS - 1) continue;

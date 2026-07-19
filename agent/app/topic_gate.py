@@ -351,3 +351,161 @@ def detect_escalation_topic_ex(text: str) -> tuple[str | None, str | None]:
     ):
         return None, topic
     return topic, None
+
+
+# ---------------------------------------------------------------------------
+# BUG-A1: per-clause topic gating (multi-question collapse)
+# ---------------------------------------------------------------------------
+# The whole-reply gate above escalates a MULTI-question turn the instant ONE
+# clause touches an escalate-topic keyword — losing the answerable questions:
+#   "Love it! What is the fee, when do I get paid, and I will need a signed NDA?"
+# has two answerable questions (fee, payment timing) AND one escalate clause (the
+# NDA). Running the gate on the WHOLE string escalated the entire turn (the NDA
+# keyword matched) → fee + timing lost to the Manual Queue with a bare handoff.
+#
+# `detect_escalation_per_clause` splits the reply into clauses and runs the SAME
+# intent-aware gate PER CLAUSE, then decides:
+#   * If NO clause escalates → nothing to escalate (identical to today).
+#   * If a clause escalates AND at least one OTHER clause is genuinely answerable
+#     (a non-sensitive question/statement — fee, timing, a plain "love it"), the
+#     turn is NOT a bare escalate: it FLOWS to the negotiator (which answers the
+#     answerable clauses) and the escalated clause is SURFACED so the caller can
+#     put it in creatorQuestions for the human. `escalate_now` is False here.
+#   * If a clause escalates AND there is NO answerable clause (the whole reply is
+#     just the escalate-topic DEMAND — "I will sue you", "I need a signed NDA
+#     before we start") → `escalate_now` is True: the always-escalate legal/
+#     dispute DEMAND path is preserved exactly, never weakened.
+#
+# Deliberately conservative: a clause that ITSELF bundles an escalate-topic with a
+# question still escalates that clause (the per-clause gate's own intent-aware
+# question carve-out already lets a pure usage/commission QUESTION through). Only a
+# SEPARATE answerable clause opens the flow-to-model path.
+
+# Clause boundaries — CONSERVATIVE. We split only on boundaries that reliably
+# separate DISTINCT asks: sentence terminators (. ? ! ;) and a comma/"and"/"but"
+# that introduces a NEW interrogative ("what is the fee, and when do I get paid,
+# and I need an NDA"). We deliberately do NOT split on bare "plus"/","/" and "
+# between non-question fragments, so a single demand ("$400 plus perpetual usage
+# rights, non-negotiable") is NOT shredded into false "answerable" fragments —
+# that would weaken the always-escalate DEMAND path (forbidden).
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r"[.?!;]+\s*"
+    r"|,\s+and\s+(?=(?:i\b|by\b|for\b|remind me\b|honestly\b)?\s*"
+    r"(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"
+    r"|,\s+(?=(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"
+    r"|\s+and\s+(?=(?:i\b|by\b|for\b|remind me\b|honestly\b)?\s*"
+    r"(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)",
+    re.IGNORECASE,
+)
+
+# An "answerable" clause is one the negotiator can actually handle: a QUESTION or
+# an engaged statement about a NON-sensitive term (fee, payment timing, start
+# date, deliverables, a plain "love it"). We require a positive answerable SHAPE —
+# not merely "non-trivial words" — so a fragment of a demand ("$400", "non-
+# negotiable") does NOT count as answerable. This keeps the flow-to-model path
+# open ONLY when there is a genuine answerable question/statement alongside the
+# escalate clause (the A1 scenario), and never on a bare demand.
+_ANSWERABLE_CLAUSE_RE = re.compile(
+    r"\?"  # a question mark
+    r"|^\s*(?:what|when|where|which|who|why|how|do|does|did|can|could|would|will|"
+    r"is|are|any|whether|could you|can you|would you|remind me|tell me|let me know|"
+    r"just wondering|curious|wanted to know)\b"
+    r"|\b(?:the fee|my fee|the rate|the pay|get paid|when do (?:i|we)|how (?:much|soon)|"
+    r"the timeline|start date|when (?:do|does|can) (?:we|i|it)|deliverable|turnaround|"
+    r"how many|which platform|what platform)\b"
+    r"|^\s*(?:love it|sounds (?:good|great)|i'?m in|count me in|let'?s do it|"
+    r"happy to|excited|interested)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_clauses(text: str) -> list[str]:
+    """Split a creator reply into clause-sized units for per-clause gating.
+    Conservative: drops empties, keeps order, never raises."""
+    if not text:
+        return []
+    return [c.strip() for c in _CLAUSE_BOUNDARY_RE.split(text) if c and c.strip()]
+
+
+class PerClauseGateResult:
+    """Structured result of the per-clause topic gate (BUG-A1).
+
+    Attributes:
+      escalate_now       — True → the caller MUST escalate to a human now (a
+                           demand on an escalate-topic with nothing else to answer,
+                           OR the whole reply is a single escalate clause). False →
+                           the turn may flow to the negotiator.
+      escalation_topic   — the reason code of the offending clause, or None. Set
+                           whenever an escalate clause was found (whether or not we
+                           escalate now) so the caller can annotate the Manual
+                           Queue / creatorQuestions.
+      escalated_clauses  — the raw text of each clause that carried an escalate
+                           topic (surfaced into creatorQuestions on the flow path
+                           so the human still sees the sensitive ask).
+      answerable_clauses — the clauses that did NOT escalate (fee/timing/etc.).
+    """
+
+    __slots__ = ("escalate_now", "escalation_topic", "escalated_clauses", "answerable_clauses")
+
+    def __init__(
+        self,
+        escalate_now: bool,
+        escalation_topic: str | None,
+        escalated_clauses: list[str],
+        answerable_clauses: list[str],
+    ) -> None:
+        self.escalate_now = escalate_now
+        self.escalation_topic = escalation_topic
+        self.escalated_clauses = escalated_clauses
+        self.answerable_clauses = answerable_clauses
+
+
+def detect_escalation_per_clause(text: str) -> PerClauseGateResult:
+    """Per-clause topic gate (BUG-A1). See PerClauseGateResult / module notes.
+
+    Splits ``text`` into clauses and runs the intent-aware escalation gate on each.
+    Decides whether the turn must escalate NOW (bare handoff) or may flow to the
+    negotiator with the escalated clause surfaced for the human.
+    """
+    clauses = _split_clauses(text)
+    if not clauses:
+        # No splittable content — fall back to whole-text gating for safety.
+        whole, _answered = detect_escalation_topic_ex(text)
+        return PerClauseGateResult(
+            escalate_now=whole is not None,
+            escalation_topic=whole,
+            escalated_clauses=[text] if whole is not None else [],
+            answerable_clauses=[],
+        )
+
+    escalation_topic: str | None = None
+    escalated_clauses: list[str] = []
+    answerable_clauses: list[str] = []
+
+    for clause in clauses:
+        topic, _answered = detect_escalation_topic_ex(clause)
+        if topic is not None:
+            escalated_clauses.append(clause)
+            if escalation_topic is None:
+                escalation_topic = topic  # first offending topic wins the reason
+        elif _ANSWERABLE_CLAUSE_RE.search(clause):
+            # A non-escalating clause that has an ANSWERABLE shape (a question, a
+            # fee/timing ask, or engaged interest) — the negotiator can handle it.
+            answerable_clauses.append(clause)
+
+    if escalation_topic is None:
+        # Nothing sensitive → not an escalation (the answerable path handles it).
+        return PerClauseGateResult(False, None, [], answerable_clauses)
+
+    # An escalate clause exists. Escalate NOW only when there is NOTHING answerable
+    # to salvage — i.e. the whole turn is the escalate-topic demand. Otherwise flow
+    # to the negotiator and surface the escalated clause for the human. This is the
+    # A1 fix: the always-escalate DEMAND path stands when it's the whole reply, but
+    # a bundled multi-question turn keeps its answerable questions.
+    escalate_now = len(answerable_clauses) == 0
+    return PerClauseGateResult(
+        escalate_now=escalate_now,
+        escalation_topic=escalation_topic,
+        escalated_clauses=escalated_clauses,
+        answerable_clauses=answerable_clauses,
+    )

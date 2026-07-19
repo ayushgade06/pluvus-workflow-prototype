@@ -221,6 +221,104 @@ test("HARD-N3: a positive floor is accepted", () => {
   assert.ok(!codes(res).includes("INVALID_ZERO_FLOOR"));
 });
 
+// -- BUG-W1: server-side bounds on maxRounds / commissionRate / tolerance ----
+
+test("W1: maxRounds above 10 is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, maxRounds: 9999 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_MAX_ROUNDS"));
+});
+
+test("W1: maxRounds below 1 is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, maxRounds: 0 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_MAX_ROUNDS"));
+});
+
+test("W1: non-integer maxRounds is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, maxRounds: 3.5 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_MAX_ROUNDS"));
+});
+
+test("W1: in-range maxRounds is accepted", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, maxRounds: 5 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.ok(!codes(res).includes("INVALID_MAX_ROUNDS"));
+});
+
+test("W1: commissionRate above 100 is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, commissionRate: 500 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_COMMISSION_RATE"));
+});
+
+test("W1: negative commissionRate is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, commissionRate: -1 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_COMMISSION_RATE"));
+});
+
+test("W1: in-range commissionRate is accepted", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, commissionRate: 15 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.ok(!codes(res).includes("INVALID_COMMISSION_RATE"));
+});
+
+test("W1: overCeilingTolerance above 100 is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["n"], OUTREACH_CFG),
+    gnode("n", "NEGOTIATION", ["r"], { ...NEG_CFG, overCeilingTolerance: 250 }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_OVER_CEILING_TOLERANCE"));
+});
+
+test("W1: commissionRate above 100 mirrored onto CONTENT_BRIEF is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["cb"], OUTREACH_CFG),
+    gnode("cb", "CONTENT_BRIEF", [], { ...BRIEF_CFG, commissionRate: 200 }),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("INVALID_COMMISSION_RATE"));
+});
+
 test("empty graph is rejected", () => {
   const res = validateWorkflowGraph([]);
   assert.equal(res.valid, false);

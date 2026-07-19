@@ -1,5 +1,11 @@
 import { Router, type Request, type Response } from "express";
 import { verifyNylasSignature } from "../providers/nylas/verifySignature.js";
+import {
+  extractDeliveryTime,
+  isFreshDelivery,
+  resolveMaxAgeSeconds,
+  SeenDeliveryIds,
+} from "../providers/nylas/replayGuard.js";
 import { findMessagesByThreadId } from "../db/index.js";
 import { enqueueInboundEmail } from "../workers/queues.js";
 
@@ -27,6 +33,11 @@ import { enqueueInboundEmail } from "../workers/queues.js";
 // not express.json — signature verification needs the exact bytes Nylas sent.
 
 const router = Router();
+
+// BUG-SEC4: per-process replay guard for recently-seen delivery ids. A repeat of
+// the same signed delivery within the retention window is rejected as a replay
+// (the durable backstop is Message.externalMessageId @unique downstream).
+const seenDeliveries = new SeenDeliveryIds();
 
 // ── Extracted, normalized inbound message ──────────────────────────────────
 interface InboundMessage {
@@ -138,11 +149,35 @@ router.post("/nylas", async (req: Request, res: Response) => {
     return;
   }
 
+  // ── Replay protection — freshness (BUG-SEC4) ─────────────────────────────
+  // A valid signature proves authenticity, not freshness. Reject a delivery whose
+  // Nylas `time` is older than WEBHOOK_MAX_AGE_SECONDS. Absent `time` fails open
+  // here (the seen-id guard below is the backstop). 401 (not 200) so a replay is
+  // not silently acked as processed.
+  if (!isFreshDelivery(extractDeliveryTime(payload), Date.now(), resolveMaxAgeSeconds())) {
+    console.warn("[webhook/nylas] rejected — stale delivery (replay window exceeded)");
+    res.status(401).json({ error: "stale delivery" });
+    return;
+  }
+
   const inbound = extractInboundMessage(payload);
   if (!inbound) {
     // Not a message event we can act on (e.g. a non-message notification type).
     // Ack so Nylas doesn't retry; nothing to do.
     res.status(200).json({ status: "ignored", reason: "no actionable message" });
+    return;
+  }
+
+  // ── Replay protection — seen delivery id (BUG-SEC4) ──────────────────────
+  // Drop a repeat of the same delivery id (a replay, or a Nylas re-delivery of
+  // one we already took). Ack 200 (idempotent no-op) so a legitimate Nylas retry
+  // isn't triggered into a loop; the enqueue below is skipped. The durable
+  // backstop remains Message.externalMessageId @unique in the worker.
+  if (!seenDeliveries.add(inbound.messageId)) {
+    console.log(
+      `[webhook/nylas] dropping duplicate/replayed delivery (msg ${inbound.messageId})`,
+    );
+    res.status(200).json({ status: "ignored", reason: "duplicate delivery" });
     return;
   }
 

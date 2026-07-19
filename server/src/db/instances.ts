@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, lt, lte } from "drizzle-orm";
+import { and, asc, count, eq, inArray, lt, lte, sql } from "drizzle-orm";
 import { db, type Db, type DbTx } from "./drizzle.js";
 import {
   executionInstances,
@@ -120,6 +120,17 @@ export async function updateInstanceState(
  * UPDATE matches 0 rows and this returns null — it never throws for the
  * lose-the-race case. Callers branch on the null.
  *
+ * BUG-E1: an optional `expectedVersion` tightens the predicate to
+ * (currentState AND version) and the SET bumps `version = version + 1`. This is
+ * what guards X→X SELF-transitions: currentState alone matches on every
+ * concurrent attempt (both read state X, both write X), so without the version
+ * check two writers would both commit → double events + double side effects.
+ * With it, the first writer bumps the version and the second matches the stale
+ * version → 0 rows → clean no-op. When `expectedVersion` is omitted (legacy /
+ * tests that don't thread it), behavior is the state-only OCC as before, but the
+ * version is STILL bumped so the counter stays monotonic for any caller that
+ * does check it.
+ *
  * `client` is injectable so the OCC race test can run against an embedded
  * Postgres (PGlite) with the real migration DDL applied, AND so the runtime can
  * enlist this write in the same transaction as the follow-on event append (W-7).
@@ -129,16 +140,19 @@ export async function updateInstanceStateConditional(
   expectedCurrentState: InstanceState,
   patch: InstancePatch,
   client: Db | DbTx = db,
+  expectedVersion?: number,
 ): Promise<ExecutionInstance | null> {
+  const predicates = [
+    eq(executionInstances.id, id),
+    eq(executionInstances.currentState, expectedCurrentState),
+  ];
+  if (expectedVersion !== undefined) {
+    predicates.push(eq(executionInstances.version, expectedVersion));
+  }
   const rows = await client
     .update(executionInstances)
-    .set(patch)
-    .where(
-      and(
-        eq(executionInstances.id, id),
-        eq(executionInstances.currentState, expectedCurrentState),
-      ),
-    )
+    .set({ ...patch, version: sql`${executionInstances.version} + 1` })
+    .where(and(...predicates))
     .returning();
   return rows[0] ?? null;
 }

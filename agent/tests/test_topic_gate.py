@@ -9,6 +9,7 @@ import pytest
 from app.topic_gate import (
     TOPIC_POLICY,
     classify_topic_intent,
+    detect_escalation_per_clause,
     detect_escalation_topic,
     detect_escalation_topic_ex,
     detect_topic,
@@ -331,11 +332,143 @@ def test_negotiate_usage_rights_QUESTION_does_not_escalate_on_topic(monkeypatch)
     assert r.action == "PRESENT_OFFER"
 
 
-def test_negotiate_escalate_populates_creator_questions():
-    # F-Q1/Q2/T3 #2: even when the turn legitimately escalates (a legal matter
-    # bundled with a question), the extracted questions are surfaced so the Manual
-    # Queue shows the operator exactly what the creator asked.
+def test_negotiate_bundled_legal_plus_question_flows_and_surfaces(monkeypatch):
+    # BUG-A1: a legal DEMAND ("my lawyer must review the contract") bundled with an
+    # answerable question ("when do I get paid?") no longer collapses the whole turn
+    # to a bare ESCALATE. The turn FLOWS to the negotiator (which answers the payment
+    # timing) and the legal clause is SURFACED in creatorQuestions + escalationReason
+    # so the human still sees it. (Previously this whole turn was lost to the queue.)
+    from app.routes import negotiate as neg_mod
+
+    class _FakeLLM:
+        def invoke(self, _prompt):
+            class _R:
+                content = (
+                    '{"action": "PRESENT_OFFER", "rate": 300, '
+                    '"response": "Payment is net-30 after the content goes live.", '
+                    '"reasoning": "answering the payment-timing question", '
+                    '"creatorRateMentioned": null, '
+                    '"creatorQuestions": ["when do I get paid?"], '
+                    '"pushedFixedTerms": []}'
+                )
+            return _R()
+
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
+    monkeypatch.setattr(
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None, **_kw: _FakeLLM()
+    )
     r = _neg("My lawyer must review the contract first. Also, when do I get paid?")
+    # Flows (not a bare handoff), the payment question is answered...
+    assert r.action == "PRESENT_OFFER"
+    assert any("paid" in q.lower() for q in r.creatorQuestions), r.creatorQuestions
+    # ...but the legal clause is surfaced so the human/server still sees it.
+    assert r.escalationReason == "legal_or_contract"
+    assert any("lawyer" in q.lower() or "contract" in q.lower() for q in r.creatorQuestions), (
+        r.creatorQuestions
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-A1: per-clause topic gate (multi-question collapse)
+# ---------------------------------------------------------------------------
+
+
+def test_per_clause_multiq_with_nda_flows_not_escalates():
+    # The headline A1 case: two answerable questions + an NDA demand → FLOW (not a
+    # bare escalate), NDA surfaced, topic recorded.
+    r = detect_escalation_per_clause(
+        "Love it! What is the fee, when do I get paid, and I will need a signed NDA before we start."
+    )
+    assert r.escalate_now is False
+    assert r.escalation_topic == "legal_or_contract"
+    assert len(r.answerable_clauses) >= 2  # fee + payment timing
+    assert any("nda" in c.lower() for c in r.escalated_clauses)
+
+
+def test_per_clause_pure_fee_timing_no_escalation():
+    r = detect_escalation_per_clause("What is the fee and when do I get paid?")
+    assert r.escalate_now is False
+    assert r.escalation_topic is None
+    assert r.escalated_clauses == []
+
+
+@pytest.mark.parametrize(
+    "text, expected_topic",
+    [
+        # Single DEMAND on an escalate-topic with nothing answerable → escalate NOW.
+        # (The always-escalate DEMAND path must be preserved — not weakened.)
+        ("I will need a signed NDA before we start.", "legal_or_contract"),
+        ("I will sue you if you do not pay.", "dispute_or_hostile"),
+        ("I will sue you and report you to the BBB.", "dispute_or_hostile"),
+        ("You never paid me and this is a scam.", "dispute_or_hostile"),
+        ("I require full category exclusivity or I walk.", "usage_rights_or_licensing"),
+        ("$400 plus perpetual usage rights, non-negotiable.", "usage_rights_or_licensing"),
+        ("Make it 40% commission or the deal is off.", "pricing_exception"),
+    ],
+)
+def test_per_clause_single_demand_still_escalates(text, expected_topic):
+    r = detect_escalation_per_clause(text)
+    assert r.escalate_now is True, r.answerable_clauses
+    assert r.escalation_topic == expected_topic
+
+
+def test_per_clause_fee_plus_exclusivity_demand_flows_and_surfaces():
+    # Fee question is answerable; the exclusivity DEMAND rides along in
+    # escalated_clauses rather than swallowing the whole turn.
+    r = detect_escalation_per_clause(
+        "What is the fee, and do you require category exclusivity or I walk?"
+    )
+    assert r.escalate_now is False
+    assert r.escalation_topic == "usage_rights_or_licensing"
+    assert any("exclusiv" in c.lower() for c in r.escalated_clauses)
+    assert any("fee" in c.lower() for c in r.answerable_clauses)
+
+
+def test_per_clause_pure_usage_question_does_not_escalate():
+    # A pure usage-rights QUESTION is answerable (intent-aware carve-out) → no topic.
+    r = detect_escalation_per_clause("Quick question — do you ask for usage rights?")
+    assert r.escalate_now is False
+    assert r.escalation_topic is None
+
+
+def test_negotiate_multiq_with_nda_flows_and_surfaces(monkeypatch):
+    # /negotiate wiring for A1: the bundled multi-question turn no longer bare-
+    # escalates. It flows to the model (answers fee/timing) and surfaces the NDA
+    # clause in creatorQuestions + escalationReason for the human.
+    from app.routes import negotiate as neg_mod
+
+    class _FakeLLM:
+        def invoke(self, _prompt):
+            class _R:
+                content = (
+                    '{"action": "PRESENT_OFFER", "rate": 300, '
+                    '"response": "The fee is $300 and payment is net-30 after go-live.", '
+                    '"reasoning": "answering the fee and payment questions", '
+                    '"creatorRateMentioned": null, '
+                    '"creatorQuestions": ["what is the fee?", "when do I get paid?"], '
+                    '"pushedFixedTerms": []}'
+                )
+            return _R()
+
+    monkeypatch.setenv("NEGOTIATION_STRATEGY", "llm")
+    monkeypatch.setattr(
+        neg_mod, "get_llm", lambda temperature=0.3, num_predict=None, **_kw: _FakeLLM()
+    )
+    r = _neg(
+        "Love it! What is the fee, when do I get paid, and I will need a signed NDA before we start."
+    )
+    assert r.action == "PRESENT_OFFER"
+    assert r.escalationReason == "legal_or_contract"
+    # fee + timing answered, NDA surfaced, no duplicate NDA entry.
+    joined = " | ".join(r.creatorQuestions).lower()
+    assert "fee" in joined and "paid" in joined and "nda" in joined
+    nda_count = sum(1 for q in r.creatorQuestions if "nda" in q.lower())
+    assert nda_count == 1, r.creatorQuestions
+
+
+def test_negotiate_single_legal_demand_still_escalates_after_a1():
+    # Regression guard: A1 must not weaken the always-escalate DEMAND path. A single
+    # legal demand with nothing answerable still bare-escalates before any model call.
+    r = _neg("I will need a signed NDA before we start.")
     assert r.action == "ESCALATE"
     assert r.escalationReason == "legal_or_contract"
-    assert any("paid" in q.lower() for q in r.creatorQuestions), r.creatorQuestions

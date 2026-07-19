@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import { db } from "./drizzle.js";
 import {
   campaigns,
@@ -19,26 +19,13 @@ import {
 // ---------------------------------------------------------------------------
 // One row per ExecutionInstance. Created (in PAYMENT_PENDING) when the node
 // sends the payout-form link; finalized (PAYMENT_RECEIVED) when the creator
-// submits the hosted form. The unique `token` is the capability embedded in the
-// link — it resolves back to the instance (and thus creator / campaign / node
-// execution) without any authentication (prototype scope).
-
-/** A secure, unguessable token for the hosted payout-form URL. */
-export function generatePaymentToken(): string {
-  return randomUUID();
-}
-
-// MED-S5: how long a payout link stays usable. The token is a bearer
-// capability, so a leaked/forwarded link must not work forever. 30 days is
-// generous for "fill in your payout details"; tunable via PAYMENT_TOKEN_TTL_DAYS.
-const DEFAULT_PAYMENT_TOKEN_TTL_DAYS = 30;
-
-export function paymentTokenExpiry(now: Date = new Date()): Date {
-  const raw = Number(process.env["PAYMENT_TOKEN_TTL_DAYS"]);
-  const days =
-    Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PAYMENT_TOKEN_TTL_DAYS;
-  return new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-}
+// submits the hosted form. BUG-S1: the `token` column stores ONLY the sha256
+// HASH of the bearer token — the raw token lives solely in the email link (and
+// the persisted PAYMENT_INFO_SENT event, for idempotent reuse). The link
+// resolves back to the instance (creator / campaign / node execution) with no
+// authentication (prototype scope), but a DB dump can no longer forge a link.
+// Token minting + hashing + TTL live in engine/executors/paymentToken.ts,
+// mirroring the sibling payout-confirm token.
 
 /**
  * Create the PaymentInfo row for an instance in the pending state.
@@ -47,20 +34,24 @@ export function paymentTokenExpiry(now: Date = new Date()): Date {
  * `instanceId`, so a re-run of the Payment Info step (e.g. a BullMQ retry) that
  * tries to create a second row hits the unique constraint. Callers that need to
  * tolerate that should catch the unique violation (see the executor, which
- * reuses the existing row's token rather than minting a new link).
+ * reuses the existing link rather than minting a new one).
+ *
+ * BUG-S1: the caller mints the token (raw + hash + expiry) and passes ONLY the
+ * hash + expiry here — the raw token never reaches the DB layer.
  */
 export async function createPaymentInfo(data: {
   instanceId: string;
-  token: string;
+  tokenHash: string;
+  expiresAt: Date;
 }): Promise<PaymentInfo> {
   const rows = await db
     .insert(paymentInfo)
     .values({
       instanceId: data.instanceId,
-      token: data.token,
+      token: data.tokenHash,
       status: "PAYMENT_PENDING",
       // MED-S5: stamp the token lifecycle at mint time.
-      expiresAt: paymentTokenExpiry(),
+      expiresAt: data.expiresAt,
     })
     .returning();
   return rows[0]!;
@@ -85,8 +76,15 @@ export type PaymentInfoWithInstance = PaymentInfo & {
  *  `shipsPhysicalProduct` flag off the PAYMENT_INFO node and decide whether to
  *  render the shipping-address section. Null when the token is unknown. */
 export async function findPaymentInfoByToken(
-  token: string,
+  rawToken: string,
 ): Promise<PaymentInfoWithInstance | null> {
+  // BUG-S1: the column stores sha256(token). Hash the presented raw token from
+  // the URL and look it up by hash equality (the token_key unique index backs
+  // this). A DB dump reveals only hashes, so a leaked dump cannot forge a link.
+  // Hashed inline (node:crypto) rather than importing the engine helper so the DB
+  // layer takes no dependency on engine/ — the hash recipe is identical
+  // (sha256 hex) to engine/executors/paymentToken.ts:hashPaymentToken.
+  const tokenHash = createHash("sha256").update(rawToken).digest("hex");
   const rows = await db
     .select({
       row: paymentInfo,
@@ -106,7 +104,7 @@ export async function findPaymentInfoByToken(
     )
     .innerJoin(workflows, eq(workflowVersions.workflowId, workflows.id))
     .leftJoin(campaigns, eq(workflows.campaignId, campaigns.id))
-    .where(eq(paymentInfo.token, token))
+    .where(eq(paymentInfo.token, tokenHash))
     .limit(1);
 
   const r = rows[0];
@@ -123,6 +121,32 @@ export async function findPaymentInfoByToken(
       },
     },
   };
+}
+
+/**
+ * Rotate the stored token hash + expiry for an instance's PaymentInfo row.
+ *
+ * BUG-S1: used only on the rare recovery path (a crash between row-create and
+ * event-commit left no raw token recoverable) so the link the caller sends now
+ * matches what is stored. A no-op (returns null) if the row is absent. Scoped to
+ * PAYMENT_PENDING so a rotation can never touch an already-submitted row.
+ */
+export async function updatePaymentTokenHash(
+  instanceId: string,
+  tokenHash: string,
+  expiresAt: Date,
+): Promise<PaymentInfo | null> {
+  const rows = await db
+    .update(paymentInfo)
+    .set({ token: tokenHash, expiresAt })
+    .where(
+      and(
+        eq(paymentInfo.instanceId, instanceId),
+        eq(paymentInfo.status, "PAYMENT_PENDING"),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
 }
 
 /** The PaymentInfo row for an instance, if one exists. */

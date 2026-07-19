@@ -1,5 +1,5 @@
 import { and, count, desc, eq, isNull, sql } from "drizzle-orm";
-import { db } from "./drizzle.js";
+import { db, type Db, type DbTx } from "./drizzle.js";
 import {
   clicks,
   conversions,
@@ -81,8 +81,11 @@ export async function unpaidCommissionConversions(
     );
 }
 
-export async function markConversionRefunded(id: string): Promise<Conversion> {
-  const rows = await db
+export async function markConversionRefunded(
+  id: string,
+  client: Db | DbTx = db,
+): Promise<Conversion> {
+  const rows = await client
     .update(conversions)
     .set({ refunded: true })
     .where(eq(conversions.id, id))

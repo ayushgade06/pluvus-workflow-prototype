@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { RequestHandler } from "express";
+import { openPostureAllowed } from "../config/requiredSecrets.js";
 
 // ---------------------------------------------------------------------------
 // P2 — operator-route gate (single-operator go-live)
@@ -63,11 +64,21 @@ export const requireOperatorKey: RequestHandler = (req, res, next) => {
   );
 
   if (verdict === "open") {
+    // BUG-SEC3: an unset key is only allowed to run OPEN in local dev/test (or
+    // with an explicit ALLOW_OPEN_SECRETS=true opt-in). Anywhere else — staging,
+    // preview, unset/typo'd NODE_ENV — fail CLOSED so a mis-set env can never boot
+    // the operator surface wide open. (The boot guard also refuses to start in
+    // production; this covers the non-"production" public deploys it misses.)
+    if (!openPostureAllowed()) {
+      res.status(401).json({ error: "Operator authentication is not configured" });
+      return;
+    }
     if (!_warnedMissingKey) {
       console.warn(
         "[operator-gate] OPERATOR_API_KEY is not set — operator routes accept " +
-          "unauthenticated requests. Set this env var in any exposed environment " +
-          "(the server refuses to boot without it when NODE_ENV=production).",
+          "unauthenticated requests. This is allowed only because NODE_ENV is " +
+          "development/test or ALLOW_OPEN_SECRETS=true. Set the key in any exposed " +
+          "environment (the server also refuses to boot without it in production).",
       );
       _warnedMissingKey = true;
     }
