@@ -37,6 +37,7 @@ const creator = {
 function makeDeps(opts?: {
   notifyEmail?: string | null;
   contextNull?: boolean;
+  transcript?: import("../adapters/negotiation/types.js").DraftHistoryEntry[];
 }) {
   const rows = new Map<string, BrandNotification>();
   const events: Array<{ type: string; payload: unknown }> = [];
@@ -51,6 +52,7 @@ function makeDeps(opts?: {
         brandName: "Acme Co",
         workflowName: "Summer Outreach",
         notifyEmail: opts?.notifyEmail ?? null,
+        transcript: opts?.transcript ?? [],
       };
     },
     async createBrandNotification(data: any) {
@@ -132,6 +134,7 @@ async function main() {
         brandName: "Acme Co",
         workflowName: "Summer Outreach",
         notifyEmail: null,
+        transcript: [],
       },
       "low_confidence_reply",
     );
@@ -139,6 +142,56 @@ async function main() {
     assert.match(draft.body, /Acme Co/);
     assert.match(draft.body, /robin@creators\.test/);
     assert.match(draft.body, /could not confidently classify/);
+    // First-turn escalation (empty transcript) has no conversation block.
+    assert.ok(!/Conversation so far/.test(draft.body));
+  });
+
+  await test("buildEscalationEmail renders the both-sides transcript when present", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [
+          { role: "creator", message: "What's the pay and timeline?" },
+          { role: "us", round: 1, action: "PRESENT_OFFER", rate: 350, message: "We can offer $350." },
+          { role: "creator", message: "I want 40% commission or this doesn't happen." },
+        ],
+      },
+      "pricing_exception",
+    );
+    // The conversation block appears with both sides labeled.
+    assert.match(draft.body, /Conversation so far/);
+    assert.match(draft.body, /Robin Vega:/); // creator turn labeled by name
+    assert.match(draft.body, /Acme Co — round 1, PRESENT_OFFER, \$350:/); // our turn tagged
+    assert.match(draft.body, /I want 40% commission/); // the escalation trigger is visible
+    // Tells the operator how to actually respond (reply to creator, not this alert).
+    assert.match(draft.body, /reply to Robin Vega directly at robin@creators\.test/);
+    assert.match(draft.body, /Replying to THIS notification does nothing/);
+  });
+
+  await test("buildEscalationEmail caps a very long transcript and notes omissions", async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      role: (i % 2 === 0 ? "creator" : "us") as "creator" | "us",
+      message: `msg ${i}`,
+    }));
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: null,
+        brandName: "Acme Co",
+        workflowName: null,
+        notifyEmail: null,
+        transcript: many,
+      },
+      "escalated",
+    );
+    // 25 > cap(20): notes that earlier turns were omitted, shows the newest.
+    assert.match(draft.body, /most recent 20 of 25 messages; 5 earlier omitted/);
+    assert.match(draft.body, /msg 24/); // newest is kept
+    assert.ok(!/\bmsg 0\b/.test(draft.body)); // oldest is dropped
   });
 
   await test("fresh escalation sends to the campaign recipient and records SENT", async () => {

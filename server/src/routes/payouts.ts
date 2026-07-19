@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { eq, sql } from "drizzle-orm";
-import { db } from "../db/drizzle.js";
+import { db, type DbTx } from "../db/drizzle.js";
 import {
   campaigns,
   creators,
@@ -76,9 +76,25 @@ router.post(
       return;
     }
 
+    // BUG-D-events: create the payout (locks + inserts) and append PAYOUT_CREATED
+    // in ONE transaction, so the money row and its audit event are atomic.
     let payout;
     try {
-      payout = await createCommissionPayout(partnershipId, destinationOf(ctx));
+      payout = await db.transaction(async (tx) => {
+        const p = await createCommissionPayout(partnershipId, destinationOf(ctx), tx);
+        await appendPayoutEvent(
+          ctx.instanceId,
+          "PAYOUT_CREATED",
+          {
+            payoutId: p.id,
+            payoutType: p.payoutType,
+            amountCents: p.amountCents,
+            conversionCount: p.conversionCount,
+          },
+          tx,
+        );
+        return p;
+      });
     } catch (err) {
       if (err instanceof NoUnpaidCommissionError) {
         res.status(400).json({ error: "no unpaid commission" });
@@ -86,13 +102,6 @@ router.post(
       }
       throw err;
     }
-
-    await appendPayoutEvent(ctx.instanceId, "PAYOUT_CREATED", {
-      payoutId: payout.id,
-      payoutType: payout.payoutType,
-      amountCents: payout.amountCents,
-      conversionCount: payout.conversionCount,
-    });
 
     res.status(201).json(payout);
   },
@@ -120,9 +129,25 @@ router.post(
       return;
     }
 
+    // BUG-D-events: pay the obligation (locks + inserts + flips PAID) and append
+    // PAYOUT_CREATED in ONE transaction — money row + audit event are atomic.
     let payout;
     try {
-      payout = await createFixedFeePayout(obligationId, destinationOf(ctx));
+      payout = await db.transaction(async (tx) => {
+        const p = await createFixedFeePayout(obligationId, destinationOf(ctx), tx);
+        await appendPayoutEvent(
+          ctx.instanceId,
+          "PAYOUT_CREATED",
+          {
+            payoutId: p.id,
+            payoutType: p.payoutType,
+            amountCents: p.amountCents,
+            obligationId,
+          },
+          tx,
+        );
+        return p;
+      });
     } catch (err) {
       if (err instanceof ObligationNotPayableError) {
         // Parent's guard-message shape (payouts.ts:179-181): current status.
@@ -133,13 +158,6 @@ router.post(
       }
       throw err;
     }
-
-    await appendPayoutEvent(ctx.instanceId, "PAYOUT_CREATED", {
-      payoutId: payout.id,
-      payoutType: payout.payoutType,
-      amountCents: payout.amountCents,
-      obligationId,
-    });
 
     res.status(201).json(payout);
   },
@@ -167,29 +185,41 @@ router.post("/:id/send", async (req: Request, res: Response) => {
   // Mint the confirm token (raw only in the email; store the hash + expiry).
   const token = mintPayoutToken();
 
+  // Load the payout context ONCE and reuse it for both the event attribution and
+  // the email (avoids a second identical 4-table join, and keeps the event's
+  // instanceId and the email's brand/creator reading the same snapshot). Loaded
+  // before the mutation so its instanceId can be folded into the same txn as the
+  // status flip below (BUG-D-events).
+  const ctx = await loadPayoutContextByPartnership(payout.partnershipId);
+
+  // BUG-D-events: flip PENDING → SENT and append PAYOUT_SENT in ONE transaction,
+  // so the status change and its audit event commit or roll back together.
   // Guard against a lost race: markPayoutSent's WHERE requires status PENDING,
   // so a concurrent send returns null → this one is a no-op 409.
-  const updated = await markPayoutSent(id, {
-    confirmTokenHash: token.tokenHash,
-    confirmTokenExpiresAt: token.expiresAt,
-    reference,
-    note,
+  const updated = await db.transaction(async (tx) => {
+    const row = await markPayoutSent(
+      id,
+      {
+        confirmTokenHash: token.tokenHash,
+        confirmTokenExpiresAt: token.expiresAt,
+        reference,
+        note,
+      },
+      tx,
+    );
+    if (!row) return null;
+    await appendPayoutEvent(
+      ctx?.instanceId ?? null,
+      "PAYOUT_SENT",
+      { payoutId: row.id, amountCents: row.amountCents, reference },
+      tx,
+    );
+    return row;
   });
   if (!updated) {
     res.status(409).json({ error: "Payout is no longer pending" });
     return;
   }
-
-  // Load the payout context ONCE and reuse it for both the event attribution and
-  // the email (avoids a second identical 4-table join, and keeps the event's
-  // instanceId and the email's brand/creator reading the same snapshot).
-  const ctx = await loadPayoutContextByPartnership(updated.partnershipId);
-
-  await appendPayoutEvent(ctx?.instanceId ?? null, "PAYOUT_SENT", {
-    payoutId: updated.id,
-    amountCents: updated.amountCents,
-    reference,
-  });
 
   // Email the creator (idempotent, I-6). Email failure does NOT roll back the
   // SENT status (parent posture) — the response carries emailSent:false and the
@@ -260,17 +290,26 @@ router.post("/:id/settle", async (req: Request, res: Response) => {
     return;
   }
 
-  const settled = await markPayoutSettled(id);
+  // Resolve the instance for event attribution before the txn (stable read).
+  const settleInstanceId = await instanceIdForPayout(payout.partnershipId);
+
+  // BUG-D-events: settle (CONFIRMED|DISPUTED → SETTLED) and append PAYOUT_SETTLED
+  // in ONE transaction, so the terminal money state and its audit event are atomic.
+  const settled = await db.transaction(async (tx) => {
+    const row = await markPayoutSettled(id, tx);
+    if (!row) return null;
+    await appendPayoutEvent(
+      settleInstanceId,
+      "PAYOUT_SETTLED",
+      { payoutId: row.id, resolvedBy: "brand" },
+      tx,
+    );
+    return row;
+  });
   if (!settled) {
     res.status(409).json({ error: "Payout could not be settled" });
     return;
   }
-
-  await appendPayoutEvent(
-    await instanceIdForPayout(settled.partnershipId),
-    "PAYOUT_SETTLED",
-    { payoutId: settled.id, resolvedBy: "brand" },
-  );
 
   res.json(settled);
 });
@@ -395,7 +434,17 @@ router.get("/export/paypal-csv", async (_req: Request, res: Response) => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Append a ledger event to the payout's instance (I-7), best-effort (I-8). */
+/**
+ * Append a ledger event to the payout's instance (I-7).
+ *
+ * BUG-D-events: the ledger event is folded into the SAME transaction as its money
+ * mutation (the caller passes the open `tx`), so the money row and its audit event
+ * commit or roll back together — a crash between the two can no longer move money
+ * with no event (or record an event for money that rolled back). Enlisted in the
+ * txn, an append failure ROLLS BACK the whole unit (the money mutation included),
+ * which is the point — it is no longer best-effort/swallowed. When called with the
+ * default `db` (no txn), it retains the old best-effort posture.
+ */
 async function appendPayoutEvent(
   instanceId: string | null,
   type:
@@ -403,8 +452,14 @@ async function appendPayoutEvent(
     | "PAYOUT_SENT"
     | "PAYOUT_SETTLED",
   payload: JsonObject,
+  client: DbTx | undefined = undefined,
 ): Promise<void> {
   if (!instanceId) return;
+  if (client) {
+    // In-transaction: let a failure propagate so the whole unit rolls back.
+    await appendEvent({ instanceId, type, payload }, client);
+    return;
+  }
   try {
     await appendEvent({ instanceId, type, payload });
   } catch (err) {

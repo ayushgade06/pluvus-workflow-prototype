@@ -566,3 +566,60 @@ def test_guard_zero_tolerance_default_matches_ceiling_boundary():
         creator_ask=530,
     )
     assert d.action == "ESCALATE"
+
+
+# ── BUG-A4: in-band ACCEPT prefers our prior offer over a drifted model rate ──
+
+
+def guard_prior(action, rate, *, creator_ask=None, prior_offer=None, is_final_round=False):
+    return _apply_decision_guards(
+        action,
+        rate,
+        floor_rate=100.0,
+        ceiling_rate=CEILING,
+        tolerance_ceiling=TOL_CEILING,
+        is_final_round=is_final_round,
+        creator_ask=creator_ask,
+        prior_offer=prior_offer,
+    )
+
+
+def test_a4_accept_no_creator_rate_clamps_down_to_prior_offer():
+    # The creator named NO rate this turn; we already offered $300. The model
+    # "accepts" at a drifted $400 → clamp DOWN to our standing $300 (never pay more
+    # than we offered for no reason).
+    d = guard_prior("ACCEPT", 400, creator_ask=None, prior_offer=300)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 300
+
+
+def test_a4_accept_does_not_raise_rate_up_to_prior_offer():
+    # If the model accepts BELOW our prior offer, we do NOT push it up to the prior
+    # offer — min(model_rate, prior_offer) keeps the lower number (we never overpay
+    # vs our own offer, and never invent a higher close).
+    d = guard_prior("ACCEPT", 250, creator_ask=None, prior_offer=300)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250
+
+
+def test_a4_creator_named_rate_takes_priority_over_prior_offer():
+    # When the creator DID name a rate this turn, prior_offer must NOT override the
+    # model's accept at that number — creator_ask governs that path.
+    d = guard_prior("ACCEPT", 350, creator_ask=350, prior_offer=300)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 350
+
+
+def test_a4_no_prior_offer_leaves_model_rate_untouched():
+    # No standing offer → nothing to prefer; the model's in-band accept stands.
+    d = guard_prior("ACCEPT", 400, creator_ask=None, prior_offer=None)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 400
+
+
+def test_a4_prior_offer_below_floor_still_clamps_up_to_floor():
+    # A stale prior offer under the floor is raised to the floor by the band clamp
+    # (we never pay below the floor even to honor a prior offer).
+    d = guard_prior("ACCEPT", 300, creator_ask=None, prior_offer=50)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 100  # floor

@@ -84,13 +84,20 @@ export interface SimulatedInbound {
  * Build a Nylas-shaped message.created webhook body (snake_case, as the real
  * webhook sends) and the matching hex HMAC-SHA256 signature for a given secret.
  * Returns the exact raw string to POST plus the X-Nylas-Signature value.
+ *
+ * `timeSec` (unix seconds) stamps the top-level `time` field that Nylas v3 sends
+ * on every delivery — the webhook's replay-freshness guard (BUG-SEC4) reads it.
+ * When omitted, no `time` is emitted (the freshness check fails open, matching a
+ * legacy payload shape).
  */
 export function buildSignedWebhook(
   inbound: SimulatedInbound,
   secret: string,
+  timeSec?: number,
 ): { rawBody: string; signature: string } {
-  const payload = {
+  const payload: Record<string, unknown> = {
     type: "message.created",
+    ...(timeSec !== undefined ? { time: timeSec } : {}),
     data: {
       object: {
         id: inbound.messageId,

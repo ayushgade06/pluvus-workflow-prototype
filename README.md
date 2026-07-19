@@ -11,9 +11,9 @@ The platform is a three-service monorepo:
 | `agent/` | FastAPI + LangGraph (Ollama / Anthropic / DeepSeek / OpenRouter) | AI service: reply classification, negotiation decisions, email drafting, brief parsing |
 
 > **🚀 Deploying this?** See **[`DEPLOYMENT.md`](./DEPLOYMENT.md)** — the full production
-> deployment plan: what runs where (Render + Neon + Redis + Nylas + OpenRouter), every key
-> required, the deploy order, and the go-live checklist. A starter Render Blueprint is at
-> [`render.yaml`](./render.yaml).
+> deployment plan: what runs where (Replit Reserved VMs + Neon + Upstash Redis + Nylas +
+> OpenRouter), every key required, the deploy order, and the go-live checklist. Starter Replit
+> config lives in [`.replit`](./.replit) (server Repl) and [`agent/.replit`](./agent/.replit).
 
 ---
 

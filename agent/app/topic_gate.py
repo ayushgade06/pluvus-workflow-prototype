@@ -98,6 +98,18 @@ _TOPIC_PATTERNS: dict[str, list[str]] = {
         r"\b(?:bonus|incentive|kicker|upfront (?:deposit|payment))\b.*\b(?:if|when|for (?:hitting|reaching)|on top)\b",
         r"\b(?:equity|profit share|revenue share|rev share|ownership stake)\b",
         r"\b(?:custom|special|different)\b.*\b(?:fee structure|payment structure|deal structure|commission structure)\b",
+        # F-23: a demand to CHANGE the commission % (or split, or make it
+        # commission-only). Commission is a fixed, non-negotiable term at the
+        # brand's configured %, so a rewrite is a structural change only a human
+        # may approve. The bare mention of "commission" is NOT enough (a plain
+        # "what's the commission?" is answerable and stays out of this pattern
+        # via the intent-aware split below); this matches only a specific new %
+        # or an explicit change/removal of the commission term. (Note: no "\b"
+        # after "%" — "%" is not a word char, so "%\b" fails before a space.)
+        r"\bcommission\b.*?\d{1,3}\s*(?:%|percent)",
+        r"\d{1,3}\s*(?:%|percent).*?\bcommission\b",
+        r"\b(?:commission[\s-]?only|no (?:flat|base) fee,? just commission)\b",
+        r"\b(?:raise|bump|increase|change|adjust|renegotiat\w*|rewrite)\b.*\bcommission\b",
     ],
     # Commercial commitments the agent can't grant — usage rights / exclusivity /
     # licensing / whitelisting / content usage (Q3: escalate).
@@ -138,6 +150,137 @@ _COMPILED: dict[str, re.Pattern[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Intent-aware gating (F-Q1/Q2/T3)
+# ---------------------------------------------------------------------------
+# The original gate escalated a sensitive topic on KEYWORD PRESENCE alone. But a
+# creator merely ASKING "is there exclusivity?" is different from DEMANDING "I
+# require category exclusivity or I walk" — the first is answerable from the
+# campaign knowledge fields (usageRights / exclusivity are literally configured),
+# the second is a structural commitment only a human can grant. Escalating both
+# collapses a bundled multi-question turn ("what's the fee, do I keep the shoes,
+# and is there exclusivity?") to MANUAL_REVIEW with zero questions answered, even
+# though we HAVE the answer (F-Q1/Q2/T3).
+#
+# The split applies ONLY to topics we can actually answer as a question — usage
+# rights / exclusivity / licensing (`usage_rights_or_licensing`). The genuinely
+# human-only topics (legal/contract review, disputes, custom pricing structures,
+# undefined-terms) ALWAYS escalate regardless of phrasing: a question about a
+# lawyer review or a payment dispute is not something the honest-defer copy can
+# resolve. This is a deliberately narrow, conservative widening of what flows to
+# the negotiator — a DEMAND on ANY sensitive topic still escalates.
+
+# Topics for which a pure QUESTION *may* be answerable rather than escalated (it is
+# answerable from the campaign knowledge fields, or honestly deferred). A DEMAND /
+# removal / ultimatum on the SAME topic still escalates. NOTE: membership here is
+# necessary but not sufficient — the matched text must ALSO be one of the
+# knowledge-backed sub-topics (_ANSWERABLE_SUBTOPIC) to be suppressed, so a
+# whitelisting / paid-media / ownership question (a genuine commitment we cannot
+# answer from a field) still escalates even though it lives under the same topic.
+_ANSWERABLE_AS_QUESTION: frozenset[str] = frozenset(
+    {"usage_rights_or_licensing", "pricing_exception"}
+)
+
+# The sub-slice of an answerable topic we can actually ANSWER from the campaign
+# knowledge fields, keyed by topic:
+#   * usage_rights_or_licensing — usage-rights duration, category exclusivity, and
+#     license/perpetual DURATION questions (from usageRights / exclusivity fields).
+#     Whitelisting, paid-media/spark-ads, and content OWNERSHIP are EXCLUDED — those
+#     are commitment-bearing asks with no configured answer, so a question about them
+#     stays an escalate.
+#   * pricing_exception — ONLY a plain commission question ("what's the commission?",
+#     "is commission negotiable?"). The commission % is a configured, fixed field, so
+#     a QUESTION is answerable ("10%, fixed"). Everything else under pricing_exception
+#     (equity, guarantees, tiered/performance structures, bonuses) has NO configured
+#     answer and always escalates — so the sub-topic pattern here matches commission
+#     ONLY. A DEMAND to change the commission (F-23) still escalates via the intent
+#     split below; only a bare question is suppressed.
+# Only a QUESTION matching the topic's pattern (and NOT a demand) is suppressed.
+_ANSWERABLE_SUBTOPIC_BY_TOPIC: dict[str, re.Pattern[str]] = {
+    "usage_rights_or_licensing": re.compile(
+        r"\b(?:usage rights?|content rights?|image rights?|likeness)\b"
+        r"|\b(?:exclusiv(?:e|ity)|non[\s-]?compete|category exclusiv)\b"
+        r"|\b(?:licens(?:e|ing)|sublicens|perpetual (?:license|use|rights?)|in perpetuity)\b",
+        re.IGNORECASE,
+    ),
+    "pricing_exception": re.compile(r"\bcommission\b", re.IGNORECASE),
+}
+
+# DEMAND / removal / ultimatum language: the creator is not asking about a term,
+# they are trying to CHANGE, REMOVE, REQUIRE, or CONDITION THE DEAL on it. Any of
+# these on a sensitive topic keeps the escalation even under intent-aware gating.
+# Kept conservative and imperative/conditional in shape so a plain interrogative
+# ("do you need exclusivity?", "what are the usage rights?") does not trip it.
+_DEMAND_SIGNAL = re.compile(
+    r"\b(?:"
+    # explicit requirement / insistence. "i want" is a demand EXCEPT when it's
+    # "i want to know/understand/ask/check/see/hear" — that's a question in
+    # disguise, so a negative lookahead keeps it out of the demand bucket.
+    r"i (?:require|need|insist|demand|must have)\b"
+    r"|i want\b(?!\s+to\s+(?:know|understand|ask|check|see|hear|learn|confirm|clarify))"
+    r"|(?:require|insist on|demand)\b"
+    # removal / refusal of a term
+    r"|(?:remove|drop|waive|strip|no)\s+(?:the\s+)?(?:usage|exclusiv\w*|licens\w*|reposting|whitelist\w*|rights?|clause)"
+    r"|(?:won'?t|will not|refuse to|can'?t)\s+(?:grant|give|allow|agree to|do)\b"
+    r"|no (?:usage rights?|license|licensing|reposting|whitelisting|category exclusiv\w*)"
+    r"|you (?:can'?t|cannot|may not)\s+(?:repost|reshare|use|run|whitelist|boost)"
+    # ultimatum / condition-the-deal-on-it
+    r"|or (?:i'?m|i am|we'?re)\s+(?:out|done|walking)"
+    r"|or (?:this|the deal)\s+(?:doesn'?t|won'?t|is off)"
+    r"|or this (?:doesn'?t|does not|won'?t) happen"
+    r"|take it or leave it"
+    r"|(?:only|won'?t do it|not doing it)\s+(?:if|unless|without)\b"
+    r"|deal ?breaker"
+    # explicit "non-negotiable" / "that's final" — the creator has closed the
+    # door on the term, so even a "?"-containing sentence is a demand, not a
+    # question (tightens F-10: "…exclusivity clause? …$3000 fee. Non-negotiable").
+    r"|non[\s-]?negotiable"
+    r"|that'?s final\b"
+    # F-23: commission-change demand shapes. A NEW commission % ("I want 40%",
+    # "make it 20% commission", "bump my commission to 25%") is a demand to
+    # rewrite a fixed term. Kept adjacent to commission/percent so a plain
+    # "what's the commission?" (no new number, no imperative) is NOT a demand.
+    r"|(?:want|need|make it|bump|raise|increase|give me)\b[^.]{0,20}?\d{1,3}\s*(?:%|percent)"
+    r"|\d{1,3}\s*(?:%|percent)[^.]{0,20}?\b(?:commission|or (?:this|the deal|it))"
+    r"|commission[\s-]?only\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# QUESTION shape: an interrogative opener or a clear "asking about" phrasing. Used
+# only as a positive signal that the creator is inquiring (not demanding).
+_QUESTION_SIGNAL = re.compile(
+    r"(?:\?)"  # a literal question mark anywhere
+    r"|^\s*(?:do|does|is|are|will|would|can|could|what|when|how|which|who|any)\b"
+    r"|\b(?:do you (?:need|want|require)|is there (?:any|an)?|are there any|"
+    r"how long|what (?:are|is|about)|will you|would you|can i|could i|just "
+    r"(?:wondering|checking)|curious (?:about|if)|wanted to (?:know|ask|check)|"
+    r"quick question|any (?:exclusivity|usage|licensing))\b",
+    re.IGNORECASE,
+)
+
+
+def classify_topic_intent(text: str, topic: str) -> str:
+    """Classify whether the creator is ASKING ABOUT a sensitive `topic` or making a
+    DEMAND about it. Returns "question" or "demand".
+
+    Deterministic and conservative: a DEMAND signal (require/remove/ultimatum,
+    see _DEMAND_SIGNAL) wins — it is the safety-relevant case, so any ambiguity
+    biases toward "demand" (escalate). Only when there is NO demand language AND a
+    positive question signal is present do we call it a "question". A sensitive
+    keyword with neither a demand nor a question shape (a bare statement, e.g.
+    "the usage rights matter to me") is treated as a "demand" so it still
+    escalates — we never widen the answerable path on ambiguity.
+    """
+    if not text:
+        return "demand"
+    if _DEMAND_SIGNAL.search(text):
+        return "demand"
+    if _QUESTION_SIGNAL.search(text):
+        return "question"
+    return "demand"
+
+
 def detect_topic(text: str) -> str | None:
     """Return the first matching topic reason code (any policy), or None.
 
@@ -163,8 +306,206 @@ def detect_escalation_topic(text: str) -> str | None:
     (payment timing) return None here so the normal honest-defer path handles
     them (Q3). The detection is deterministic, so a prompt injection or a
     confident-but-wrong model cannot suppress it.
+
+    F-Q1/Q2/T3 — intent-aware: for a topic in ``_ANSWERABLE_AS_QUESTION`` (usage
+    rights / exclusivity / licensing), a PURE QUESTION does NOT escalate — it flows
+    to the negotiator, which answers it from the campaign knowledge fields (or
+    defers honestly). A DEMAND / removal / ultimatum on the same topic still
+    escalates. Every other escalate topic (legal, dispute, pricing-exception,
+    undefined-terms) escalates regardless of phrasing. Ambiguity biases to
+    escalate (see ``classify_topic_intent``), so this only widens the answerable
+    path for an unambiguous question.
+    """
+    topic, _ = detect_escalation_topic_ex(text)
+    return topic
+
+
+def detect_escalation_topic_ex(text: str) -> tuple[str | None, str | None]:
+    """Intent-aware variant returning ``(escalation_topic, answered_question_topic)``.
+
+    Exactly one of the two is non-None (or both None for no sensitive topic):
+      * ``escalation_topic`` — a reason code the caller must escalate on.
+      * ``answered_question_topic`` — a sensitive topic that was DETECTED but
+        SUPPRESSED because it was phrased as an answerable question. The caller
+        does NOT escalate; it lets the reply flow so the knowledge fields answer
+        it. Surfaced so a caller can log / annotate that a topic was recognized
+        but intentionally not escalated.
+
+    This is the primitive; ``detect_escalation_topic`` returns just the first
+    element for backward compatibility.
     """
     topic = detect_topic(text)
-    if topic is not None and TOPIC_POLICY.get(topic) == "escalate":
-        return topic
-    return None
+    if topic is None or TOPIC_POLICY.get(topic) != "escalate":
+        return None, None
+    # Intent-aware suppression: only for an answerable topic, only when the matched
+    # text is that topic's knowledge-backed sub-topic (usage/exclusivity/license —
+    # NOT whitelisting/paid-media/ownership; commission — NOT equity/guarantees/
+    # tiered structures), and only when it reads as a QUESTION (not a demand/
+    # removal/ultimatum). All three must hold, or we escalate.
+    subtopic = _ANSWERABLE_SUBTOPIC_BY_TOPIC.get(topic)
+    if (
+        topic in _ANSWERABLE_AS_QUESTION
+        and subtopic is not None
+        and subtopic.search(text)
+        and classify_topic_intent(text, topic) == "question"
+    ):
+        return None, topic
+    return topic, None
+
+
+# ---------------------------------------------------------------------------
+# BUG-A1: per-clause topic gating (multi-question collapse)
+# ---------------------------------------------------------------------------
+# The whole-reply gate above escalates a MULTI-question turn the instant ONE
+# clause touches an escalate-topic keyword — losing the answerable questions:
+#   "Love it! What is the fee, when do I get paid, and I will need a signed NDA?"
+# has two answerable questions (fee, payment timing) AND one escalate clause (the
+# NDA). Running the gate on the WHOLE string escalated the entire turn (the NDA
+# keyword matched) → fee + timing lost to the Manual Queue with a bare handoff.
+#
+# `detect_escalation_per_clause` splits the reply into clauses and runs the SAME
+# intent-aware gate PER CLAUSE, then decides:
+#   * If NO clause escalates → nothing to escalate (identical to today).
+#   * If a clause escalates AND at least one OTHER clause is genuinely answerable
+#     (a non-sensitive question/statement — fee, timing, a plain "love it"), the
+#     turn is NOT a bare escalate: it FLOWS to the negotiator (which answers the
+#     answerable clauses) and the escalated clause is SURFACED so the caller can
+#     put it in creatorQuestions for the human. `escalate_now` is False here.
+#   * If a clause escalates AND there is NO answerable clause (the whole reply is
+#     just the escalate-topic DEMAND — "I will sue you", "I need a signed NDA
+#     before we start") → `escalate_now` is True: the always-escalate legal/
+#     dispute DEMAND path is preserved exactly, never weakened.
+#
+# Deliberately conservative: a clause that ITSELF bundles an escalate-topic with a
+# question still escalates that clause (the per-clause gate's own intent-aware
+# question carve-out already lets a pure usage/commission QUESTION through). Only a
+# SEPARATE answerable clause opens the flow-to-model path.
+
+# Clause boundaries — CONSERVATIVE. We split only on boundaries that reliably
+# separate DISTINCT asks: sentence terminators (. ? ! ;) and a comma/"and"/"but"
+# that introduces a NEW interrogative ("what is the fee, and when do I get paid,
+# and I need an NDA"). We deliberately do NOT split on bare "plus"/","/" and "
+# between non-question fragments, so a single demand ("$400 plus perpetual usage
+# rights, non-negotiable") is NOT shredded into false "answerable" fragments —
+# that would weaken the always-escalate DEMAND path (forbidden).
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r"[.?!;]+\s*"
+    r"|,\s+and\s+(?=(?:i\b|by\b|for\b|remind me\b|honestly\b)?\s*"
+    r"(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"
+    r"|,\s+(?=(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)"
+    r"|\s+and\s+(?=(?:i\b|by\b|for\b|remind me\b|honestly\b)?\s*"
+    r"(?:what|when|where|which|why|how|do|does|did|can|could|would|will|is|are|any|whether)\b)",
+    re.IGNORECASE,
+)
+
+# An "answerable" clause is one the negotiator can actually handle: a QUESTION or
+# an engaged statement about a NON-sensitive term (fee, payment timing, start
+# date, deliverables, a plain "love it"). We require a positive answerable SHAPE —
+# not merely "non-trivial words" — so a fragment of a demand ("$400", "non-
+# negotiable") does NOT count as answerable. This keeps the flow-to-model path
+# open ONLY when there is a genuine answerable question/statement alongside the
+# escalate clause (the A1 scenario), and never on a bare demand.
+_ANSWERABLE_CLAUSE_RE = re.compile(
+    r"\?"  # a question mark
+    r"|^\s*(?:what|when|where|which|who|why|how|do|does|did|can|could|would|will|"
+    r"is|are|any|whether|could you|can you|would you|remind me|tell me|let me know|"
+    r"just wondering|curious|wanted to know)\b"
+    r"|\b(?:the fee|my fee|the rate|the pay|get paid|when do (?:i|we)|how (?:much|soon)|"
+    r"the timeline|start date|when (?:do|does|can) (?:we|i|it)|deliverable|turnaround|"
+    r"how many|which platform|what platform)\b"
+    r"|^\s*(?:love it|sounds (?:good|great)|i'?m in|count me in|let'?s do it|"
+    r"happy to|excited|interested)\b",
+    re.IGNORECASE,
+)
+
+
+def _split_clauses(text: str) -> list[str]:
+    """Split a creator reply into clause-sized units for per-clause gating.
+    Conservative: drops empties, keeps order, never raises."""
+    if not text:
+        return []
+    return [c.strip() for c in _CLAUSE_BOUNDARY_RE.split(text) if c and c.strip()]
+
+
+class PerClauseGateResult:
+    """Structured result of the per-clause topic gate (BUG-A1).
+
+    Attributes:
+      escalate_now       — True → the caller MUST escalate to a human now (a
+                           demand on an escalate-topic with nothing else to answer,
+                           OR the whole reply is a single escalate clause). False →
+                           the turn may flow to the negotiator.
+      escalation_topic   — the reason code of the offending clause, or None. Set
+                           whenever an escalate clause was found (whether or not we
+                           escalate now) so the caller can annotate the Manual
+                           Queue / creatorQuestions.
+      escalated_clauses  — the raw text of each clause that carried an escalate
+                           topic (surfaced into creatorQuestions on the flow path
+                           so the human still sees the sensitive ask).
+      answerable_clauses — the clauses that did NOT escalate (fee/timing/etc.).
+    """
+
+    __slots__ = ("escalate_now", "escalation_topic", "escalated_clauses", "answerable_clauses")
+
+    def __init__(
+        self,
+        escalate_now: bool,
+        escalation_topic: str | None,
+        escalated_clauses: list[str],
+        answerable_clauses: list[str],
+    ) -> None:
+        self.escalate_now = escalate_now
+        self.escalation_topic = escalation_topic
+        self.escalated_clauses = escalated_clauses
+        self.answerable_clauses = answerable_clauses
+
+
+def detect_escalation_per_clause(text: str) -> PerClauseGateResult:
+    """Per-clause topic gate (BUG-A1). See PerClauseGateResult / module notes.
+
+    Splits ``text`` into clauses and runs the intent-aware escalation gate on each.
+    Decides whether the turn must escalate NOW (bare handoff) or may flow to the
+    negotiator with the escalated clause surfaced for the human.
+    """
+    clauses = _split_clauses(text)
+    if not clauses:
+        # No splittable content — fall back to whole-text gating for safety.
+        whole, _answered = detect_escalation_topic_ex(text)
+        return PerClauseGateResult(
+            escalate_now=whole is not None,
+            escalation_topic=whole,
+            escalated_clauses=[text] if whole is not None else [],
+            answerable_clauses=[],
+        )
+
+    escalation_topic: str | None = None
+    escalated_clauses: list[str] = []
+    answerable_clauses: list[str] = []
+
+    for clause in clauses:
+        topic, _answered = detect_escalation_topic_ex(clause)
+        if topic is not None:
+            escalated_clauses.append(clause)
+            if escalation_topic is None:
+                escalation_topic = topic  # first offending topic wins the reason
+        elif _ANSWERABLE_CLAUSE_RE.search(clause):
+            # A non-escalating clause that has an ANSWERABLE shape (a question, a
+            # fee/timing ask, or engaged interest) — the negotiator can handle it.
+            answerable_clauses.append(clause)
+
+    if escalation_topic is None:
+        # Nothing sensitive → not an escalation (the answerable path handles it).
+        return PerClauseGateResult(False, None, [], answerable_clauses)
+
+    # An escalate clause exists. Escalate NOW only when there is NOTHING answerable
+    # to salvage — i.e. the whole turn is the escalate-topic demand. Otherwise flow
+    # to the negotiator and surface the escalated clause for the human. This is the
+    # A1 fix: the always-escalate DEMAND path stands when it's the whole reply, but
+    # a bundled multi-question turn keeps its answerable questions.
+    escalate_now = len(answerable_clauses) == 0
+    return PerClauseGateResult(
+        escalate_now=escalate_now,
+        escalation_topic=escalation_topic,
+        escalated_clauses=escalated_clauses,
+        answerable_clauses=answerable_clauses,
+    )

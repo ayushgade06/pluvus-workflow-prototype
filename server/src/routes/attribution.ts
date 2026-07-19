@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { openPostureAllowed } from "../config/requiredSecrets.js";
+import { db } from "../db/drizzle.js";
 import {
   appendEvent,
   createConversion,
@@ -28,15 +30,24 @@ let _warnedMissingSecret = false;
 function checkSecret(req: Request, res: Response): boolean {
   const secret = process.env["ATTRIBUTION_WEBHOOK_SECRET"];
   if (!secret) {
+    // BUG-SEC3: an unset secret only runs OPEN in local dev/test (or with an
+    // explicit ALLOW_OPEN_SECRETS=true). Anywhere else — staging, preview,
+    // unset/typo'd NODE_ENV — fail CLOSED so nobody can POST fake conversions and
+    // inflate creator commissions (money we pay) on a mis-configured public deploy.
+    if (!openPostureAllowed()) {
+      res.status(401).json({ error: "Attribution authentication is not configured" });
+      return false;
+    }
     if (!_warnedMissingSecret) {
       console.warn(
         "[attribution] ATTRIBUTION_WEBHOOK_SECRET is not set — " +
-          "conversion webhook accepts unauthenticated requests. " +
+          "conversion webhook accepts unauthenticated requests. This is allowed only " +
+          "because NODE_ENV is development/test or ALLOW_OPEN_SECRETS=true. " +
           "Set this env var in any non-local environment.",
       );
       _warnedMissingSecret = true;
     }
-    return true; // open posture (same as AGENT_API_KEY when unset)
+    return true; // open posture — permitted only in dev/test (guarded above)
   }
 
   const provided = req.headers["x-attribution-secret"];
@@ -166,29 +177,33 @@ router.post("/conversion/:externalId/refund", async (req: Request, res: Response
     return;
   }
 
-  await markConversionRefunded(conversion.id);
-
-  // Append CONVERSION_REFUNDED event (I-7), best-effort (I-8).
+  // BUG-D-events: fold the refund (money mutation) and the CONVERSION_REFUNDED
+  // audit event into ONE transaction, so a crash between them can no longer leave
+  // a conversion refunded with no ledger event (or vice versa). Resolve the
+  // instance for attribution BEFORE the txn (a stable read); when it is unknown
+  // (unattributed conversion / missing partnership), we still refund but there is
+  // no instance to attribute the event to — exactly the prior behavior.
+  let instanceId: string | undefined;
   if (conversion.partnershipId) {
     const partnership = await findPartnershipByReferralCode(
       conversion.referralCode ?? "",
     ).catch(() => null);
-    const instanceId = partnership?.instanceId;
+    instanceId = partnership?.instanceId;
+  }
+
+  await db.transaction(async (tx) => {
+    await markConversionRefunded(conversion.id, tx);
     if (instanceId) {
-      try {
-        await appendEvent({
+      await appendEvent(
+        {
           instanceId,
           type: "CONVERSION_REFUNDED",
           payload: { externalId, conversionId: conversion.id },
-        });
-      } catch (err) {
-        console.error(
-          `[attribution] CONVERSION_REFUNDED event failed for instanceId=${instanceId}:`,
-          err,
-        );
-      }
+        },
+        tx,
+      );
     }
-  }
+  });
 
   res.status(200).json({ refunded: true });
 });

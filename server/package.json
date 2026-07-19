@@ -36,6 +36,8 @@
     "drizzle-orm": "^0.39.3",
     "drizzle-zod": "^0.7.1",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.0",
+    "helmet": "^8.3.0",
     "ioredis": "^5.11.1",
     "multer": "^2.2.0",
     "nylas": "^8.3.0",

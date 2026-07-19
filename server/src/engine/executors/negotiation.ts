@@ -3,7 +3,7 @@ import {
   listEventsByInstance,
 } from "../../db/index.js";
 import type { Message } from "../../db/schema.js";
-import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite } from "../types.js";
+import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite, PriorNegotiationContext } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import {
   buildPriorContextFromEvents,
@@ -430,6 +430,19 @@ export async function executeNegotiation(
   // turn, so first-contact copy is unchanged.
   const draftHistory = buildDraftHistory(priorEvents, allInboundSource, brandReplyMsgIds);
 
+  // F-H1: thread that SAME full both-sides transcript into the money-decision
+  // model (not just the copywriter). The negotiator previously saw only our-side
+  // moves (`priorContext.history`) + the single latest inbound line, so it was
+  // blind to the creator's EARLIER words — prior anchors, firm positions,
+  // concession trajectory. Reusing `draftHistory` (already assembled above) gives
+  // it the creator's own turns too. Empty on the first turn → no change to
+  // first-contact behavior. `buildNegotiationRequest` only attaches it when
+  // non-empty, and the agent renders it as a sanitized <conversation_history>
+  // DATA block, so the money guards and injection defenses are unaffected.
+  const negotiationContext: PriorNegotiationContext = draftHistory.length
+    ? { ...priorContext, conversationHistory: draftHistory }
+    : priorContext;
+
   // creatorQuestions / pushedFixedTerms: the comprehension /negotiate already did
   // (the creator's questions + which fixed terms they pushed), threaded across
   // the seam so /draft answers an explicit checklist instead of re-parsing the
@@ -443,7 +456,7 @@ export async function executeNegotiation(
   // APPROVE records as the deal rate). The regex remains a fallback for copy
   // acknowledgment and guard allowlisting only.
   const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound } =
-    await agent.negotiate(instance.negotiationRound, config, creatorReply, priorContext);
+    await agent.negotiate(instance.negotiationRound, config, creatorReply, negotiationContext);
 
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
   // prefer the agent's validated comprehension, fall back to the regex read.

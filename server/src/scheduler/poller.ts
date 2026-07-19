@@ -2,6 +2,7 @@ import { listDueInstances } from "../db/instances.js";
 import { enqueueNodeExecution } from "../workers/queues.js";
 import { logTrace } from "../observability/logger.js";
 import { reconcileStuckInstances } from "./reconciliation.js";
+import { redriveInboundDeadLetters } from "./inboundRedrive.js";
 import { sweepAutoSettlePayouts } from "./payoutSweep.js";
 import { logWorkerMetrics } from "../workers/workerMetrics.js";
 import { acquireOrRenewLeadership } from "./lock.js";
@@ -33,6 +34,20 @@ async function poll(): Promise<void> {
   // non-terminal state (crash between OCC commit and enqueue). Same cadence; its
   // own internal try/catch so a failure never affects the due-instance path.
   await reconcileStuckInstances();
+
+  // BUG-Q2: inbound-email re-drive sweep — re-enqueue dead-lettered inbound
+  // replies (BUG-Q1). A failed inbound job leaves the instance in AWAITING_REPLY,
+  // which the reconciliation sweep above deliberately does NOT touch, so this is
+  // the ONLY recovery path for a lost creator reply. Wrapped so a re-drive DB blip
+  // can never disturb the due-instance path.
+  try {
+    await redriveInboundDeadLetters();
+  } catch (err) {
+    console.error(
+      "[scheduler/poller] inbound re-drive sweep failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   // Phase 3: auto-settle SENT payouts the creator never confirmed/disputed after
   // PAYOUT_AUTO_SETTLE_DAYS. Runs here under the leader lease (no duplicate fire);

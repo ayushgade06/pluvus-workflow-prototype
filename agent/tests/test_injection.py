@@ -18,9 +18,11 @@ pytest.importorskip("langgraph", reason="langgraph not installed (ai extra)")
 from app import injection
 from app.injection import (
     MAX_CREATOR_TEXT_CHARS,
+    is_unconditional_opt_out,
     looks_like_injection,
     looks_like_opt_out,
     mentions_rate,
+    opt_out_is_conditional_or_rhetorical,
     sanitize_creator_text,
 )
 from app.routes import classify as classify_mod
@@ -86,6 +88,95 @@ def test_opt_out_detected(text):
 )
 def test_opt_out_not_falsely_detected(text):
     assert looks_like_opt_out(text) is False
+
+
+# ---------------------------------------------------------------------------
+# BUG-A3: conditional / negated / rhetorical opt-out awareness
+# ---------------------------------------------------------------------------
+# A PLAIN unconditional opt-out MUST still hard-gate (CAN-SPAM/GDPR); a
+# conditional / rhetorical one must NOT auto-terminate (route to the model).
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Plain, unconditional opt-outs — MUST still be a hard opt-out.
+        "Please unsubscribe me from this list.",
+        "Take me off your list.",
+        "Stop emailing me.",
+        "Do not contact me again.",
+        "I want to opt out.",
+        "please remove me",
+        "I no longer wish to receive these",
+        # Interest words present but the removal is still UNCONDITIONAL → opt-out.
+        "I am interested but please remove me from the list.",
+        "Thanks for reaching out, but unsubscribe me.",
+    ],
+)
+def test_unconditional_opt_out_still_hard_gates(text):
+    assert is_unconditional_opt_out(text) is True
+    assert opt_out_is_conditional_or_rhetorical(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Conditional removal — a negotiation lever, NOT an opt-out (BUG-A3 O1/C8).
+        "I am interested but remove me if you cannot beat $400.",
+        "interested but remove me if you cannot do better",
+        "Take me off your list unless you can offer more.",
+        "Only unsubscribe me if the fee stays this low.",
+    ],
+)
+def test_conditional_opt_out_is_not_auto_opt_out(text):
+    # The keyword is present (raw scan true) but it is conditional → not a gate.
+    assert looks_like_opt_out(text) is True
+    assert opt_out_is_conditional_or_rhetorical(text) is True
+    assert is_unconditional_opt_out(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Rhetorical / negated — the creator is REJECTING opting out (BUG-A3 O2).
+        "Unsubscribe? No way, I love this brand, let us do the deal!",
+        "Opt out? Never — I'm in!",
+        "Why would I unsubscribe? This is exactly what I wanted.",
+        "I don't want to unsubscribe, sign me up.",
+    ],
+)
+def test_rhetorical_opt_out_is_not_auto_opt_out(text):
+    assert opt_out_is_conditional_or_rhetorical(text) is True
+    assert is_unconditional_opt_out(text) is False
+
+
+def test_conditional_opt_out_falls_through_to_model(monkeypatch):
+    # BUG-A3 O1: a conditional opt-out reaches the model instead of terminating at
+    # OPT_OUT — here the model classifies the (interested) reply POSITIVE.
+    fake = _patch_llm(monkeypatch, '{"intent": "POSITIVE", "confidence": 0.95}')
+    out = classify_mod.classify_message(
+        "I am interested but remove me if you cannot beat $400."
+    )
+    assert out.intent != "OPT_OUT"
+    assert fake.calls == 1  # the model WAS consulted (gate did not short-circuit)
+
+
+def test_rhetorical_opt_out_falls_through_to_model(monkeypatch):
+    # BUG-A3 O2: "Unsubscribe? No way..." is not an opt-out. It mentions no rate and
+    # is not a question, so the model decides — POSITIVE here.
+    fake = _patch_llm(monkeypatch, '{"intent": "POSITIVE", "confidence": 0.9}')
+    out = classify_mod.classify_message("Unsubscribe? No way, I love this brand!")
+    assert out.intent != "OPT_OUT"
+
+
+def test_plain_opt_out_still_short_circuits_after_a3(monkeypatch):
+    # Regression guard: A3 must not weaken the hard gate. A plain unsubscribe still
+    # forces OPT_OUT before the model.
+    fake = _patch_llm(monkeypatch, '{"intent": "POSITIVE", "confidence": 1.0}')
+    out = classify_mod.classify_message("Please unsubscribe me.")
+    assert out.intent == "OPT_OUT"
+    assert out.confidence == 1.0
+    assert fake.calls == 0
 
 
 # ---------------------------------------------------------------------------

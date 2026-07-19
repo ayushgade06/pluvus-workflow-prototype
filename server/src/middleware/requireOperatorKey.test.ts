@@ -72,13 +72,55 @@ function withEnv(key: string | undefined, fn: () => void) {
   }
 }
 
-test("P2 middleware: unset key → passes through (next called, no 401)", () => {
+test("P2 middleware: unset key in test env → passes through (next called, no 401)", () => {
+  // The suite runs with NODE_ENV=test, so the open posture is allowed here.
   withEnv(undefined, () => {
     const { req, res, next, state } = fakeReqRes("whatever");
     requireOperatorKey(req, res, next);
     assert.equal(state.nexted, true);
     assert.equal(state.status, null);
   });
+});
+
+test("BUG-SEC3 middleware: unset key in a NON-dev/test env → 401 (fail closed)", () => {
+  const prevNode = process.env["NODE_ENV"];
+  const prevAllow = process.env["ALLOW_OPEN_SECRETS"];
+  process.env["NODE_ENV"] = "staging";
+  delete process.env["ALLOW_OPEN_SECRETS"];
+  try {
+    withEnv(undefined, () => {
+      const { req, res, next, state } = fakeReqRes("whatever");
+      requireOperatorKey(req, res, next);
+      assert.equal(state.nexted, false, "must NOT pass through with an unset key in staging");
+      assert.equal(state.status, 401);
+      assert.deepEqual(state.body, { error: "Operator authentication is not configured" });
+    });
+  } finally {
+    if (prevNode === undefined) delete process.env["NODE_ENV"];
+    else process.env["NODE_ENV"] = prevNode;
+    if (prevAllow === undefined) delete process.env["ALLOW_OPEN_SECRETS"];
+    else process.env["ALLOW_OPEN_SECRETS"] = prevAllow;
+  }
+});
+
+test("BUG-SEC3 middleware: unset key + ALLOW_OPEN_SECRETS=true in staging → passes through", () => {
+  const prevNode = process.env["NODE_ENV"];
+  const prevAllow = process.env["ALLOW_OPEN_SECRETS"];
+  process.env["NODE_ENV"] = "staging";
+  process.env["ALLOW_OPEN_SECRETS"] = "true";
+  try {
+    withEnv(undefined, () => {
+      const { req, res, next, state } = fakeReqRes("whatever");
+      requireOperatorKey(req, res, next);
+      assert.equal(state.nexted, true, "explicit opt-in re-opens the posture");
+      assert.equal(state.status, null);
+    });
+  } finally {
+    if (prevNode === undefined) delete process.env["NODE_ENV"];
+    else process.env["NODE_ENV"] = prevNode;
+    if (prevAllow === undefined) delete process.env["ALLOW_OPEN_SECRETS"];
+    else process.env["ALLOW_OPEN_SECRETS"] = prevAllow;
+  }
 });
 
 test("P2 middleware: set key + no header → 401 missing, next NOT called", () => {

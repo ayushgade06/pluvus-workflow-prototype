@@ -6,6 +6,9 @@ import type {
   EventType,
   ReplyIntent,
 } from "../db/schema.js";
+// F-H1: the full both-sides transcript entry, reused from the draft seam so the
+// negotiator receives the same conversation shape the copywriter already gets.
+import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 
 // NodeSnapshot — matches what is stored in WorkflowVersion.nodeGraph
 export interface NodeSnapshot {
@@ -127,11 +130,20 @@ export interface NegotiateResult {
 // PriorNegotiationContext — assembled by the executor (the state authority) and
 // threaded into agent.negotiate() so the stateless agent can reason about the
 // conversation so far (FIX-1 history threading, FIX-2 current-offer tracking).
-//   - history:      prior turns in chronological order
+//   - history:      prior turns in chronological order (OUR side only — the
+//                   money-decision summary: {round, action, rate, our snippet})
 //   - currentOffer: the rate actually last proposed by us, if known
+//   - conversationHistory (F-H1): the FULL both-sides transcript (creator + us),
+//                   chronological, so the negotiator can reason about what the
+//                   creator SAID in earlier rounds — their prior anchors, firm
+//                   positions, concession trajectory, and self-contradictions —
+//                   not just our own moves + the latest inbound line. This is the
+//                   same transcript the copywriter already receives (HARD-N2),
+//                   now extended to the money brain. Empty on the first turn.
 export interface PriorNegotiationContext {
   history: NegotiationHistoryEntryLite[];
   currentOffer?: number | undefined;
+  conversationHistory?: DraftHistoryEntry[] | undefined;
 }
 
 // A trimmed history entry the executor can build purely from persisted events.

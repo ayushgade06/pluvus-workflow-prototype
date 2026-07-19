@@ -216,8 +216,13 @@ def test_guard_allows_early_round_counter_below_ceiling_on_over_ceiling_ask():
 @pytest.mark.parametrize(
     "text,expected_topic",
     [
-        ("Can we discuss exclusive usage rights and licensing for my content?", "usage_rights_or_licensing"),
+        # F-Q1/Q2/T3: a usage-rights/exclusivity DEMAND still escalates (a pure
+        # QUESTION about the same is now answerable — see the intent-aware tests
+        # below and in test_topic_gate.py).
         ("I want category exclusivity and a non-compete.", "usage_rights_or_licensing"),
+        ("I require exclusive usage rights and licensing for my content.", "usage_rights_or_licensing"),
+        # whitelisting / spark-ad is a commitment with no configured answer →
+        # escalates even as a question.
         ("Can you whitelist my post / run it as a spark ad?", "usage_rights_or_licensing"),
         ("I need a performance bonus structure tiered per conversion (CPA).", "pricing_exception"),
         ("My lawyer needs to review the agreement first.", "legal_or_contract"),
@@ -229,6 +234,15 @@ def test_topic_gate_escalates_commercial_and_legal_topics(text, expected_topic):
     reason = detect_escalation_topic(text)
     assert reason == expected_topic, f"expected {expected_topic}, got {reason!r}"
     assert TOPIC_POLICY[reason] == "escalate"
+
+
+def test_topic_gate_usage_rights_QUESTION_is_answerable_not_escalated():
+    # F-Q1/Q2/T3: a pure QUESTION about knowledge-backed usage rights / exclusivity
+    # no longer escalates — it flows to the negotiator which answers from the
+    # campaign knowledge fields. (A DEMAND still escalates — see the parametrized
+    # test above.)
+    assert detect_escalation_topic("Can we discuss the usage rights and licensing for my content?") is None
+    assert detect_escalation_topic("Do you need category exclusivity from me?") is None
 
 
 def test_topic_gate_payment_timing_defers_not_escalates():
@@ -248,9 +262,11 @@ def test_topic_gate_ignores_benign_reply():
 
 
 def test_topic_gate_stricter_policy_wins_on_multi_match():
-    # A reply mentioning BOTH licensing (escalate) and payment timing (defer) must
-    # escalate — the stricter policy wins (escalate topics are checked first).
-    text = "Do I keep the licensing rights, and also when do I get paid?"
+    # A reply mentioning BOTH a licensing DEMAND (escalate) and payment timing
+    # (defer) must escalate — the stricter policy wins (escalate topics are checked
+    # first). F-Q1/Q2/T3: uses a DEMAND phrasing so intent-awareness doesn't
+    # suppress it (a pure licensing QUESTION is now answerable).
+    text = "I insist on keeping the licensing rights, and also when do I get paid?"
     assert detect_escalation_topic(text) == "usage_rights_or_licensing"
 
 
