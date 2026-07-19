@@ -28,9 +28,10 @@ export function redisConnection(): BullMQConnection {
       port: u.port ? Number(u.port) : 6379,
       // Managed Redis (Upstash, Redis Cloud, Render Key Value) carries auth in the
       // URL and the TLS endpoint uses the rediss:// scheme. Local plaintext Redis
-      // has neither, so both stay undefined for redis://localhost.
+      // has neither, so both stay undefined for redis://localhost. The password is
+      // URI-decoded — connection strings percent-encode special characters.
       username: u.username || undefined,
-      password: u.password || undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
       tls: u.protocol === "rediss:" ? {} : undefined,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,

@@ -30,6 +30,7 @@
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "@paralleldrive/cuid2": "^3.3.0",
+    "@prisma/client": "^7.8.0",
     "bullmq": "^5.79.1",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.39.3",
@@ -52,6 +53,7 @@
     "@types/ws": "^8.18.1",
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.30.6",
+    "prisma": "^7.8.0",
     "tsx": "^4.15.5",
     "typescript": "^5.5.2"
   }
