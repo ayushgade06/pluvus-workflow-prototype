@@ -26,6 +26,7 @@ import type {
   Creator,
   Event,
   EventInsert,
+  Message,
 } from "../db/schema.js";
 import {
   campaigns,
@@ -41,7 +42,11 @@ import {
   findBrandNotificationByKey,
   updateBrandNotificationStatus,
   appendEvent,
+  listEventsByInstance,
+  listMessagesByInstance,
 } from "../db/index.js";
+import { buildDraftHistory } from "../engine/executors/negotiationHistory.js";
+import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type { IEmailProvider } from "../engine/providers.js";
 import type { EmailDraft } from "../engine/types.js";
 
@@ -107,6 +112,10 @@ interface EscalationContext {
   brandName: string | null;
   workflowName: string | null;
   notifyEmail: string | null;
+  // The full both-sides conversation so far, so the escalation email can show the
+  // operator exactly what was said instead of only pointing them to the dashboard.
+  // Chronological (oldest → newest); empty when there is no history yet.
+  transcript: DraftHistoryEntry[];
 }
 
 // DB seam — injectable so the reserve→send→finalize→audit sequencing (incl. the
@@ -146,12 +155,41 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
   const row = rows[0];
   if (!row) return null;
 
+  // Assemble the both-sides transcript from the SAME source the negotiator/
+  // copywriter use (buildDraftHistory): NEGOTIATION_TURN events (our sent turns)
+  // interleaved with the creator's INBOUND messages, chronologically. Best-effort
+  // — a transcript failure must never block the escalation notice, so a throw here
+  // degrades to an empty transcript (the email still sends who/why + dashboard
+  // pointer). brandReplyMsgIds is derived exactly as loadCreatorInbounds does.
+  let transcript: DraftHistoryEntry[] = [];
+  try {
+    const [events, messages, inboundEvents] = await Promise.all([
+      listEventsByInstance(instanceId, { type: "NEGOTIATION_TURN" }),
+      listMessagesByInstance(instanceId),
+      listEventsByInstance(instanceId, { type: "INBOUND_REPLY_RECEIVED" }),
+    ]);
+    const brandReplyMsgIds = new Set(
+      inboundEvents
+        .filter((e) => (e.payload as Record<string, unknown> | null)?.["brandDecisionReply"] === true)
+        .map((e) => (e.payload as Record<string, unknown> | null)?.["externalMessageId"])
+        .filter((id): id is string => typeof id === "string"),
+    );
+    transcript = buildDraftHistory(events, messages as Message[], brandReplyMsgIds);
+  } catch (err) {
+    console.error(
+      `[escalation] could not assemble transcript for instance ${instanceId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   return {
     creator: row.creator,
     campaignName: row.campaignName ?? null,
     brandName: row.brandName ?? null,
     workflowName: row.workflowName ?? null,
     notifyEmail: row.notifyEmail ?? null,
+    transcript,
   };
 }
 
@@ -167,14 +205,70 @@ const defaultDeps: EscalationDeps = {
 // Email composition
 // ---------------------------------------------------------------------------
 
+// Cap the transcript rendered into the email so a very long negotiation doesn't
+// produce a wall of text. We keep the MOST RECENT turns (the escalation trigger
+// and the context around it are what the operator needs first) and note how many
+// earlier turns were omitted, with a pointer to the dashboard for the full log.
+const MAX_TRANSCRIPT_TURNS = 20;
+// Trim any single message so one rambling reply can't dominate the email.
+const MAX_TRANSCRIPT_MSG_CHARS = 600;
+
+/** Render the both-sides transcript as a readable conversation block. Returns []
+ *  (no lines) when there is no history, so first-turn escalations read as before. */
+function renderTranscript(
+  transcript: DraftHistoryEntry[],
+  brandName: string | null,
+  creatorName: string,
+): string[] {
+  if (!transcript.length) return [];
+
+  const omitted = Math.max(0, transcript.length - MAX_TRANSCRIPT_TURNS);
+  const shown = transcript.slice(-MAX_TRANSCRIPT_TURNS);
+  const us = brandName ?? "You";
+
+  const body: string[] = [];
+  for (const t of shown) {
+    const who = t.role === "creator" ? creatorName : us;
+    // A round/action/rate tag on our turns gives the operator the negotiation
+    // state at a glance (e.g. "You — round 2, COUNTER $375").
+    const tag: string[] = [];
+    if (t.role === "us") {
+      if (typeof t.round === "number") tag.push(`round ${t.round}`);
+      if (t.action) tag.push(t.action);
+      if (typeof t.rate === "number") tag.push(`$${t.rate}`);
+    }
+    const header = tag.length ? `${who} — ${tag.join(", ")}:` : `${who}:`;
+    let msg = (t.message ?? "").trim();
+    if (msg.length > MAX_TRANSCRIPT_MSG_CHARS) {
+      msg = `${msg.slice(0, MAX_TRANSCRIPT_MSG_CHARS)}… [truncated]`;
+    }
+    body.push(header, msg || "(no message text)", "");
+  }
+  // Drop the trailing blank separator.
+  if (body[body.length - 1] === "") body.pop();
+
+  const lines = [
+    `─────────────────────────────────────────`,
+    `Conversation so far${omitted > 0 ? ` (most recent ${MAX_TRANSCRIPT_TURNS} of ${transcript.length} messages; ${omitted} earlier omitted — see the dashboard for the full log)` : ""}:`,
+    `─────────────────────────────────────────`,
+    ``,
+    ...body,
+    ``,
+    `─────────────────────────────────────────`,
+  ];
+  return lines;
+}
+
 export function buildEscalationEmail(ctx: EscalationContext, reason: string): EmailDraft {
-  const { creator, brandName, campaignName, workflowName } = ctx;
+  const { creator, brandName, campaignName, workflowName, transcript } = ctx;
   const brand = brandName ?? "your brand";
   const creatorLine = creator.handle
     ? `${creator.name} (@${creator.handle})`
     : creator.name;
 
   const subject = `Action needed: ${creator.name} moved to the manual review queue`;
+
+  const transcriptLines = renderTranscript(transcript ?? [], brandName, creator.name);
 
   const lines = [
     `Hi ${brand} team,`,
@@ -190,7 +284,10 @@ export function buildEscalationEmail(ctx: EscalationContext, reason: string): Em
     ``,
     `Why it was escalated: ${reasonLabel(reason)}.`,
     ``,
-    `Open the Manual Queue in the Pluvus dashboard to review the conversation and continue the deal manually. The automated workflow has paused for this creator and will not send any further emails on its own.`,
+    // The full both-sides conversation, inline, so the operator can read exactly
+    // what was said without leaving their inbox. Empty on a first-turn escalation.
+    ...(transcriptLines.length ? [...transcriptLines, ``] : []),
+    `To continue the deal, reply to ${creator.name} directly at ${creator.email} — the automated workflow has PAUSED for this creator and will not send any further emails on its own. (Replying to THIS notification does nothing; it is an alert, not a routable thread.) You can also open the Manual Queue in the Pluvus dashboard.`,
     ``,
     `— Pluvus Workflow Automation`,
   ];
