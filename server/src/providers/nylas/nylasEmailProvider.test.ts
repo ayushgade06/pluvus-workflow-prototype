@@ -1,7 +1,8 @@
 /**
- * Unit tests for NylasEmailProvider's threading surface (Email Threading E4 + E6).
- * Uses MockNylasClient as an injected fake — no real Nylas account or network.
- * Run with:  npx tsx src/providers/nylas/nylasEmailProvider.test.ts
+ * Unit tests for NylasEmailProvider's threading surface (Email Threading E4, E6,
+ * E7). Uses MockNylasClient (and small inline fakes) as injected clients — no real
+ * Nylas account or network. Run with:
+ *   npx tsx src/providers/nylas/nylasEmailProvider.test.ts
  *
  * Contract under test:
  *   E4 — send() maps the transport-neutral EmailSendOptions.replyToExternalId onto
@@ -9,12 +10,16 @@
  *        byte-for-byte unchanged (no replyToMessageId key) when it is absent.
  *   E6 — threadUrl(threadId) builds a provider deep-link from the configured
  *        template, or returns undefined when unconfigured / given an empty id.
+ *   E7 — a threaded send that errors (stale/deleted reply target) retries ONCE as a
+ *        new thread; a non-threaded send error is NOT swallowed; a send response
+ *        that omits threadId is resolved via find().
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NylasEmailProvider } from "./nylasEmailProvider.js";
 import { MockNylasClient } from "./mockNylasClient.js";
+import type { NylasClientLike } from "./client.js";
 import type { Creator } from "../../db/schema.js";
 import type { EmailDraft } from "../../engine/types.js";
 
@@ -127,4 +132,96 @@ test("E6: threadUrl URL-encodes the thread id", () => {
     provider.threadUrl("a b/c?d"),
     "https://mail.example.test/threads/a%20b%2Fc%3Fd",
   );
+});
+
+// ── E7: recovery & degradation at the provider ────────────────────────────────
+
+// A client that fails the FIRST send whose requestBody carries replyToMessageId
+// (simulating a stale/deleted reply target), then succeeds. Records every attempt
+// so the test can assert the retry dropped the reply linkage.
+function makeFlakyThreadClient(): {
+  client: NylasClientLike;
+  attempts: Array<{ replyToMessageId: string | undefined }>;
+} {
+  const attempts: Array<{ replyToMessageId: string | undefined }> = [];
+  let sends = 0;
+  const client: NylasClientLike = {
+    messages: {
+      async send(params) {
+        sends++;
+        const replyToMessageId = params.requestBody.replyToMessageId;
+        attempts.push({ replyToMessageId });
+        // Fail only the threaded attempt (the reply target "no longer exists").
+        if (replyToMessageId) {
+          throw new Error("404 message not found");
+        }
+        return { data: { id: `msg-${sends}`, threadId: `thread-${sends}` } };
+      },
+      async find(params) {
+        return { data: { id: params.messageId, threadId: "thread-found" } };
+      },
+    },
+  };
+  return { client, attempts };
+}
+
+test("E7: a threaded send that errors retries ONCE as a new thread and succeeds", async () => {
+  const { client, attempts } = makeFlakyThreadClient();
+  const provider = new NylasEmailProvider(client, "grant-test");
+
+  const result = await provider.send(draft, creator, undefined, {
+    replyToExternalId: "stale-msg-id",
+  });
+
+  // Two attempts: the threaded one (failed) then the new-thread retry (succeeded).
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0]!.replyToMessageId, "stale-msg-id", "first attempt threaded");
+  assert.equal(attempts[1]!.replyToMessageId, undefined, "retry dropped the reply linkage");
+  // Delivery succeeded — a messageId + threadId are returned, not an error.
+  assert.equal(result.messageId, "msg-2");
+  assert.ok(result.threadId);
+});
+
+test("E7: a NON-threaded send error is NOT swallowed (propagates, no double-send)", async () => {
+  // A brand-new-thread send (no reply id) that fails is a genuine outage — it must
+  // surface so retries/alerting see it, and must NOT be retried a second time.
+  let sends = 0;
+  const client: NylasClientLike = {
+    messages: {
+      async send() {
+        sends++;
+        throw new Error("smtp unreachable");
+      },
+      async find(params) {
+        return { data: { id: params.messageId } };
+      },
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test");
+
+  await assert.rejects(
+    provider.send(draft, creator), // no options → new thread
+    /smtp unreachable/,
+  );
+  assert.equal(sends, 1, "a new-thread failure is attempted exactly once (no hidden retry)");
+});
+
+test("E7: send response omitting threadId is resolved via find()", async () => {
+  // Nylas frequently omits threadId on a brand-new thread's send response; the
+  // provider fetches the message back to read its authoritative threadId.
+  const client: NylasClientLike = {
+    messages: {
+      async send() {
+        return { data: { id: "msg-new" /* no threadId */ } };
+      },
+      async find(params) {
+        return { data: { id: params.messageId, threadId: "resolved-thread" } };
+      },
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test");
+
+  const result = await provider.send(draft, creator);
+  assert.equal(result.messageId, "msg-new");
+  assert.equal(result.threadId, "resolved-thread", "threadId came from find()");
 });

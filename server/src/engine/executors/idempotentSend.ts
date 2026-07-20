@@ -10,6 +10,7 @@ import type { IEmailProvider, EmailRecipient, EmailSendOptions } from "../provid
 import {
   DefaultThreadContextResolver,
   buildReplySubject,
+  type ThreadContext,
   type ThreadContextResolver,
 } from "../threadContext.js";
 
@@ -98,9 +99,23 @@ export async function sendOnce(
   // email.send() below so the persisted row and the wire always agree.
   //
   // First outbound: no canonical (→ subject === draft.subject) and no reply
-  // target (→ replyToExternalId undefined) → behaviour identical to today. The
-  // provider still ignores options for now, so runtime behaviour is unchanged.
-  const ctx = await deps.threadContext.resolve(instanceId);
+  // target (→ replyToExternalId undefined) → behaviour identical to today.
+  //
+  // E7 (resolver DB read fails): threading is a best-effort enhancement — a
+  // resolver/DB failure must NEVER block a contract-forming email. Any throw
+  // degrades to empty context (log a warning, then send as a NEW thread) rather
+  // than propagating and stranding the send. Continuity is sacrificed for that
+  // one send; delivery is not.
+  let ctx: ThreadContext;
+  try {
+    ctx = await deps.threadContext.resolve(instanceId);
+  } catch (err) {
+    console.warn(
+      `[sendOnce] thread context resolve failed for instance ${instanceId}; ` +
+        `sending as a new thread. ${err instanceof Error ? err.message : String(err)}`,
+    );
+    ctx = {};
+  }
   const subject = buildReplySubject(ctx.canonicalSubject, draft.subject);
   const threadedDraft: EmailDraft = { ...draft, subject };
   // Conditional spread (exactOptionalPropertyTypes): omit the key entirely when

@@ -145,6 +145,34 @@ async function main() {
     assert.equal(ctx.threadId, undefined);
   });
 
+  // E7 (missing threadId on the reply-target row): the send must still carry
+  // replyToExternalId — the provider derives the thread from it, and resolveThreadId
+  // finalises our row. threadId (a READ concern, only for E6's link) is simply
+  // omitted here, never fabricated.
+  await test("E7: reply target with a null threadId still yields replyToExternalId", async () => {
+    const { resolver } = makeResolver([
+      msg({ direction: "OUTBOUND", subject: "Hi", externalMessageId: "o1", threadId: null }, 10),
+    ]);
+    const ctx = await resolver.resolve("i1");
+    assert.equal(ctx.replyToExternalId, "o1", "reply target is usable without a threadId");
+    assert.equal(ctx.threadId, undefined, "threadId omitted, not invented");
+    assert.equal(ctx.canonicalSubject, "Hi");
+  });
+
+  // E7 (all reply targets are reserved-but-unsent): every candidate lacks an
+  // external id → no reply target at all → open a new thread, but the canonical
+  // subject (first outbound) is still available so the NEXT send can thread onto it.
+  await test("E7: only reserved-but-unsent outbound rows → new thread, canonical still set", async () => {
+    const { resolver } = makeResolver([
+      msg({ direction: "OUTBOUND", subject: "Original", externalMessageId: null, threadId: null }, 10),
+      msg({ direction: "OUTBOUND", subject: "Original", externalMessageId: null, threadId: null }, 20),
+    ]);
+    const ctx = await resolver.resolve("i1");
+    assert.equal(ctx.replyToExternalId, undefined, "no sent row → no reply target");
+    assert.equal(ctx.threadId, undefined);
+    assert.equal(ctx.canonicalSubject, "Original", "first outbound subject is still the canonical");
+  });
+
   console.log("\nthreadContext.buildReplySubject\n");
 
   await test("no canonical → returns the draft's own subject unchanged", () => {

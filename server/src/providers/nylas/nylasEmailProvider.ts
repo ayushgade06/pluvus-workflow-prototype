@@ -91,18 +91,54 @@ export class NylasEmailProvider implements IEmailProvider {
     // `replyToMessageId: undefined`) keeps the requestBody byte-for-byte identical
     // to today when no reply target is present → a brand-new thread, exactly as
     // before.
+    const replyToMessageId = options?.replyToExternalId || undefined;
+    const baseRequestBody = {
+      to,
+      subject: draft.subject,
+      body: plainTextToHtmlEmail(draft.body),
+      ...(recipient?.replyTo ? { replyTo: [{ email: recipient.replyTo }] } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    };
+
+    try {
+      return await this.dispatch({
+        ...baseRequestBody,
+        ...(replyToMessageId ? { replyToMessageId } : {}),
+      });
+    } catch (err) {
+      // E7 (creator deleted the email/thread, or the stored reply id is otherwise
+      // stale): a threaded send can fail because the message we're replying to no
+      // longer exists provider-side. Threading must never cost us delivery, so we
+      // retry the SAME email ONCE as a NEW thread (drop replyToMessageId) and log.
+      // This fallback fires ONLY when we actually attempted to thread — a
+      // new-thread send that fails is a genuine outage and is rethrown unchanged,
+      // so retries/alerting still see it (we never silently swallow a real
+      // failure or double-send on the non-threaded path).
+      if (!replyToMessageId) throw err;
+      console.warn(
+        `[nylas] threaded send failed (replyToMessageId=${replyToMessageId}); ` +
+          `retrying as a new thread. ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return await this.dispatch(baseRequestBody);
+    }
+  }
+
+  /**
+   * Perform one Nylas send and resolve the resulting thread id. Extracted so the
+   * E7 retry-as-new-thread fallback in send() can re-issue the request with the
+   * reply linkage dropped without duplicating the response handling.
+   */
+  private async dispatch(requestBody: {
+    to: Array<{ email: string; name?: string }>;
+    subject?: string;
+    body?: string;
+    replyTo?: Array<{ email: string; name?: string }>;
+    replyToMessageId?: string;
+    attachments?: Array<{ filename: string; contentType: string; content: string }>;
+  }): Promise<{ messageId: string; threadId: string }> {
     const response = await this.client.messages.send({
       identifier: this.grantId,
-      requestBody: {
-        to,
-        subject: draft.subject,
-        body: plainTextToHtmlEmail(draft.body),
-        ...(recipient?.replyTo ? { replyTo: [{ email: recipient.replyTo }] } : {}),
-        ...(options?.replyToExternalId
-          ? { replyToMessageId: options.replyToExternalId }
-          : {}),
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
-      },
+      requestBody,
     });
 
     const { id } = response.data;

@@ -26,7 +26,9 @@ const draft: EmailDraft = { subject: "Hi", body: "Let's collaborate." };
 // constraint the real DB provides (throws a P2002-shaped error on duplicate).
 // `ctx` seeds the injected thread-context resolver; it defaults to empty (a
 // first outbound), preserving every existing test's behaviour.
-function makeDeps(ctx: ThreadContext = {}) {
+// `throwOnResolve` (E7) makes the resolver throw so we can assert sendOnce
+// degrades to a new-thread send rather than blocking delivery.
+function makeDeps(ctx: ThreadContext = {}, opts?: { throwOnResolve?: boolean }) {
   const rows = new Map<string, any>();
   let seq = 0;
   let resolves = 0;
@@ -61,6 +63,7 @@ function makeDeps(ctx: ThreadContext = {}) {
     threadContext: {
       async resolve() {
         resolves++;
+        if (opts?.throwOnResolve) throw new Error("db read failed");
         return ctx;
       },
     },
@@ -230,6 +233,45 @@ async function main() {
     assert.equal(calls.length, 1, "exactly one recovery send");
     assert.equal(calls[0]!.options?.replyToExternalId, "ext-prior");
     assert.equal(calls[0]!.draft.subject, "Re: Original");
+  });
+
+  // ── E7: recovery & degradation ───────────────────────────────────────────
+
+  await test("E7: a resolver throw degrades to a NEW-thread send (delivery not blocked)", async () => {
+    // The resolver fails (e.g. DB read error). sendOnce must still deliver the
+    // email — as a new thread — rather than propagate and strand a
+    // contract-forming send.
+    const { deps, rows } = makeDeps({}, { throwOnResolve: true });
+    const { email, calls, sends } = makeEmail();
+    const r = await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
+    assert.equal(sends(), 1, "the email is still sent");
+    assert.equal(r.alreadySent, false);
+    // New thread: the draft's own subject, no reply target.
+    assert.equal(calls[0]!.draft.subject, "Hi");
+    assert.equal(calls[0]!.options?.replyToExternalId, undefined);
+    // The reserved row used the draft subject too (row and wire agree).
+    assert.equal(rows.get("outreach:i1").subject, "Hi");
+  });
+
+  await test("E7: a resolver throw on the BUG-E3 recovery path still re-sends as a new thread", async () => {
+    // Resolver fails AND there is a reserved-but-unsent row (crash between reserve
+    // and send). Recovery must not be blocked by the threading failure: re-send as
+    // a new thread and finalize the existing row.
+    const { deps, rows } = makeDeps({}, { throwOnResolve: true });
+    const { email, calls, sends } = makeEmail();
+    await deps.createMessage({
+      instanceId: "i1",
+      direction: "OUTBOUND",
+      subject: "Hi",
+      body: draft.body,
+      idempotencyKey: "outreach:i1",
+    } as any);
+    const r = await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
+    assert.equal(sends(), 1, "the crashed-before-send email is recovered");
+    assert.equal(r.alreadySent, false);
+    assert.equal(calls[0]!.options?.replyToExternalId, undefined, "new thread on degrade");
+    assert.equal(rows.size, 1, "no duplicate row");
+    assert.equal(rows.get("outreach:i1").externalMessageId, "ext-1");
   });
 
   console.log(`\n✓ idempotentSend: all ${n} tests passed\n`);
