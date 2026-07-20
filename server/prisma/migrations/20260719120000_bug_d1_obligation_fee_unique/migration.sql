@@ -22,8 +22,10 @@
 --
 -- Safe to apply to the live DB: the live integrity snapshot showed
 -- ">1 obligation per partnership: NONE", so no existing row violates this.
+--
+-- Idempotent: IF NOT EXISTS so a partial prior run does not fail a re-run.
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Obligation_partnershipId_fee_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "Obligation_partnershipId_fee_key"
   ON "Obligation" ("partnershipId")
   WHERE ("description" = 'Agreed collaboration fee');

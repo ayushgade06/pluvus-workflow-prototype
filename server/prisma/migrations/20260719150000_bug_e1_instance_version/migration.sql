@@ -13,6 +13,8 @@
 -- Forward-only, hand-written (drizzle-kit push/generate is forbidden). Default 0
 -- backfills every existing row so no row is left NULL; NOT NULL + DEFAULT means
 -- the ALTER is a fast metadata-only change on Postgres (no full table rewrite).
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS so a partial prior run does not fail a re-run.
 
 -- AlterTable
-ALTER TABLE "ExecutionInstance" ADD COLUMN "version" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "ExecutionInstance" ADD COLUMN IF NOT EXISTS "version" INTEGER NOT NULL DEFAULT 0;
