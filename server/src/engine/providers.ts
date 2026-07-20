@@ -29,6 +29,19 @@ export interface EmailRecipient {
   replyTo?: string;
 }
 
+// Transport-neutral threading options for a send (Email Threading — ADR-2).
+// Deliberately provider-agnostic: it carries no Nylas concepts. Each provider
+// maps it to its own mechanism (Nylas: the send reply field; Gmail: threadId +
+// In-Reply-To; Graph: /reply; SES: raw In-Reply-To/References). Optional and
+// last on `send()`, so every existing caller compiles and behaves unchanged.
+export interface EmailSendOptions {
+  /** External id (in the sending provider's namespace) of the message this send
+   *  replies to. The provider attaches the send to that message's thread. This
+   *  is the value we persist as `Message.externalMessageId` — hence "external
+   *  id", this codebase's own term, rather than any provider's field name. */
+  replyToExternalId?: string;
+}
+
 export interface IEmailProvider {
   draft(
     creator: Creator,
@@ -41,11 +54,17 @@ export interface IEmailProvider {
    * brand-outbound path (escalation / brand-decision) uses this so the brand,
    * not the creator, receives the email while the returned threadId still lets
    * the reply correlate back to the instance.
+   *
+   * `options` (optional, last) carries transport-neutral threading intent
+   * (`replyToExternalId`). When present, the provider attaches the send to the
+   * referenced message's thread; when absent it opens a new thread exactly as
+   * before. Backward-compatible by construction (ADR-2).
    */
   send(
     draft: EmailDraft,
     creator: Creator,
     recipient?: EmailRecipient,
+    options?: EmailSendOptions,
   ): Promise<{ messageId: string; threadId: string }>;
 }
 
@@ -109,6 +128,9 @@ export class MockEmailProvider implements IEmailProvider {
     _draft: EmailDraft,
     creator: Creator,
     recipient?: EmailRecipient,
+    // Accepted for interface parity and ignored: the mock returns synthetic ids
+    // and does not model real threads (ADR-3). No behaviour change vs. today.
+    _options?: EmailSendOptions,
   ): Promise<{ messageId: string; threadId: string }> {
     // When addressed to a brand (recipient set), key the thread on the recipient
     // email so a simulated brand reply on that address correlates to a distinct
