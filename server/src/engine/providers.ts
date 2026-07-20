@@ -66,6 +66,21 @@ export interface IEmailProvider {
     recipient?: EmailRecipient,
     options?: EmailSendOptions,
   ): Promise<{ messageId: string; threadId: string }>;
+
+  /**
+   * Build a human-facing deep-link to the provider's hosted view of a thread, for
+   * the escalation hand-off (Email Threading — E6). Given a stored `threadId`,
+   * return a URL the operator can open to see the whole conversation in one place,
+   * or `undefined` when this provider cannot build one (e.g. the mock, or a real
+   * provider that isn't configured with a base URL).
+   *
+   * The URL shape is provider-specific (like the reply field, E4), so each
+   * provider supplies its own; callers stay provider-agnostic and simply omit the
+   * link when this returns `undefined` (graceful degradation — never a broken
+   * link). Optional so existing providers/tests need no change, and pure — it
+   * performs no I/O.
+   */
+  threadUrl?(threadId: string): string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +155,13 @@ export class MockEmailProvider implements IEmailProvider {
       messageId: `mock-msg-${creator.id}-${Date.now()}`,
       threadId: `mock-thread-${threadKey}`,
     };
+  }
+
+  // E6: the mock models no real inbox, so it has no thread to deep-link to.
+  // Returning undefined makes every caller omit the link gracefully (the
+  // escalation email / Manual Queue row simply carry no thread link in mock mode).
+  threadUrl(_threadId: string): string | undefined {
+    return undefined;
   }
 }
 

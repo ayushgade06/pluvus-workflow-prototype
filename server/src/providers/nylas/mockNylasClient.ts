@@ -18,6 +18,9 @@ export interface SentMessageRecord {
   body: string | undefined;
   id: string;
   threadId: string;
+  // Email Threading — E4: the reply-linkage field, when the send threaded onto a
+  // prior message. undefined for a new-thread send (the field was omitted).
+  replyToMessageId: string | undefined;
 }
 
 export class MockNylasClient implements NylasClientLike {
@@ -37,6 +40,9 @@ export class MockNylasClient implements NylasClientLike {
         to: Array<{ email: string; name?: string }>;
         subject?: string;
         body?: string;
+        // E4: recorded so tests can assert threading behavior (present on a
+        // threaded reply, absent on a new-thread send).
+        replyToMessageId?: string;
       };
     }): Promise<{ data: { id: string; threadId?: string } }> => {
       const recipient = params.requestBody.to[0]?.email ?? "unknown@example.com";
@@ -50,6 +56,7 @@ export class MockNylasClient implements NylasClientLike {
         body: params.requestBody.body,
         id,
         threadId,
+        replyToMessageId: params.requestBody.replyToMessageId,
       });
 
       return { data: { id, threadId } };

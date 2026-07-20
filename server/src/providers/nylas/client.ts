@@ -37,6 +37,13 @@ export interface NylasClientLike {
         // Optional Reply-To. Brand-decision emails (CRITICAL-2) set a token-scoped
         // reply-to so a brand's reply is attributable to exactly one decision.
         replyTo?: Array<{ email: string; name?: string }>;
+        // Optional reply linkage (Email Threading — E4). The Nylas message id of
+        // the message this send replies to; on the wire it serializes to
+        // `reply_to_message_id` (E1/V1). When set, Nylas attaches the send to that
+        // message's thread and auto-generates the RFC In-Reply-To/References
+        // headers (E1/V4), so we never build those by hand. Omitted for a new
+        // thread — every send except a threaded reply leaves this unset.
+        replyToMessageId?: string;
         // Optional file attachments (Phase 16 — Content Brief). Nylas expects
         // each as base64-encoded `content` plus filename/content_type. Omitted
         // for every send except the Content Brief campaign-brief email.

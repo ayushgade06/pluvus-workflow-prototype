@@ -14,12 +14,13 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Event, JsonValue } from "../db/schema.js";
 import {
   creators,
   events as eventsTable,
   executionInstances,
+  messages as messagesTable,
 } from "../db/schema.js";
 import { db } from "../db/drizzle.js";
 import { findWorkflowById, findLatestVersion } from "../db/workflows.js";
@@ -172,9 +173,55 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
 
     const notifications = await listLatestBrandNotificationsForInstances(ids);
 
+    // E6: resolve each escalated instance's thread id in ONE bulk read so the row
+    // can carry a deep-link to the thread that holds the whole conversation. All
+    // of an instance's messages share one threadId once set, so any non-null row
+    // is representative; we keep the first seen per instance. The provider builds
+    // the actual URL (shape is provider-specific) — omitted gracefully when the
+    // provider can't (mock / unconfigured) or the instance hasn't threaded yet.
+    const threadIdByInstance = new Map<string, string>();
+    if (ids.length > 0) {
+      const threadRows = await db
+        .select({
+          instanceId: messagesTable.instanceId,
+          threadId: messagesTable.threadId,
+        })
+        .from(messagesTable)
+        .where(
+          and(
+            inArray(messagesTable.instanceId, ids),
+            isNotNull(messagesTable.threadId),
+          ),
+        );
+      for (const row of threadRows) {
+        if (row.threadId && !threadIdByInstance.has(row.instanceId)) {
+          threadIdByInstance.set(row.instanceId, row.threadId);
+        }
+      }
+    }
+    // The provider only supplies the deep-link URL shape here — best-effort. If
+    // it can't even be constructed (e.g. EMAIL_PROVIDER unset in a misconfigured
+    // env), the queue must still list: degrade to no thread links rather than
+    // 500 the whole endpoint. Threading is an enhancement, never a blocker.
+    let threadUrlFor: ((threadId: string) => string | undefined) | undefined;
+    try {
+      const provider = emailProvider();
+      threadUrlFor = provider.threadUrl?.bind(provider);
+    } catch (err) {
+      console.warn(
+        `[manual-queue] could not resolve email provider for thread links; omitting them: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
     const items = instRows.map(({ instance: inst, creator }) => {
       const { reason, escalatedAt } = deriveEscalation(eventsByInstance.get(inst.id) ?? []);
       const notification = notifications.get(inst.id) ?? null;
+      const threadId = threadIdByInstance.get(inst.id) ?? null;
+      // Build the deep-link only when both a threadId and a provider URL builder
+      // yield one; otherwise the UI simply shows no thread link (no broken link).
+      const threadUrl = threadId && threadUrlFor ? threadUrlFor(threadId) ?? null : null;
       return {
         instanceId: inst.id,
         creatorId: inst.creatorId,
@@ -188,6 +235,8 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
         reasonLabel: reasonLabel(reason),
         escalatedAt,
         updatedAt: inst.updatedAt.toISOString(),
+        // E6: the thread deep-link (null when unavailable — the UI omits it).
+        threadUrl,
         notification: notification
           ? {
               status: notification.status,

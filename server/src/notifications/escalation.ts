@@ -49,6 +49,7 @@ import { buildDraftHistory } from "../engine/executors/negotiationHistory.js";
 import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type { IEmailProvider } from "../engine/providers.js";
 import type { EmailDraft } from "../engine/types.js";
+import { DefaultThreadContextResolver } from "../engine/threadContext.js";
 
 // The platform operator address — the last-resort recipient when a campaign has
 // no notifyEmail and BRAND_NOTIFY_EMAIL is unset. Kept here (not just env) so a
@@ -116,6 +117,11 @@ interface EscalationContext {
   // operator exactly what was said instead of only pointing them to the dashboard.
   // Chronological (oldest → newest); empty when there is no history yet.
   transcript: DraftHistoryEntry[];
+  // E6: the provider thread id for this instance (from the single-source-of-truth
+  // ThreadContextResolver), so the escalation email can carry ONE deep-link to the
+  // thread that now holds the whole conversation. undefined when no message has
+  // threaded yet — the link is then omitted gracefully.
+  threadId: string | null;
 }
 
 // DB seam — injectable so the reserve→send→finalize→audit sequencing (incl. the
@@ -183,6 +189,23 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     );
   }
 
+  // E6: resolve the instance's thread id from the SAME source of truth the send
+  // path uses (ThreadContextResolver), so the escalation email can deep-link the
+  // one thread with the full history. Best-effort — a resolver/DB failure here
+  // must never block the escalation notice, so a throw degrades to no threadId
+  // (the email still sends and simply omits the link).
+  let threadId: string | null = null;
+  try {
+    const ctx = await new DefaultThreadContextResolver().resolve(instanceId);
+    threadId = ctx.threadId ?? null;
+  } catch (err) {
+    console.error(
+      `[escalation] could not resolve threadId for instance ${instanceId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   return {
     creator: row.creator,
     campaignName: row.campaignName ?? null,
@@ -190,6 +213,7 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     workflowName: row.workflowName ?? null,
     notifyEmail: row.notifyEmail ?? null,
     transcript,
+    threadId,
   };
 }
 
@@ -259,8 +283,17 @@ function renderTranscript(
   return lines;
 }
 
-export function buildEscalationEmail(ctx: EscalationContext, reason: string): EmailDraft {
-  const { creator, brandName, campaignName, workflowName, transcript } = ctx;
+/**
+ * @param threadUrl optional provider deep-link builder (E6). When it yields a URL
+ *   for the instance's threadId, the email carries a one-click link to the full
+ *   thread; when it (or the threadId) is absent, the link is omitted gracefully.
+ */
+export function buildEscalationEmail(
+  ctx: EscalationContext,
+  reason: string,
+  threadUrl?: (threadId: string) => string | undefined,
+): EmailDraft {
+  const { creator, brandName, campaignName, workflowName, transcript, threadId } = ctx;
   const brand = brandName ?? "your brand";
   const creatorLine = creator.handle
     ? `${creator.name} (@${creator.handle})`
@@ -269,6 +302,10 @@ export function buildEscalationEmail(ctx: EscalationContext, reason: string): Em
   const subject = `Action needed: ${creator.name} moved to the manual review queue`;
 
   const transcriptLines = renderTranscript(transcript ?? [], brandName, creator.name);
+
+  // E6: build the deep-link only when BOTH a threadId and a provider that can
+  // turn it into a URL are present. Omitted entirely otherwise (no broken link).
+  const threadLink = threadId && threadUrl ? threadUrl(threadId) : undefined;
 
   const lines = [
     `Hi ${brand} team,`,
@@ -287,6 +324,10 @@ export function buildEscalationEmail(ctx: EscalationContext, reason: string): Em
     // The full both-sides conversation, inline, so the operator can read exactly
     // what was said without leaving their inbox. Empty on a first-turn escalation.
     ...(transcriptLines.length ? [...transcriptLines, ``] : []),
+    // E6 payoff: one link straight to the email thread that holds the whole
+    // back-and-forth. Only present when a threaded thread id + a provider URL
+    // builder both exist; omitted cleanly otherwise.
+    ...(threadLink ? [`Open the full email thread: ${threadLink}`, ``] : []),
     `To continue the deal, reply to ${creator.name} directly at ${creator.email} — the automated workflow has PAUSED for this creator and will not send any further emails on its own. (Replying to THIS notification does nothing; it is an alert, not a routable thread.) You can also open the Manual Queue in the Pluvus dashboard.`,
     ``,
     `— Pluvus Workflow Automation`,
@@ -357,7 +398,12 @@ export async function notifyBrandOfEscalation(
     }
 
     // ── Send ──────────────────────────────────────────────────────────────
-    const draft = buildEscalationEmail(ctx, reason);
+    // E6: hand the email builder the provider's own thread-URL helper (bound to
+    // `email` so `this` resolves) so it can deep-link the thread. Providers that
+    // don't implement it (or aren't configured) yield undefined and the link is
+    // omitted — the notice is unaffected.
+    const threadUrl = email.threadUrl?.bind(email);
+    const draft = buildEscalationEmail(ctx, reason, threadUrl);
     // CRITICAL-2: address the brand via the explicit EmailRecipient rather than a
     // forged Creator-shaped object (the "brand-as-Creator" hack the audit flags).
     // This notice goes out on MANUAL_REVIEW (a terminal state), so unlike the

@@ -38,6 +38,7 @@ function makeDeps(opts?: {
   notifyEmail?: string | null;
   contextNull?: boolean;
   transcript?: import("../adapters/negotiation/types.js").DraftHistoryEntry[];
+  threadId?: string | null;
 }) {
   const rows = new Map<string, BrandNotification>();
   const events: Array<{ type: string; payload: unknown }> = [];
@@ -53,6 +54,7 @@ function makeDeps(opts?: {
         workflowName: "Summer Outreach",
         notifyEmail: opts?.notifyEmail ?? null,
         transcript: opts?.transcript ?? [],
+        threadId: opts?.threadId ?? null,
       };
     },
     async createBrandNotification(data: any) {
@@ -92,8 +94,8 @@ function makeDeps(opts?: {
   return { deps, rows, events };
 }
 
-function makeEmail(opts?: { throwOnSend?: boolean }) {
-  const sent: Array<{ to: string; subject: string }> = [];
+function makeEmail(opts?: { throwOnSend?: boolean; threadUrl?: boolean }) {
+  const sent: Array<{ to: string; subject: string; body: string }> = [];
   const email: IEmailProvider = {
     async draft() {
       return { subject: "", body: "" };
@@ -104,9 +106,23 @@ function makeEmail(opts?: { throwOnSend?: boolean }) {
     // present (the brand) and the creator otherwise.
     async send(draft, creator, recipient) {
       if (opts?.throwOnSend) throw new Error("smtp unreachable");
-      sent.push({ to: recipient?.email ?? creator.email, subject: draft.subject });
+      sent.push({
+        to: recipient?.email ?? creator.email,
+        subject: draft.subject,
+        body: draft.body,
+      });
       return { messageId: `ext-${sent.length}`, threadId: `thread-${sent.length}` };
     },
+    // E6: only some providers expose a thread deep-link builder. When enabled,
+    // return a URL for any non-empty threadId (mirroring the Nylas provider's
+    // configured-template behavior).
+    ...(opts?.threadUrl
+      ? {
+          threadUrl(threadId: string) {
+            return threadId ? `https://mail.example.test/threads/${threadId}` : undefined;
+          },
+        }
+      : {}),
   };
   return { email, sent };
 }
@@ -135,6 +151,7 @@ async function main() {
         workflowName: "Summer Outreach",
         notifyEmail: null,
         transcript: [],
+        threadId: null,
       },
       "low_confidence_reply",
     );
@@ -144,6 +161,8 @@ async function main() {
     assert.match(draft.body, /could not confidently classify/);
     // First-turn escalation (empty transcript) has no conversation block.
     assert.ok(!/Conversation so far/.test(draft.body));
+    // E6: no threadId + no URL builder → the thread link is omitted.
+    assert.ok(!/Open the full email thread/.test(draft.body));
   });
 
   await test("buildEscalationEmail renders the both-sides transcript when present", async () => {
@@ -159,6 +178,7 @@ async function main() {
           { role: "us", round: 1, action: "PRESENT_OFFER", rate: 350, message: "We can offer $350." },
           { role: "creator", message: "I want 40% commission or this doesn't happen." },
         ],
+        threadId: null,
       },
       "pricing_exception",
     );
@@ -185,6 +205,7 @@ async function main() {
         workflowName: null,
         notifyEmail: null,
         transcript: many,
+        threadId: null,
       },
       "escalated",
     );
@@ -192,6 +213,71 @@ async function main() {
     assert.match(draft.body, /most recent 20 of 25 messages; 5 earlier omitted/);
     assert.match(draft.body, /msg 24/); // newest is kept
     assert.ok(!/\bmsg 0\b/.test(draft.body)); // oldest is dropped
+  });
+
+  await test("E6: includes the thread deep-link when a threadId + URL builder are present", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: "thread-xyz",
+      },
+      "escalated",
+      (threadId) => `https://mail.example.test/threads/${threadId}`,
+    );
+    assert.match(draft.body, /Open the full email thread: https:\/\/mail\.example\.test\/threads\/thread-xyz/);
+  });
+
+  await test("E6: omits the thread link when the provider has no URL builder", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: "thread-xyz", // threadId present …
+      },
+      "escalated",
+      // … but no URL builder passed → link omitted gracefully (mock-provider path).
+    );
+    assert.ok(!/Open the full email thread/.test(draft.body));
+  });
+
+  await test("E6: omits the thread link when there is no threadId even if a builder exists", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: null, // no thread yet …
+      },
+      "escalated",
+      // … a builder exists but is never invoked without a threadId.
+      (threadId) => `https://mail.example.test/threads/${threadId}`,
+    );
+    assert.ok(!/Open the full email thread/.test(draft.body));
+  });
+
+  await test("E6: notifyBrandOfEscalation threads the provider's threadUrl into the email", async () => {
+    const { deps } = makeDeps({ notifyEmail: "brand@acme.com", threadId: "thread-live" });
+    const { email, sent } = makeEmail({ threadUrl: true });
+    const r = await notifyBrandOfEscalation(email, "i1", "escalated", deps);
+    assert.equal(r.status, "SENT");
+    assert.equal(sent.length, 1);
+    // The provider's threadUrl builder was applied to the resolved threadId.
+    assert.match(
+      sent[0]!.body,
+      /Open the full email thread: https:\/\/mail\.example\.test\/threads\/thread-live/,
+    );
   });
 
   await test("fresh escalation sends to the campaign recipient and records SENT", async () => {
