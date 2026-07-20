@@ -95,10 +95,12 @@ def test_accept_above_ceiling_becomes_escalate():
     assert d.proposed_rate is None
 
 
-def test_accept_below_floor_is_raised_to_floor():
+def test_accept_below_floor_closes_at_creator_number():
+    # The floor is a low anchor, not a pay-up minimum: a below-floor ACCEPT closes
+    # at the creator's own cheaper number, never raised up to the floor.
     d = guard("ACCEPT", 50)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == FLOOR
+    assert d.proposed_rate == 50
 
 
 def test_accept_in_band_is_kept():

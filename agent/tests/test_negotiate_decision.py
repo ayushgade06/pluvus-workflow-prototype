@@ -238,10 +238,11 @@ def test_rejection():
 
 
 # ---------------------------------------------------------------------------
-# HARD-N1 §3 — the deterministic fallback also clamps a below-floor accept UP to
-# the floor, unifying the floor invariant with the LLM path's guards. (Before
-# this fix _decide_action never received the floor, so it could ACCEPT below it
-# while the LLM path clamped up — a split invariant.)
+# Below-floor accept — the floor is our low anchor / budget position, NOT a
+# minimum we must pay. A creator asking for LESS than the floor is a win we take
+# at THEIR cheaper number (never raise the close up to the floor). This holds on
+# both the deterministic fallback and the LLM path. The floor only clamps offers
+# WE originate (COUNTER / PRESENT_OFFER).
 # ---------------------------------------------------------------------------
 
 
@@ -257,29 +258,31 @@ def _decide_with_floor(intent, rate, floor, prior_offer=None, is_final_round=Fal
     )
 
 
-def test_acceptance_below_floor_is_clamped_up_to_floor():
-    # Creator "accepts" at 50 but the floor is 100 → ACCEPT clamped up to 100.
+def test_acceptance_below_floor_closes_at_creator_number():
+    # Creator "accepts" at 50 while the floor is 100 → close at their cheaper 50
+    # (asking for less than the floor is a win; never pay UP to the floor).
     d = _decide_with_floor("ACCEPTANCE", 50, floor=100)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 50.0
 
 
-def test_rate_proposal_below_floor_is_clamped_up_to_floor():
-    # They propose 40 (<= our offer 300, so we'd accept their number) but floor
-    # 100 raises it to 100. Never accept below the minimum.
+def test_rate_proposal_below_floor_closes_at_creator_number():
+    # They propose 40 (<= our offer 300, so we accept their number). The floor of
+    # 100 does NOT raise it — we take the cheaper 40.
     d = _decide_with_floor("RATE_PROPOSAL", 40, floor=100)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 40.0
 
 
-def test_prior_offer_accept_below_floor_is_clamped_up():
-    # "Yes" to a stale prior offer of 60 that somehow sits below a 100 floor.
+def test_prior_offer_accept_closes_at_the_prior_offer():
+    # "Yes" to a prior offer of 60 closes at exactly 60. (A genuine standing offer
+    # is >= floor by construction; we never re-raise it up to the floor here.)
     d = _decide_with_floor("ACCEPTANCE", None, floor=100, prior_offer=60.0)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 60.0
 
 
-def test_floor_zero_default_never_clamps_a_real_rate():
+def test_floor_zero_default_passes_a_real_rate_through():
     # Default floor 0.0 is a no-op — a positive rate passes through unchanged.
     d = _decide_with_floor("ACCEPTANCE", 250, floor=0)
     assert d.action == "ACCEPT"
@@ -617,9 +620,9 @@ def test_a4_no_prior_offer_leaves_model_rate_untouched():
     assert d.proposed_rate == 400
 
 
-def test_a4_prior_offer_below_floor_still_clamps_up_to_floor():
-    # A stale prior offer under the floor is raised to the floor by the band clamp
-    # (we never pay below the floor even to honor a prior offer).
+def test_a4_prior_offer_below_floor_closes_at_the_prior_offer():
+    # Honoring a below-floor prior offer closes at THAT number — the floor is a low
+    # anchor, not a pay-up minimum, so we never raise the accepted rate to it.
     d = guard_prior("ACCEPT", 300, creator_ask=None, prior_offer=50)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100  # floor
+    assert d.proposed_rate == 50  # the prior offer, not raised to the floor

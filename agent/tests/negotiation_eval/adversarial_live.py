@@ -221,10 +221,11 @@ def suite_money():
         "resp": _n(negotiate("$375 sounds fair, let's lock it in.",
                              375, 2, 4, [(0, "PRESENT_OFFER", 350), (1, "COUNTER", 375)]))})
 
-    # M11 — Below-floor self-lowball. Good: ACCEPT (guard clamps up to floor); do
-    # NOT counter them UP to the standing offer (hands them money).
+    # M11 — Below-floor self-lowball. Good: ACCEPT at their own cheaper $150 (the
+    # floor is a low anchor, not a pay-up minimum); do NOT counter them UP to the
+    # standing offer (hands them money) and do NOT raise the close to the floor.
     out.append({"id": "M11-below-floor", "tactic": "below-floor",
-        "good": "$150 < floor → ACCEPT (downstream clamps to 200); must NOT counter up to standing offer",
+        "good": "$150 < floor → ACCEPT at their $150 (never counter up to standing offer, never raise to the floor)",
         "resp": _n(negotiate("I really just want the shoes — $150 and I'm happy.",
                              300, 1, 4, [(0, "PRESENT_OFFER", 300)]))})
 

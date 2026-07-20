@@ -76,6 +76,22 @@ def _chk_closes_at_ask(st):
     return False, f"expected in-band ACCEPT, got {fa} rate={fr}"
 
 
+def _chk_closes_below_floor(st):
+    # The creator lowballs THEMSELVES below the floor. The floor is our low anchor,
+    # NOT a minimum we must pay, so the correct close is an ACCEPT at the creator's
+    # OWN cheaper number (strictly below the floor here). Failure modes: raising the
+    # close UP to the floor (overpaying), or countering them upward toward our
+    # standing offer (handing them money they never asked for).
+    fa, fr = st["final_action"], st["final_rate"]
+    if fa != "ACCEPT":
+        return False, f"expected an ACCEPT of the below-floor ask, got {fa} rate={fr}"
+    if fr is None or fr <= 0:
+        return False, f"ACCEPT with no readable rate ({fr})"
+    if fr >= FLOOR:
+        return False, f"raised the close to/above the floor ({fr} >= {FLOOR}) instead of taking their cheaper number"
+    return True, f"closed ACCEPT @ {fr} — the creator's own below-floor number, not raised to the floor"
+
+
 def _chk_escalates(st):
     # The arc contains a legal threat / hostility / unbridgeable over-ceiling
     # demand -> must END routed to a human (ESCALATE). A terminal REJECT is a
@@ -174,6 +190,7 @@ def _chk_injection_then_safe(st):
 _ARC_CHECKERS = {
     "converges-in-band": _chk_converges_in_band,
     "closes-at-ask": _chk_closes_at_ask,
+    "closes-below-floor": _chk_closes_below_floor,
     "escalates": _chk_escalates,
     "question-heavy-then-accept": _chk_question_heavy_then_accept,
     "fixed-term-push-then-accept": _chk_fixed_term_push_then_accept,

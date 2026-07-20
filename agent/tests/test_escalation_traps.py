@@ -110,13 +110,24 @@ def test_guard_counter_never_exceeds_ceiling():
     assert d.proposed_rate <= CEIL, "a counter is never offered above the real ceiling"
 
 
-def test_guard_offer_never_below_floor():
-    # A below-floor number is clamped UP to the floor (never pay below minimum).
+def test_guard_accept_below_floor_closes_at_creator_number():
+    # A below-floor ACCEPT closes at the creator's OWN cheaper number — the floor
+    # is a low anchor, not a pay-up minimum, so we never raise the close to it.
     d = _apply_decision_guards(
         "ACCEPT", 50,
         floor_rate=FLOOR, ceiling_rate=CEIL, is_final_round=False,
     )
     assert d.action == "ACCEPT"
+    assert d.proposed_rate == 50
+
+
+def test_guard_counter_never_offered_below_floor():
+    # An OFFER we originate (COUNTER) is still clamped UP to the floor — we never
+    # volunteer a number below our own band.
+    d = _apply_decision_guards(
+        "COUNTER", 50,
+        floor_rate=FLOOR, ceiling_rate=CEIL, is_final_round=False,
+    )
     assert d.proposed_rate == FLOOR
 
 

@@ -14,7 +14,9 @@ on model behavior at all:
     CRITICAL-4. A rogue/eager model that picks ACCEPT or COUNTER at the
     creator's over-ceiling ask is deterministically overridden to ESCALATE.
   * Over-ceiling ACCEPT → ESCALATE (never auto-commit above budget).
-  * Below-floor rate → clamped UP to the floor (never auto-offer below minimum).
+  * Below-floor ACCEPT → close at the creator's own cheaper number (the floor is
+    a low anchor, not a pay-up minimum); a below-floor OFFER we originate (COUNTER)
+    is still clamped UP to the floor (never volunteer a number below our band).
   * Unreadable/absent rate on a rate-bearing action → ESCALATE (never invent).
 
 If any of these regress, the build fails — these are money-safety invariants,
@@ -164,11 +166,13 @@ def test_over_ceiling_accept_escalates(monkeypatch):
     assert resp.proposedTerms is None
 
 
-def test_below_floor_ask_closes_at_floor(monkeypatch):
+def test_below_floor_ask_closes_at_creator_number(monkeypatch):
     # Case 06 family: the creator ASKS below our floor ("$20", floor 200). We never
     # counter a below-floor ask UPWARD toward our standing offer (that hands them
-    # more than they asked); the anti-over-pay guard closes at the floor. The
-    # re-draft seam blanks the pre-guard email.
+    # more than they asked); the anti-over-pay guard closes at THEIR own cheaper
+    # number — the floor is a low anchor, not a pay-up minimum, so a below-floor
+    # ask is a win taken at their price. The model chose COUNTER but the guard
+    # turned it into an ACCEPT, so the pre-guard email is still dropped.
     _patch_llm(
         monkeypatch,
         ['{"action": "COUNTER", "rate": 20, "response": "How about $20?", "reasoning": "lowball"}'],
@@ -182,9 +186,9 @@ def test_below_floor_ask_closes_at_floor(monkeypatch):
             history=[_H(0, "PRESENT_OFFER", 300)],
         )
     )
-    assert resp.action == "ACCEPT"  # below-floor ask → close at floor, don't counter up
-    assert resp.proposedTerms == {"rate": 200.0}  # the floor
-    assert resp.responseDraft is None  # "$20" contradicts the clamped $200
+    assert resp.action == "ACCEPT"  # below-floor ask → close at their number, don't counter up
+    assert resp.proposedTerms == {"rate": 20.0}  # the creator's own cheaper ask
+    assert resp.responseDraft is None  # COUNTER→ACCEPT changed the action, pre-guard email dropped
 
 
 def test_unreadable_rate_on_counter_escalates(monkeypatch):

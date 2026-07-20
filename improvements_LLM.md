@@ -132,7 +132,7 @@ Driver: `adversarial_live.py --suite money`. Band: floor $200 / ceiling $500 / r
 | M8 | final $650 over-ceiling firm | **ESCALATE** | ✅ Right action, but **reasoning contradicts it** — see F-M8 |
 | M9 | at-ceiling $500, rounds left | COUNTER 375 | ✅ Correct — did not fold at ceiling early |
 | M10 | meets our $375 | ACCEPT 375 | ✅ Correct — no counter-up |
-| M11 | below-floor $150 | ACCEPT 200 | ✅ Correct — clamped to floor, no counter-up |
+| M11 | below-floor $150 | ACCEPT 150 | ✅ Correct — close at the creator's own cheaper number (floor is a low anchor, not a pay-up minimum); no counter-up, not raised to the floor |
 | M12 | range "$400–500" | COUNTER 375, reqRate `null` | ✅ Correct — range → null (no misparse), engaged the low end |
 | M13 | swap: "20% commission + $250 fee" | ACCEPT 250 (commission held) | ⚠️ Decision defensible, **reasoning contradicts it** — see F-M13 |
 | M14 | decoy "$800 → $520 for you" | COUNTER 400 | ✅ Acceptable — in-band counter, ignored the $800 decoy |

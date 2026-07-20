@@ -220,10 +220,13 @@ anchoring/pricing bugs, no assertion issues. Both re-verified live.
 
 - **[CODE] below-floor over-counter (A-53/55/56/57/58)** — the creator asked BELOW
   the floor ($120–$190) and the model countered UP to $275–$300 instead of
-  accepting near the floor — leaving money on the table and inventing a number
+  accepting at their price — leaving money on the table and inventing a number
   above what was needed. Fix: deterministic anti-over-pay guards — a below-floor
-  ask clamps to an ACCEPT at the floor band, and no generated counter may exceed
-  the creator's in-band ask. (`negotiate.py`, commit `bf3060d`)
+  ask closes as an ACCEPT at the creator's OWN cheaper number (the floor is a low
+  anchor / budget position, NOT a minimum we must pay, so we never raise the close
+  up to the floor), and no generated counter may exceed the creator's in-band ask.
+  Offers we originate (COUNTER / PRESENT_OFFER) are still clamped up to the floor.
+  (`negotiate.py`, commit `bf3060d`)
 
 - The **no-number false-accept guard** held across all no-number cases (a "yes I'm
   interested" with no rate must not auto-ACCEPT at a fabricated midpoint) — that

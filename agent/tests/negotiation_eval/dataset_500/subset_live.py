@@ -121,7 +121,7 @@ FAILED_SINGLE = [
 SMOKE_SINGLE = [
     "A-01-rate-discovery-whats-budget",          # rate discovery -> present offer
     "A-14-in-band-proposal-usually-charge-280",  # in-band accept (post-fix passer)
-    "A-53-below-floor-just-150",                 # below-floor -> accept at floor (post-fix passer)
+    "A-53-below-floor-just-150",                 # below-floor -> accept at their $150 (post-fix passer)
     "B-01-usage-rights-plus-payment-timing",     # multi-question (answer every part)
     "D-01-exact-launch-date",                    # deferred (honest defer, no fabrication)
     "E-01-career-growth-advice",                 # unrelated (stay on the deal)
