@@ -111,7 +111,11 @@ _DRAFT_PROMPT_VERSION = "draft-v1.3"
 # into the must-answer checklist (re-surface an earlier unanswered question).
 # v1.4 (HARD-K1): knowledge fields + parsed brief text as reference DATA, and a
 # post-draft question-coverage verification/re-draft pass.
-_OFFER_PROMPT_VERSION = "offer-v1.4"
+# v1.5 (tone): warmer, personalized counter copy — the opener + fee bullet now
+# acknowledge the creator's ask and frame the gap with one honest reason
+# (value-based when a commission exists, generic otherwise), and a round-aware
+# tone note varies the voice across rounds. Prompt-only; money guardrails unchanged.
+_OFFER_PROMPT_VERSION = "offer-v1.5"
 # v1.1 (HARD-N2): conversation-history block threaded into the confirmation email.
 _ONBOARDING_PROMPT_VERSION = "onboarding-v1.1"
 _FOLLOWUP_PROMPT_VERSION = "followup-v1.0"
@@ -712,12 +716,13 @@ def _decide_action(
     an explicit ``if`` ladder rather than an implicit consequence of model
     sampling.
 
-    ``floor_rate`` is the campaign's hard minimum (HARD-N1 §3). A below-floor
-    ACCEPT is clamped UP to the floor here, exactly as ``_apply_decision_guards``
-    does on the LLM path — so the floor invariant is unified across BOTH paths
-    (previously the fallback could ACCEPT below floor while the LLM path clamped
-    up). Defaults to 0.0 so pure unit tests that don't care about the floor are
-    unaffected (a 0 floor never clamps a real, positive rate).
+    ``floor_rate`` is the campaign's low anchor / budget position, NOT a minimum
+    we must pay. A below-floor ACCEPT closes at the creator's OWN (cheaper) number
+    — asking for less than the floor is a win we take at their price — exactly as
+    ``_apply_decision_guards`` does on the LLM path, so the behaviour is unified
+    across BOTH paths. The floor only clamps offers WE originate (COUNTER /
+    PRESENT_OFFER never drop below it). Defaults to 0.0 so pure unit tests that
+    don't care about the floor are unaffected.
 
     ``prior_offer`` is the concrete rate WE have already put in front of the
     creator on a previous turn (None on the first turn / when we've never named
@@ -767,17 +772,21 @@ def _decide_action(
             if rate > tolerance_ceiling:
                 # They "accepted" at a number beyond even the tolerance band.
                 return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-            # HARD-N1 §3: clamp a below-floor acceptance UP to the floor (never
-            # pay below the minimum). Phase C: clamp an in-tolerance over-ceiling
-            # acceptance DOWN to the ceiling (never agree above the real ceiling —
-            # tolerance means "meet them at the cap", not "pay their number").
+            # A below-floor ACCEPT closes at the creator's OWN (cheaper) number —
+            # the floor is our low negotiating anchor / budget position, not a
+            # minimum we must pay, so a creator asking for LESS than the floor is a
+            # win we take at their price (never volunteer to pay them UP to the
+            # floor). Phase C: still clamp an in-tolerance over-ceiling acceptance
+            # DOWN to the ceiling (never agree above the real ceiling — tolerance
+            # means "meet them at the cap", not "pay their number").
             return NegotiationDecision(
-                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+                action="ACCEPT", proposed_rate=min(rate, ceiling_rate)
             )
         if prior_offer is not None:
-            # Accepting the number we already offered — close at that number
-            # (raised to the floor if a stale prior offer somehow sits below it).
-            return NegotiationDecision(action="ACCEPT", proposed_rate=max(prior_offer, floor_rate))
+            # Accepting the number we already offered — close at exactly that
+            # number (a genuine standing offer is already >= floor by construction;
+            # we never re-raise it here).
+            return NegotiationDecision(action="ACCEPT", proposed_rate=prior_offer)
         # Interested, but no number has ever been on the table. PRESENT the
         # recommended fee (+ commission in the copy) — informational, does not
         # consume a negotiation round.
@@ -822,15 +831,18 @@ def _decide_action(
             # tolerance ceiling, which == the ceiling when tolerance is 0).
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
         if rate <= our_offer:
-            # They met or beat our current offer — accept their number (clamped
-            # up to the floor per HARD-N1 §3; never below the minimum).
-            return NegotiationDecision(action="ACCEPT", proposed_rate=max(rate, floor_rate))
+            # They met or beat our current offer — accept their OWN number. A
+            # below-floor ask is taken at their (cheaper) price: the floor is our
+            # low anchor, not a minimum we must pay, so we never raise the close UP
+            # to the floor.
+            return NegotiationDecision(action="ACCEPT", proposed_rate=rate)
         if is_final_round:
-            # Last round — close rather than escalate into a dead end. Clamp up to
-            # the floor (HARD-N1 §3) AND down to the ceiling (Phase C): an
-            # in-tolerance over-ceiling ask closes AT the ceiling, never above it.
+            # Last round — close rather than escalate into a dead end. Close at the
+            # creator's own number, clamped DOWN to the ceiling (Phase C): an
+            # in-tolerance over-ceiling ask closes AT the ceiling, never above it. A
+            # below-floor ask still closes at their cheaper number.
             return NegotiationDecision(
-                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+                action="ACCEPT", proposed_rate=min(rate, ceiling_rate)
             )
         # Negotiation band — step our offer UP toward their ask (midpoint of our
         # offer and theirs). _step_offer already caps at the ceiling, so an
@@ -838,9 +850,11 @@ def _decide_action(
         step = _step_offer(our_offer, rate, ceiling_rate)
         if step >= rate:
             # Our capped step already meets/exceeds their ask (their ask is at/below
-            # the ceiling): close at min(ask, ceiling) — never above the ceiling.
+            # the ceiling): close at min(ask, ceiling) — never above the ceiling. A
+            # below-floor ask closes at their own cheaper number (floor is our low
+            # anchor, not a pay-up minimum).
             return NegotiationDecision(
-                action="ACCEPT", proposed_rate=min(max(rate, floor_rate), ceiling_rate)
+                action="ACCEPT", proposed_rate=min(rate, ceiling_rate)
             )
         return NegotiationDecision(action="COUNTER", proposed_rate=max(step, floor_rate))
 
@@ -1225,11 +1239,13 @@ def _apply_decision_guards(
             effective_rate = rate
             if prior_offer is not None and prior_offer < effective_rate:
                 effective_rate = prior_offer
-        # Clamp a below-floor acceptance up to the floor (never pay below it) AND
-        # an in-tolerance over-ceiling acceptance down to the ceiling (Phase C:
-        # tolerance means "meet them at the cap", never agree above the ceiling).
+        # A below-floor acceptance closes at the creator's own (cheaper) number —
+        # the floor is our low anchor / budget position, not a minimum we must pay,
+        # so we never raise the close UP to the floor. An in-tolerance over-ceiling
+        # acceptance is still clamped DOWN to the ceiling (Phase C: tolerance means
+        # "meet them at the cap", never agree above the ceiling).
         return NegotiationDecision(
-            action="ACCEPT", proposed_rate=min(max(effective_rate, floor_rate), ceiling_rate)
+            action="ACCEPT", proposed_rate=min(effective_rate, ceiling_rate)
         )
 
     # COUNTER / PRESENT_OFFER: clamp the offer into [floor, ceiling].
@@ -1250,7 +1266,23 @@ def _apply_decision_guards(
         # number. The executor re-drafts from the outcome (HARD-N1 §4).
         if creator_ask is not None and creator_ask > tolerance_ceiling:
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-        return NegotiationDecision(action="ACCEPT", proposed_rate=guarded)
+        # BUG (live $250): the coerced final-round close must land on a number that
+        # is ACTUALLY ON THE TABLE — never the model's countered figure invented in
+        # between. `guarded` is the clamped MODEL counter (e.g. $250); closing there
+        # over-pays when the creator only asked $200 and our standing offer was $200,
+        # settling at a price NEITHER side proposed. This is the SAME drift the
+        # ACCEPT branch (above) already guards; it leaked here because this
+        # final-round return fires BEFORE the anti-over-pay COUNTER guards below.
+        # Mirror them inline: close at the creator's own in-band ask when they named
+        # one (never above it), else at our prior standing offer when it's lower
+        # (BUG-A4), else fall back to the clamped counter. Never raise the close UP
+        # to `guarded` — only ever down to what was really offered/asked.
+        close_rate = guarded
+        if creator_ask is not None:
+            close_rate = min(close_rate, creator_ask)
+        elif prior_offer is not None:
+            close_rate = min(close_rate, prior_offer)
+        return NegotiationDecision(action="ACCEPT", proposed_rate=close_rate)
 
     # Anti-over-pay guards on a COUNTER (money bank A-14/19/25/53–62/87). The LLM
     # (esp. a weaker local model) tends to counter at a default/midpoint that is
@@ -1259,11 +1291,14 @@ def _apply_decision_guards(
     # so we enforce them in code rather than trust the prompt. Only fire when the
     # creator stated a readable number this turn.
     if action == "COUNTER" and creator_ask is not None:
-        # (a) Their ask is AT/BELOW our floor: they want less than our minimum.
-        # There is nothing to negotiate up — close at the floor (never counter a
-        # below-floor ask UPWARD toward our standing offer, e.g. $150 -> $300).
+        # (a) Their ask is AT/BELOW our floor: they want less than our low anchor.
+        # There is nothing to negotiate up — close at THEIR own (cheaper) number,
+        # never counter a below-floor ask UPWARD toward our standing offer
+        # (e.g. $150 -> $300) and never raise it up to the floor. The floor is our
+        # budget/anchor position, not a minimum we must pay, so a below-floor ask
+        # is a win we take at their price.
         if creator_ask <= floor_rate:
-            return NegotiationDecision(action="ACCEPT", proposed_rate=floor_rate)
+            return NegotiationDecision(action="ACCEPT", proposed_rate=creator_ask)
         # (b) Our counter would exceed their ask: never offer MORE than they asked.
         # Clamp down to their number (still >= floor). Meeting them at their own
         # in-band ask is effectively an accept, so return ACCEPT for clarity.
@@ -1344,7 +1379,8 @@ friendly, collaborative, never desperate, never argumentative.
 These are INTERNAL. Use them to make your decision, but you must NEVER state,
 hint at, or confirm them to the creator, and never reveal that a floor/ceiling
 or budget structure exists:
-- Internal floor (minimum you may agree to): ${floor_rate}
+- Internal floor (our low anchor / target — NOT a minimum you must pay; if the
+  creator asks for LESS, accept at their cheaper number): ${floor_rate}
 {ceiling_line}
 - Recommended opening offer: ${recommended_offer}
 
@@ -1395,10 +1431,11 @@ Follow these rules:
      do NOT counter them UPWARD to our standing offer — offering more than they
      asked burns budget for nothing.
    - The creator names a number BELOW our internal floor (e.g. they say "$150"
-     when our floor is higher). Their ask is cheaper than our minimum, so ACCEPT
-     and close — the downstream guard clamps the paid rate up to the floor. Do NOT
-     COUNTER a below-floor ask upward toward our standing offer; that hands them
-     hundreds of dollars they never asked for.
+     when our floor is higher). Their ask is cheaper than our low anchor, so
+     ACCEPT and close AT THEIR OWN NUMBER — a below-floor ask is a win we take at
+     their price; we do NOT raise the paid rate up to the floor. Do NOT COUNTER a
+     below-floor ask upward toward our standing offer; that hands them hundreds of
+     dollars they never asked for.
 
 5. NEVER regress below a number we have already offered, and — this is a HARD rule
    — NEVER propose a COUNTER rate ABOVE the creator's own stated ask. If they ask
@@ -2306,9 +2343,10 @@ def _rules_negotiate(
     # strictly above the floor so the floor default isn't mistaken for an offer).
 
     # Map intent + creator rate → NegotiationAction via the pure decision fn.
-    # HARD-N1 §3: floor_rate is now threaded so the deterministic fallback clamps
-    # a below-floor accept UP to the floor, exactly as the LLM path's guards do —
-    # a single, unified floor invariant across both strategies.
+    # floor_rate is threaded so the deterministic fallback treats the floor
+    # identically to the LLM path: it clamps offers WE originate (COUNTER /
+    # PRESENT_OFFER) up to the floor, but a below-floor ACCEPT closes at the
+    # creator's own cheaper number (the floor is a low anchor, not a pay-up min).
     # MED-N2: consecutive_holds = trailing PRESENT_OFFER turns, so a no-number
     # pushback holds (without burning a round) at most twice before escalating.
     decision = _decide_action(
@@ -2527,7 +2565,7 @@ together on the next step — never invent a number or term. Leaving any questio
 the creator asked unanswered reads as ignoring them.
 
 {question_checklist}
-
+{round_tone}
 You MUST also address EACH of the points below in its own clearly separated
 section — do not answer only the fee and skip the rest. Cover, in this order:
 
@@ -2912,8 +2950,40 @@ def _build_offer_prompt(
 
     # If the creator named a number, acknowledge it; else just a warm response.
     # ack_clause_fmt slots into the formatting section's opening-line instruction.
+    #
+    # Tone lift: when the creator asked for MORE than our offer, the opener not only
+    # names their ask but frames the gap with ONE honest reason — value-based when a
+    # commission exists (the commission + perk can add up past a flat rate), generic
+    # otherwise ("this is our best for this campaign"). This is what makes the email
+    # read as a warm, personalized reply instead of a bare "your ask was $300". When
+    # they met/beat our offer, or named no number, we keep a plain warm ack (no
+    # "but that's our best" — that would be wrong when we're matching/accepting).
+    # It is prompt INSTRUCTION, not literal email copy, and never reveals
+    # floor/ceiling. `_ask_above_offer` (computed below) gates the framing.
     req_rate_str = _format_rate(req.creatorRequestedRate, currency)
-    if req_rate_str is not None:
+    _offer_val = _coerce_rate((req.proposedTerms or {}).get("rate"))
+    _ask_val = _coerce_rate(req.creatorRequestedRate)
+    # "Their ask is above our offer" — the only case where we frame the gap. When
+    # either number is unreadable we fall back to the plain warm ack (safe degrade).
+    _ask_above_offer = (
+        _ask_val is not None and _offer_val is not None and _ask_val > _offer_val
+    )
+    _reward_blurb = (req.rewardDescription or ctx.get("rewardDescription") or "").strip()
+    if req_rate_str is not None and _ask_above_offer and has_rate:
+        if commission is not None:
+            _perk_bit = " and product perk" if _reward_blurb else ""
+            ack_clause_fmt = (
+                f" warmly acknowledges their request of {req_rate_str}, notes that "
+                f"while the fixed fee for this campaign is {offer_rate}, the "
+                f"{commission}% commission{_perk_bit} can add up well past a flat "
+                f"rate, and"
+            )
+        else:
+            ack_clause_fmt = (
+                f" warmly acknowledges their request of {req_rate_str}, notes that "
+                f"{offer_rate} is the best we can do on the fee for this campaign, and"
+            )
+    elif req_rate_str is not None:
         ack_clause_fmt = f" acknowledges their request of {req_rate_str} and"
     else:
         ack_clause_fmt = ""
@@ -3141,7 +3211,22 @@ def _build_offer_prompt(
             f"range, minimum, maximum, or any other money figure — ONLY "
             f"{offer_rate}{commission_rule}.\n"
         )
-        fee_bullet = f"the fixed fee of {offer_rate}"
+        # Crisp-but-warm fee bullet: when the creator asked for MORE than {offer_rate},
+        # the fee bullet itself briefly acknowledges their ask on the same line (e.g.
+        # "the fixed fee of $250 — we appreciate the $300 ask, but this is our best
+        # for this campaign") so the concession is framed, not a bare number. Only the
+        # fee/ceiling framing lives here; NEVER restate the commission figure on this
+        # bullet (commission has its own required bullet). When they met/beat us or
+        # named no number, keep the plain fee bullet.
+        if _ask_above_offer and req_rate_str is not None:
+            fee_bullet = (
+                f"the fixed fee of {offer_rate}, in ONE sentence that also warmly "
+                f"acknowledges their {req_rate_str} ask and notes this is our best "
+                f"fee for this campaign (do NOT mention the commission % on this "
+                f"bullet, and do NOT imply the deal is already agreed)"
+            )
+        else:
+            fee_bullet = f"the fixed fee of {offer_rate}"
     else:
         base_fee_goal = (
             "Base fee — the specific fee is still being finalized. Say in one "
@@ -3189,6 +3274,31 @@ def _build_offer_prompt(
     else:
         final_offer_rule = ""
 
+    # Round-aware tone: make the email's voice evolve across the negotiation so a
+    # round-1 hold and a round-3 concession don't read identically. Short INSTRUCTION
+    # (not copy). It never overrides the Rules section or the money guardrails.
+    #   * final round  → "" — final_offer_rule already sets the warm-but-firm close
+    #     tone; a second tone note here would compete with it.
+    #   * first round  → friendly + welcoming, hold near our offer, invite them in.
+    #   * middle round → acknowledge the movement they've made, concede the small
+    #     step with a reason tied to their value, stay collaborative.
+    # maxRounds <= 0 means "unlimited" — treat as a middle round (never final).
+    if req.isFinalRound and has_rate:
+        round_tone = ""
+    elif req.round is not None and req.round <= 1:
+        round_tone = (
+            "Tone for this round: this is an early-stage message — be friendly and "
+            "welcoming, hold confidently near our offer, and invite the creator into "
+            "the conversation. Do not sound like you are rushing to close.\n"
+        )
+    else:
+        round_tone = (
+            "Tone for this round: the conversation is underway — warmly acknowledge "
+            "any movement the creator has made toward us, and if we are conceding a "
+            "step, tie it to the value they bring rather than caving to pressure. Stay "
+            "collaborative, not transactional.\n"
+        )
+
     extra_parts: list[str] = []
     # HARD-N2: prior conversation FIRST (oldest→newest) so the model sees the arc
     # before the latest reply and this turn's copy stays consistent with it.
@@ -3230,6 +3340,7 @@ def _build_offer_prompt(
         brand_goal=brand_goal,
         pushed_terms_guard=pushed_terms_guard,
         final_offer_rule=final_offer_rule,
+        round_tone=round_tone,
         extra="\n".join(extra_parts),
     )
 

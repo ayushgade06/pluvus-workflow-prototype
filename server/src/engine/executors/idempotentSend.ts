@@ -6,7 +6,13 @@ import {
 import { isUniqueViolation } from "../../db/errors.js";
 import type { Creator, Message, MessageInsert } from "../../db/schema.js";
 import type { EmailDraft } from "../types.js";
-import type { IEmailProvider, EmailRecipient } from "../providers.js";
+import type { IEmailProvider, EmailRecipient, EmailSendOptions } from "../providers.js";
+import {
+  DefaultThreadContextResolver,
+  buildReplySubject,
+  type ThreadContext,
+  type ThreadContextResolver,
+} from "../threadContext.js";
 
 // ---------------------------------------------------------------------------
 // Idempotent outbound send (FIX-11, generalized)
@@ -43,12 +49,17 @@ export interface SendOnceDeps {
     id: string,
     data: { externalMessageId: string; threadId: string },
   ): Promise<Message>;
+  // E5: resolves the instance's thread state (reply target + canonical subject)
+  // so every send threads onto the existing conversation. Injectable for tests;
+  // defaults to the real one-read resolver.
+  threadContext: ThreadContextResolver;
 }
 
 const defaultDeps: SendOnceDeps = {
   createMessage: createMessageDb,
   findMessageByIdempotencyKey: findByKeyDb,
   updateMessageSent: updateMessageSentDb,
+  threadContext: new DefaultThreadContextResolver(),
 };
 
 /**
@@ -82,14 +93,46 @@ export async function sendOnce(
   // threadId. An optional Reply-To on the recipient is carried through.
   recipient?: EmailRecipient,
 ): Promise<SentResult> {
-  // Step 1 — reserve.
+  // Step 0 — resolve thread context ONCE (E5). One read yields the reply target
+  // and the thread's canonical subject; from those we derive a single reply
+  // subject and one EmailSendOptions, reused by the reserved row AND every
+  // email.send() below so the persisted row and the wire always agree.
+  //
+  // First outbound: no canonical (→ subject === draft.subject) and no reply
+  // target (→ replyToExternalId undefined) → behaviour identical to today.
+  //
+  // E7 (resolver DB read fails): threading is a best-effort enhancement — a
+  // resolver/DB failure must NEVER block a contract-forming email. Any throw
+  // degrades to empty context (log a warning, then send as a NEW thread) rather
+  // than propagating and stranding the send. Continuity is sacrificed for that
+  // one send; delivery is not.
+  let ctx: ThreadContext;
+  try {
+    ctx = await deps.threadContext.resolve(instanceId);
+  } catch (err) {
+    console.warn(
+      `[sendOnce] thread context resolve failed for instance ${instanceId}; ` +
+        `sending as a new thread. ${err instanceof Error ? err.message : String(err)}`,
+    );
+    ctx = {};
+  }
+  const subject = buildReplySubject(ctx.canonicalSubject, draft.subject);
+  const threadedDraft: EmailDraft = { ...draft, subject };
+  // Conditional spread (exactOptionalPropertyTypes): omit the key entirely when
+  // there is no reply target, so options is {} — never { replyToExternalId:
+  // undefined }. The provider treats an absent key as "open a new thread".
+  const options: EmailSendOptions = {
+    ...(ctx.replyToExternalId ? { replyToExternalId: ctx.replyToExternalId } : {}),
+  };
+
+  // Step 1 — reserve (with the threaded subject, so the row matches the wire).
   let reserved;
   try {
     reserved = await deps.createMessage({
       instanceId,
       direction: "OUTBOUND",
-      subject: draft.subject,
-      body: draft.body,
+      subject,
+      body: threadedDraft.body,
       idempotencyKey,
     });
   } catch (err) {
@@ -111,8 +154,14 @@ export async function sendOnce(
         // reserve and send). Re-attempt the send now and finalize the existing
         // reserved row, rather than dropping the email. This is safe: the row's
         // unique idempotencyKey still prevents a duplicate row, and a genuinely
-        // sent message would have taken branch (a) above.
-        const { messageId, threadId } = await email.send(draft, creator, recipient);
+        // sent message would have taken branch (a) above. Pass the same threaded
+        // draft + options as the normal path so recovery threads too (E5 step 4).
+        const { messageId, threadId } = await email.send(
+          threadedDraft,
+          creator,
+          recipient,
+          options,
+        );
         await deps.updateMessageSent(prior.id, { externalMessageId: messageId, threadId });
         return { messageId, threadId, alreadySent: false };
       }
@@ -124,7 +173,12 @@ export async function sendOnce(
   }
 
   // Step 2 — send (guarded by the committed reservation).
-  const { messageId, threadId } = await email.send(draft, creator, recipient);
+  const { messageId, threadId } = await email.send(
+    threadedDraft,
+    creator,
+    recipient,
+    options,
+  );
 
   // Step 3 — finalize the reserved row with the provider's identifiers.
   await deps.updateMessageSent(reserved.id, { externalMessageId: messageId, threadId });

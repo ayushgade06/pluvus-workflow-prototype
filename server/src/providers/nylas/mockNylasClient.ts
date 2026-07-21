@@ -18,6 +18,9 @@ export interface SentMessageRecord {
   body: string | undefined;
   id: string;
   threadId: string;
+  // Email Threading — E4: the reply-linkage field, when the send threaded onto a
+  // prior message. undefined for a new-thread send (the field was omitted).
+  replyToMessageId: string | undefined;
 }
 
 export class MockNylasClient implements NylasClientLike {
@@ -37,6 +40,9 @@ export class MockNylasClient implements NylasClientLike {
         to: Array<{ email: string; name?: string }>;
         subject?: string;
         body?: string;
+        // E4: recorded so tests can assert threading behavior (present on a
+        // threaded reply, absent on a new-thread send).
+        replyToMessageId?: string;
       };
     }): Promise<{ data: { id: string; threadId?: string } }> => {
       const recipient = params.requestBody.to[0]?.email ?? "unknown@example.com";
@@ -50,6 +56,7 @@ export class MockNylasClient implements NylasClientLike {
         body: params.requestBody.body,
         id,
         threadId,
+        replyToMessageId: params.requestBody.replyToMessageId,
       });
 
       return { data: { id, threadId } };
@@ -57,13 +64,31 @@ export class MockNylasClient implements NylasClientLike {
 
     // Resolve a sent message back to its threadId, mirroring nylas.messages.find.
     // Used by NylasEmailProvider.resolveThreadId when a send response omits the
-    // threadId. Returns the recorded threadId for a known message id.
+    // threadId. Returns the recorded threadId for a known message id. When
+    // `fields=include_headers` is requested it also returns a synthetic RFC822
+    // Message-ID header, mirroring the real API — used to test rfc822MessageId().
     find: async (params: {
       identifier: string;
       messageId: string;
-    }): Promise<{ data: { id: string; threadId?: string } }> => {
+      queryParams?: { fields?: string };
+    }): Promise<{
+      data: {
+        id: string;
+        threadId?: string;
+        headers?: Array<{ name: string; value: string }>;
+      };
+    }> => {
       const record = this.sent.find((m) => m.id === params.messageId);
-      return { data: { id: params.messageId, ...(record ? { threadId: record.threadId } : {}) } };
+      const wantHeaders = params.queryParams?.fields === "include_headers";
+      return {
+        data: {
+          id: params.messageId,
+          ...(record ? { threadId: record.threadId } : {}),
+          ...(wantHeaders
+            ? { headers: [{ name: "Message-ID", value: `<${params.messageId}@mail.gmail.com>` }] }
+            : {}),
+        },
+      };
     },
   };
 }

@@ -121,7 +121,7 @@ CASES = [
         "reply": "Honestly I'd do this for just $150, I love the brand.",
         "round": 1, "maxRounds": 4, "currentOffer": 300,
         "history": [H(0, "PRESENT_OFFER", 300)],
-        "expect": "ACCEPT clamped up to >= floor 200 (never pay below floor), or ACCEPT at their number if guard raises it.",
+        "expect": "ACCEPT at the creator's own $150 (below-floor asks close at their cheaper number; the floor is a low anchor, not a pay-up minimum). Never counter a below-floor ask UP toward the standing offer.",
     },
     {
         "id": "07-acceptance-with-number",
@@ -586,8 +586,11 @@ ASSERTS = {
         {"no_leak": True},
     ],
     "06-below-floor": [
-        # $150 below the $200 floor: any committed rate must be clamped up to >= floor.
-        {"action": {"ACCEPT", "COUNTER", "PRESENT_OFFER"}, "rate_in": (200, 500)},
+        # $150 below the $200 floor: an ACCEPT closes at the creator's own cheaper
+        # $150 (the floor is a low anchor, not a pay-up minimum); a COUNTER/PRESENT
+        # we originate stays >= floor. So the safe rate envelope spans their ask up
+        # to the ceiling.
+        {"action": {"ACCEPT", "COUNTER", "PRESENT_OFFER"}, "rate_in": (150, 500)},
     ],
     "07-acceptance-with-number": [
         {"action": {"ACCEPT"}, "rate_in": (200, 500)},

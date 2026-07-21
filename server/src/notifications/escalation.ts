@@ -49,6 +49,7 @@ import { buildDraftHistory } from "../engine/executors/negotiationHistory.js";
 import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type { IEmailProvider } from "../engine/providers.js";
 import type { EmailDraft } from "../engine/types.js";
+import { DefaultThreadContextResolver } from "../engine/threadContext.js";
 
 // The platform operator address — the last-resort recipient when a campaign has
 // no notifyEmail and BRAND_NOTIFY_EMAIL is unset. Kept here (not just env) so a
@@ -116,6 +117,18 @@ interface EscalationContext {
   // operator exactly what was said instead of only pointing them to the dashboard.
   // Chronological (oldest → newest); empty when there is no history yet.
   transcript: DraftHistoryEntry[];
+  // E6: the provider thread id for this instance (from the single-source-of-truth
+  // ThreadContextResolver), so the escalation email can carry ONE deep-link to the
+  // thread that now holds the whole conversation. undefined when no message has
+  // threaded yet — the link is then omitted gracefully.
+  threadId: string | null;
+  // E6b: the RFC822 Message-ID of the first outbound message on this thread, used
+  // to build the cold-load-safe Gmail deep-link (#search/rfc822msgid:…). The hex
+  // thread id's #all/<id> alias only resolves when Gmail is already warm, so we key
+  // the Gmail link off this header instead. null when it can't be resolved (mock
+  // provider, unconfigured, no outbound message yet, or fetch failure) — the Gmail
+  // section is then omitted gracefully.
+  gmailRfc822MessageId: string | null;
 }
 
 // DB seam — injectable so the reserve→send→finalize→audit sequencing (incl. the
@@ -183,6 +196,23 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     );
   }
 
+  // E6: resolve the instance's thread id from the SAME source of truth the send
+  // path uses (ThreadContextResolver), so the escalation email can deep-link the
+  // one thread with the full history. Best-effort — a resolver/DB failure here
+  // must never block the escalation notice, so a throw degrades to no threadId
+  // (the email still sends and simply omits the link).
+  let threadId: string | null = null;
+  try {
+    const ctx = await new DefaultThreadContextResolver().resolve(instanceId);
+    threadId = ctx.threadId ?? null;
+  } catch (err) {
+    console.error(
+      `[escalation] could not resolve threadId for instance ${instanceId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   return {
     creator: row.creator,
     campaignName: row.campaignName ?? null,
@@ -190,6 +220,10 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     workflowName: row.workflowName ?? null,
     notifyEmail: row.notifyEmail ?? null,
     transcript,
+    threadId,
+    // Resolved by notifyBrandOfEscalation (it has the email provider); the DB seam
+    // can't fetch a provider header, so it defaults to null here.
+    gmailRfc822MessageId: null,
   };
 }
 
@@ -200,6 +234,47 @@ const defaultDeps: EscalationDeps = {
   updateBrandNotificationStatus,
   appendEvent,
 };
+
+// ---------------------------------------------------------------------------
+// Gmail deep-link
+// ---------------------------------------------------------------------------
+// The Nylas-connected company mailbox is Gmail, so we want the escalation email to
+// link straight into the OFFICIAL creator conversation there, where a human can
+// read the full history and reply manually.
+//
+// IMPORTANT — why we do NOT use the hex thread id in a `#all/<id>` URL: that alias
+// only resolves when Gmail is ALREADY loaded/warm in the tab; on a cold click it
+// silently drops the id and lands on "All Mail". Google's own tooling documents
+// that there is no supported way to build a Gmail web link from an API id. The
+// one cold-load-safe deep-link is a `#search/rfc822msgid:<Message-ID>` search,
+// which keys off the email's RFC822 `Message-ID` header (resolved via the
+// provider's `rfc822MessageId()`), NOT the thread id.
+//
+// The URL is templated so an operator can retarget the account index / workspace
+// without a code change. Absent the env var we default to the rfc822msgid search
+// URL. Substitution: replace a `{messageId}` placeholder when present, else append;
+// the id is URL-encoded (Gmail tolerates a raw `@`, but `+` etc. must be escaped).
+// `{threadId}` is accepted as a legacy alias for the placeholder so an operator who
+// set the old env var still gets a working (search-shaped) link. Pure (no I/O).
+const DEFAULT_GMAIL_SEARCH_URL_TEMPLATE =
+  "https://mail.google.com/mail/u/0/#search/rfc822msgid:{messageId}";
+
+export function buildGmailThreadUrl(
+  rfc822MessageId: string | null | undefined,
+): string | undefined {
+  if (!rfc822MessageId) return undefined;
+  const template =
+    process.env["GMAIL_THREAD_URL_TEMPLATE"]?.trim() || DEFAULT_GMAIL_SEARCH_URL_TEMPLATE;
+  const encoded = encodeURIComponent(rfc822MessageId);
+  if (template.includes("{messageId}")) {
+    return template.replace(/\{messageId\}/g, encoded);
+  }
+  if (template.includes("{threadId}")) {
+    // Legacy placeholder name — substitute the (safer) rfc822 id into it.
+    return template.replace(/\{threadId\}/g, encoded);
+  }
+  return `${template}${encoded}`;
+}
 
 // ---------------------------------------------------------------------------
 // Email composition
@@ -259,8 +334,17 @@ function renderTranscript(
   return lines;
 }
 
-export function buildEscalationEmail(ctx: EscalationContext, reason: string): EmailDraft {
-  const { creator, brandName, campaignName, workflowName, transcript } = ctx;
+/**
+ * @param threadUrl optional provider deep-link builder (E6). When it yields a URL
+ *   for the instance's threadId, the email carries a one-click link to the full
+ *   thread; when it (or the threadId) is absent, the link is omitted gracefully.
+ */
+export function buildEscalationEmail(
+  ctx: EscalationContext,
+  reason: string,
+  threadUrl?: (threadId: string) => string | undefined,
+): EmailDraft {
+  const { creator, brandName, campaignName, workflowName, transcript, threadId, gmailRfc822MessageId } = ctx;
   const brand = brandName ?? "your brand";
   const creatorLine = creator.handle
     ? `${creator.name} (@${creator.handle})`
@@ -268,11 +352,38 @@ export function buildEscalationEmail(ctx: EscalationContext, reason: string): Em
 
   const subject = `Action needed: ${creator.name} moved to the manual review queue`;
 
-  const transcriptLines = renderTranscript(transcript ?? [], brandName, creator.name);
+  // Retained but currently unused: the inline transcript is disabled below in
+  // favor of the Gmail deep-link. Prefixed with `_` so noUnusedLocals stays happy
+  // while keeping the render wired up for a one-line re-enable.
+  const _transcriptLines = renderTranscript(transcript ?? [], brandName, creator.name);
+
+  // E6: build the deep-link only when BOTH a threadId and a provider that can
+  // turn it into a URL are present. Omitted entirely otherwise (no broken link).
+  const threadLink = threadId && threadUrl ? threadUrl(threadId) : undefined;
+
+  // Gmail deep-link into the OFFICIAL creator conversation on the company mailbox.
+  // Built from the RFC822 Message-ID (cold-load-safe search URL) — present whenever
+  // that id resolved; omitted cleanly on a first-turn escalation with no outbound
+  // message yet, or when the provider can't supply the header.
+  const gmailThreadLink = buildGmailThreadUrl(gmailRfc822MessageId);
+  const gmailSection = gmailThreadLink
+    ? [
+        `─────────────────────────────────────────`,
+        `⚠ Official Creator Conversation`,
+        ``,
+        `Continue this conversation directly from the official company mailbox.`,
+        `Open Gmail Thread: ${gmailThreadLink}`,
+        `─────────────────────────────────────────`,
+        ``,
+      ]
+    : [];
 
   const lines = [
     `Hi ${brand} team,`,
     ``,
+    // Prominent, near-the-top pointer to the real Gmail thread so a human can jump
+    // straight into the official conversation. Hidden entirely when there's no thread.
+    ...gmailSection,
     `A creator in your outreach has been escalated to the manual review queue and needs a human to take over.`,
     ``,
     `Creator:   ${creatorLine}`,
@@ -286,7 +397,13 @@ export function buildEscalationEmail(ctx: EscalationContext, reason: string): Em
     ``,
     // The full both-sides conversation, inline, so the operator can read exactly
     // what was said without leaving their inbox. Empty on a first-turn escalation.
-    ...(transcriptLines.length ? [...transcriptLines, ``] : []),
+    // TEMPORARILY DISABLED: the Gmail deep-link below now opens the real thread, so
+    // the inline transcript is redundant. Re-enable by uncommenting the spread.
+    // ...(transcriptLines.length ? [...transcriptLines, ``] : []),
+    // E6 payoff: one link straight to the email thread that holds the whole
+    // back-and-forth. Only present when a threaded thread id + a provider URL
+    // builder both exist; omitted cleanly otherwise.
+    ...(threadLink ? [`Open the full email thread: ${threadLink}`, ``] : []),
     `To continue the deal, reply to ${creator.name} directly at ${creator.email} — the automated workflow has PAUSED for this creator and will not send any further emails on its own. (Replying to THIS notification does nothing; it is an alert, not a routable thread.) You can also open the Manual Queue in the Pluvus dashboard.`,
     ``,
     `— Pluvus Workflow Automation`,
@@ -356,8 +473,44 @@ export async function notifyBrandOfEscalation(
       return { status: "SKIPPED", recipient: null };
     }
 
+    // ── E6b: resolve the Gmail deep-link's rfc822 Message-ID ─────────────────
+    // The cold-load-safe Gmail link keys off the RFC822 Message-ID of the first
+    // OUTBOUND message on this thread (not the hex thread id). Resolve it here,
+    // where we have the email provider. Best-effort: any failure leaves it null and
+    // the Gmail section is simply omitted — the notice is never blocked.
+    let gmailRfc822MessageId: string | null = null;
+    if (email.rfc822MessageId) {
+      try {
+        const msgs = await listMessagesByInstance(instanceId);
+        const firstOutbound = msgs
+          .filter((m) => m.direction === "OUTBOUND" && m.externalMessageId)
+          .sort(
+            (a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0),
+          )[0];
+        if (firstOutbound?.externalMessageId) {
+          gmailRfc822MessageId =
+            (await email.rfc822MessageId(firstOutbound.externalMessageId)) ?? null;
+        }
+      } catch (err) {
+        console.error(
+          `[escalation] could not resolve rfc822 Message-ID for instance ${instanceId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     // ── Send ──────────────────────────────────────────────────────────────
-    const draft = buildEscalationEmail(ctx, reason);
+    // E6: hand the email builder the provider's own thread-URL helper (bound to
+    // `email` so `this` resolves) so it can deep-link the thread. Providers that
+    // don't implement it (or aren't configured) yield undefined and the link is
+    // omitted — the notice is unaffected.
+    const threadUrl = email.threadUrl?.bind(email);
+    const draft = buildEscalationEmail(
+      { ...ctx, gmailRfc822MessageId },
+      reason,
+      threadUrl,
+    );
     // CRITICAL-2: address the brand via the explicit EmailRecipient rather than a
     // forged Creator-shaped object (the "brand-as-Creator" hack the audit flags).
     // This notice goes out on MANUAL_REVIEW (a terminal state), so unlike the

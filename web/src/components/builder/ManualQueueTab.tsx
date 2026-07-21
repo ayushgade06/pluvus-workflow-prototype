@@ -273,6 +273,34 @@ function QueueRow({
         </div>
       </button>
 
+      {/* E6: one-click deep-link to the email thread holding the full
+          conversation. Rendered only when the provider supplied a URL — omitted
+          gracefully otherwise (mock/unconfigured provider, or not yet threaded).
+          Outside the reason button so it's a real anchor, and stopPropagation so
+          opening the thread doesn't also open the inspector. */}
+      {item.threadUrl && (
+        <a
+          href={item.threadUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="ds-focusable"
+          title="Open the full email thread"
+          style={{
+            flexShrink: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: font.size.sm,
+            color: colors.accent,
+            textDecoration: "none",
+            whiteSpace: "nowrap",
+          }}
+        >
+          🧵 Open thread
+        </a>
+      )}
+
       {/* Notification status */}
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: font.size.sm, color: meta.color }}>

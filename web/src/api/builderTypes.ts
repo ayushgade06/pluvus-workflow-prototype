@@ -344,6 +344,10 @@ export interface ManualQueueItem {
   reasonLabel: string;
   escalatedAt: string | null;
   updatedAt: string;
+  /** E6: deep-link to the email thread holding the full conversation, or null when
+   *  the provider can't build one (mock / unconfigured) or the instance hasn't
+   *  threaded yet. The UI shows a link only when present. */
+  threadUrl: string | null;
   notification: ManualQueueNotification | null;
 }
 

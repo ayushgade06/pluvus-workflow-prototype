@@ -29,6 +29,19 @@ export interface EmailRecipient {
   replyTo?: string;
 }
 
+// Transport-neutral threading options for a send (Email Threading — ADR-2).
+// Deliberately provider-agnostic: it carries no Nylas concepts. Each provider
+// maps it to its own mechanism (Nylas: the send reply field; Gmail: threadId +
+// In-Reply-To; Graph: /reply; SES: raw In-Reply-To/References). Optional and
+// last on `send()`, so every existing caller compiles and behaves unchanged.
+export interface EmailSendOptions {
+  /** External id (in the sending provider's namespace) of the message this send
+   *  replies to. The provider attaches the send to that message's thread. This
+   *  is the value we persist as `Message.externalMessageId` — hence "external
+   *  id", this codebase's own term, rather than any provider's field name. */
+  replyToExternalId?: string;
+}
+
 export interface IEmailProvider {
   draft(
     creator: Creator,
@@ -41,12 +54,47 @@ export interface IEmailProvider {
    * brand-outbound path (escalation / brand-decision) uses this so the brand,
    * not the creator, receives the email while the returned threadId still lets
    * the reply correlate back to the instance.
+   *
+   * `options` (optional, last) carries transport-neutral threading intent
+   * (`replyToExternalId`). When present, the provider attaches the send to the
+   * referenced message's thread; when absent it opens a new thread exactly as
+   * before. Backward-compatible by construction (ADR-2).
    */
   send(
     draft: EmailDraft,
     creator: Creator,
     recipient?: EmailRecipient,
+    options?: EmailSendOptions,
   ): Promise<{ messageId: string; threadId: string }>;
+
+  /**
+   * Build a human-facing deep-link to the provider's hosted view of a thread, for
+   * the escalation hand-off (Email Threading — E6). Given a stored `threadId`,
+   * return a URL the operator can open to see the whole conversation in one place,
+   * or `undefined` when this provider cannot build one (e.g. the mock, or a real
+   * provider that isn't configured with a base URL).
+   *
+   * The URL shape is provider-specific (like the reply field, E4), so each
+   * provider supplies its own; callers stay provider-agnostic and simply omit the
+   * link when this returns `undefined` (graceful degradation — never a broken
+   * link). Optional so existing providers/tests need no change, and pure — it
+   * performs no I/O.
+   */
+  threadUrl?(threadId: string): string | undefined;
+
+  /**
+   * Resolve the RFC822 `Message-ID` header of a stored provider message, given its
+   * provider message id (what we persist as `Message.externalMessageId`). Used to
+   * build the escalation Gmail deep-link: Gmail's only cold-load-safe web URL is a
+   * `#search/rfc822msgid:<id>` search, which keys off this header — NOT the hex
+   * thread id (that `#all/<id>` alias only resolves when Gmail is already warm).
+   *
+   * Provider-specific and does real I/O (a message fetch), so it is async and
+   * best-effort: returns `undefined` when the provider can't supply it (the mock,
+   * an unconfigured provider, or a fetch failure) and callers omit the link
+   * gracefully. Optional so existing providers/tests need no change.
+   */
+  rfc822MessageId?(externalMessageId: string): Promise<string | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +157,9 @@ export class MockEmailProvider implements IEmailProvider {
     _draft: EmailDraft,
     creator: Creator,
     recipient?: EmailRecipient,
+    // Accepted for interface parity and ignored: the mock returns synthetic ids
+    // and does not model real threads (ADR-3). No behaviour change vs. today.
+    _options?: EmailSendOptions,
   ): Promise<{ messageId: string; threadId: string }> {
     // When addressed to a brand (recipient set), key the thread on the recipient
     // email so a simulated brand reply on that address correlates to a distinct
@@ -118,6 +169,13 @@ export class MockEmailProvider implements IEmailProvider {
       messageId: `mock-msg-${creator.id}-${Date.now()}`,
       threadId: `mock-thread-${threadKey}`,
     };
+  }
+
+  // E6: the mock models no real inbox, so it has no thread to deep-link to.
+  // Returning undefined makes every caller omit the link gracefully (the
+  // escalation email / Manual Queue row simply carry no thread link in mock mode).
+  threadUrl(_threadId: string): string | undefined {
+    return undefined;
   }
 }
 

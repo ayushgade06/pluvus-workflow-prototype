@@ -19,6 +19,7 @@ from app.routes.negotiate import (
     NegotiationDecision,
     NegotiationHistoryEntry,
     NegotiationTerm,
+    _apply_decision_guards,
     _coerce_rate,
     _decide_action,
     _last_offered_rate,
@@ -238,10 +239,11 @@ def test_rejection():
 
 
 # ---------------------------------------------------------------------------
-# HARD-N1 §3 — the deterministic fallback also clamps a below-floor accept UP to
-# the floor, unifying the floor invariant with the LLM path's guards. (Before
-# this fix _decide_action never received the floor, so it could ACCEPT below it
-# while the LLM path clamped up — a split invariant.)
+# Below-floor accept — the floor is our low anchor / budget position, NOT a
+# minimum we must pay. A creator asking for LESS than the floor is a win we take
+# at THEIR cheaper number (never raise the close up to the floor). This holds on
+# both the deterministic fallback and the LLM path. The floor only clamps offers
+# WE originate (COUNTER / PRESENT_OFFER).
 # ---------------------------------------------------------------------------
 
 
@@ -257,33 +259,108 @@ def _decide_with_floor(intent, rate, floor, prior_offer=None, is_final_round=Fal
     )
 
 
-def test_acceptance_below_floor_is_clamped_up_to_floor():
-    # Creator "accepts" at 50 but the floor is 100 → ACCEPT clamped up to 100.
+def test_acceptance_below_floor_closes_at_creator_number():
+    # Creator "accepts" at 50 while the floor is 100 → close at their cheaper 50
+    # (asking for less than the floor is a win; never pay UP to the floor).
     d = _decide_with_floor("ACCEPTANCE", 50, floor=100)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 50.0
 
 
-def test_rate_proposal_below_floor_is_clamped_up_to_floor():
-    # They propose 40 (<= our offer 300, so we'd accept their number) but floor
-    # 100 raises it to 100. Never accept below the minimum.
+def test_rate_proposal_below_floor_closes_at_creator_number():
+    # They propose 40 (<= our offer 300, so we accept their number). The floor of
+    # 100 does NOT raise it — we take the cheaper 40.
     d = _decide_with_floor("RATE_PROPOSAL", 40, floor=100)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 40.0
 
 
-def test_prior_offer_accept_below_floor_is_clamped_up():
-    # "Yes" to a stale prior offer of 60 that somehow sits below a 100 floor.
+def test_prior_offer_accept_closes_at_the_prior_offer():
+    # "Yes" to a prior offer of 60 closes at exactly 60. (A genuine standing offer
+    # is >= floor by construction; we never re-raise it up to the floor here.)
     d = _decide_with_floor("ACCEPTANCE", None, floor=100, prior_offer=60.0)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100.0
+    assert d.proposed_rate == 60.0
 
 
-def test_floor_zero_default_never_clamps_a_real_rate():
+def test_floor_zero_default_passes_a_real_rate_through():
     # Default floor 0.0 is a no-op — a positive rate passes through unchanged.
     d = _decide_with_floor("ACCEPTANCE", 250, floor=0)
     assert d.action == "ACCEPT"
     assert d.proposed_rate == 250.0
+
+
+# ---------------------------------------------------------------------------
+# Final-round COUNTER→ACCEPT must not over-pay (live $250 drift bug)
+# ---------------------------------------------------------------------------
+# The LLM path feeds the model's RAW action straight into _apply_decision_guards.
+# On the final round the model returned COUNTER @ 250 while the creator had only
+# asked $200 (and our standing offer was $200). The final-round COUNTER→ACCEPT
+# coercion used to close at the clamped MODEL counter ($250) — a figure NEITHER
+# side proposed — because it returned BEFORE the anti-over-pay COUNTER guards.
+# The close must land on a real on-the-table number: the creator's ask (never
+# above it), else our prior standing offer when lower, else the clamped counter.
+
+
+def _guard_counter(rate, *, is_final_round, creator_ask=None, prior_offer=None,
+                   floor=200.0, ceiling=500.0, tolerance=500.0):
+    """Drive _apply_decision_guards on the LLM path with a raw COUNTER action."""
+    return _apply_decision_guards(
+        "COUNTER",
+        rate,
+        floor_rate=floor,
+        ceiling_rate=ceiling,
+        tolerance_ceiling=tolerance,
+        is_final_round=is_final_round,
+        creator_ask=creator_ask,
+        prior_offer=prior_offer,
+    )
+
+
+def test_final_round_counter_does_not_overpay_creator_ask():
+    # The live bug: COUNTER @ 250 on the final round, creator asked 200, prior 200.
+    # Must close at the creator's own $200 — never the invented $250.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=200.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_non_final_counter_already_clamped_to_creator_ask():
+    # The non-final path already clamped down to the ask; the final-round fix makes
+    # both rounds behave the same for this shape.
+    d = _guard_counter(250.0, is_final_round=False, creator_ask=200.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_final_round_counter_falls_back_to_prior_offer_when_no_ask():
+    # No creator ask this turn → close at our lower standing offer, not the model's
+    # counter (BUG-A4: never close above the figure we ourselves offered).
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=None, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_final_round_counter_with_no_ask_no_prior_keeps_clamped_counter():
+    # Nothing else on the table → the clamped in-band counter is the honest close.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=None, prior_offer=None)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250.0
+
+
+def test_final_round_counter_never_raises_close_up_to_higher_ask():
+    # Creator asked MORE (400) than our counter (250): we close at our lower 250,
+    # never raise the close up toward their ask.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=400.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250.0
+
+
+def test_final_round_counter_over_tolerance_ask_still_escalates():
+    # An over-tolerance creator ask escalates on the final round (unchanged).
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=600.0, prior_offer=200.0)
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
 
 
 @pytest.mark.parametrize("intent", ["NEGOTIATION", "OBJECTION", "WAT"])
@@ -617,9 +694,9 @@ def test_a4_no_prior_offer_leaves_model_rate_untouched():
     assert d.proposed_rate == 400
 
 
-def test_a4_prior_offer_below_floor_still_clamps_up_to_floor():
-    # A stale prior offer under the floor is raised to the floor by the band clamp
-    # (we never pay below the floor even to honor a prior offer).
+def test_a4_prior_offer_below_floor_closes_at_the_prior_offer():
+    # Honoring a below-floor prior offer closes at THAT number — the floor is a low
+    # anchor, not a pay-up minimum, so we never raise the accepted rate to it.
     d = guard_prior("ACCEPT", 300, creator_ask=None, prior_offer=50)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == 100  # floor
+    assert d.proposed_rate == 50  # the prior offer, not raised to the floor

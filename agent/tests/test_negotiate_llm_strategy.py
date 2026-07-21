@@ -95,10 +95,12 @@ def test_accept_above_ceiling_becomes_escalate():
     assert d.proposed_rate is None
 
 
-def test_accept_below_floor_is_raised_to_floor():
+def test_accept_below_floor_closes_at_creator_number():
+    # The floor is a low anchor, not a pay-up minimum: a below-floor ACCEPT closes
+    # at the creator's own cheaper number, never raised up to the floor.
     d = guard("ACCEPT", 50)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == FLOOR
+    assert d.proposed_rate == 50
 
 
 def test_accept_in_band_is_kept():
@@ -242,9 +244,13 @@ def test_final_round_over_ceiling_ask_escalates_not_false_accept():
 def test_final_round_in_ceiling_ask_still_closes():
     # Creator's ask is within ceiling on the final round → genuine close (the
     # model countered high at 700, but the creator only asked 480 ≤ ceiling 500).
+    # Close at the creator's OWN ask ($480), never the clamped ceiling ($500):
+    # the final-round COUNTER→ACCEPT coercion must land on a real on-the-table
+    # number and never over-pay (live $250 drift fix — closing at the ceiling here
+    # would pay the creator $20 more than they asked, the same over-pay bug).
     d = guard("COUNTER", 700, is_final_round=True, creator_ask=480)
     assert d.action == "ACCEPT"
-    assert d.proposed_rate == CEILING
+    assert d.proposed_rate == 480.0
 
 
 # ---------------------------------------------------------------------------
