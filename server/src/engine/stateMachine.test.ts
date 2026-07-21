@@ -54,4 +54,24 @@ test("terminal states have no outgoing edges", () => {
   }
 });
 
+// ── Content-links flow (spec: State Machine Changes) ─────────────────────────
+test("CONTENT_LINKS_PENDING is NON-terminal (the inbound worker must accept its replies)", () => {
+  assert.equal(isTerminal("CONTENT_LINKS_PENDING"), false);
+});
+
+test("PAYMENT_PENDING can advance to CONTENT_LINKS_PENDING (payout form → await links)", () => {
+  assert.doesNotThrow(() => assertTransition("PAYMENT_PENDING", "CONTENT_LINKS_PENDING"));
+  // The legacy CONTENT_BRIEF_SENT edge is preserved for backward compatibility.
+  assert.doesNotThrow(() => assertTransition("PAYMENT_PENDING", "CONTENT_BRIEF_SENT"));
+});
+
+test("CONTENT_LINKS_PENDING routes: MANUAL_REVIEW (links), OPTED_OUT (unsub), self-loop (nudge)", () => {
+  assert.doesNotThrow(() => assertTransition("CONTENT_LINKS_PENDING", "MANUAL_REVIEW"));
+  assert.doesNotThrow(() => assertTransition("CONTENT_LINKS_PENDING", "OPTED_OUT"));
+  // Self-loop (no-op) is always allowed by assertTransition (from === to).
+  assert.doesNotThrow(() => assertTransition("CONTENT_LINKS_PENDING", "CONTENT_LINKS_PENDING"));
+  // But it must NOT jump straight to a success terminal — a human handoff only.
+  assert.throws(() => assertTransition("CONTENT_LINKS_PENDING", "CONTENT_BRIEF_SENT"), InvalidTransitionError);
+});
+
 console.log(`\n${n} passed\n`);
