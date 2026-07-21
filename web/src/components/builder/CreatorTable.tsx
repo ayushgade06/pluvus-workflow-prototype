@@ -14,7 +14,7 @@
 
 import { colors, radii, font } from "../../theme";
 import { Chip, IconButton } from "../ds";
-import type { CreatorItem } from "../../api/builderTypes";
+import type { CreatorItem, CreatorPlatformSummary } from "../../api/builderTypes";
 
 /**
  * The single source of column geometry. Header and rows MUST use the same
@@ -52,6 +52,46 @@ export function formatFollowers(n: number | null): string {
 
 function formatEngagement(n: number | null): string {
   return n === null ? UNKNOWN : `${n.toFixed(1)}%`;
+}
+
+/**
+ * A network engages MEANINGFULLY better than the one on display.
+ *
+ * The table shows a creator's biggest network, and engagement follows that same
+ * network so the handle and the percentage can never disagree. But a creator's
+ * best-converting audience is often not their largest — in a real 102-creator
+ * import, 12 displayed a worse engagement rate than their own best network, one
+ * of them showing 0% while their TikTok ran at 7.1%. Half a point of headroom
+ * keeps float noise from flagging everyone.
+ */
+const ENGAGEMENT_HEADROOM = 0.5;
+
+function betterEngagementElsewhere(
+  platforms: CreatorPlatformSummary[],
+  shown: number | null,
+  primaryKey: string | undefined,
+): CreatorPlatformSummary | null {
+  let best: CreatorPlatformSummary | null = null;
+  for (const p of platforms) {
+    if (p.key === primaryKey || p.engagementPct == null) continue;
+    if (best === null || p.engagementPct > (best.engagementPct ?? 0)) best = p;
+  }
+  if (!best || best.engagementPct == null) return null;
+  if (shown === null) return best;
+  return best.engagementPct - shown >= ENGAGEMENT_HEADROOM ? best : null;
+}
+
+/** Multi-line breakdown for the native title tooltip. */
+function platformBreakdown(platforms: CreatorPlatformSummary[], primaryKey?: string): string {
+  return platforms
+    .map((p) => {
+      const marker = p.key === primaryKey ? "\u2022 " : "  ";
+      const followers = p.followers === null ? "unknown" : p.followers.toLocaleString("en-US");
+      const eng = p.engagementPct === null ? "" : ` \u00b7 ${p.engagementPct.toFixed(1)}% engagement`;
+      const handle = p.handle ? ` \u00b7 @${p.handle}` : "";
+      return `${marker}${p.label}: ${followers} followers${eng}${handle}`;
+    })
+    .join("\n");
 }
 
 function initials(name: string): string {
@@ -283,9 +323,7 @@ export function CreatorTableRow({ row, selected, onToggle, onDelete, showBatchSt
         </span>
       </label>
 
-      <Truncate style={{ fontSize: font.size.sm, color: colors.textMuted }}>
-        {creator.platform ?? UNKNOWN}
-      </Truncate>
+      <PlatformCell creator={creator} />
       <Truncate style={{ fontSize: font.size.sm, color: colors.textMuted }}>
         {creator.niche ?? UNKNOWN}
       </Truncate>
@@ -332,6 +370,59 @@ export function CreatorTableRow({ row, selected, onToggle, onDelete, showBatchSt
         style={{ opacity: 0.45, justifySelf: "end" }}
       />
     </div>
+  );
+}
+
+/**
+ * Platform, plus a "+N" when the creator has other networks.
+ *
+ * The chip turns amber when one of those hidden networks engages meaningfully
+ * better than the number on display — otherwise a strong mid-size audience
+ * stays invisible behind the creator's own biggest platform.
+ *
+ * The breakdown rides on a native `title` rather than the design-system
+ * Tooltip: that tooltip is absolutely positioned, and this table scrolls inside
+ * an `overflow: auto` container, which would clip it on the top rows.
+ */
+function PlatformCell({ creator }: { creator: CreatorItem }) {
+  const platforms = creator.platforms ?? [];
+  const primaryKey = platforms[0]?.key;
+  const others = platforms.length - 1;
+  const better =
+    others > 0 ? betterEngagementElsewhere(platforms, creator.engagementRate, primaryKey) : null;
+
+  const title =
+    platforms.length > 1
+      ? `${platformBreakdown(platforms, primaryKey)}${
+          better ? `\n\n${better.label} engages better than the ${creator.platform ?? "shown"} figure.` : ""
+        }`
+      : undefined;
+
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }} title={title}>
+      <Truncate style={{ fontSize: font.size.sm, color: colors.textMuted, minWidth: 0 }}>
+        {creator.platform ?? UNKNOWN}
+      </Truncate>
+      {others > 0 && (
+        <span
+          aria-label={`and ${others} more network${others !== 1 ? "s" : ""}`}
+          style={{
+            flexShrink: 0,
+            fontSize: font.size.xs,
+            fontWeight: font.weight.medium,
+            lineHeight: 1.5,
+            padding: "1px 5px",
+            borderRadius: radii.pill,
+            cursor: "default",
+            color: better ? colors.warning : colors.textMuted,
+            background: better ? `${colors.warning}1a` : colors.panelAlt,
+            border: `1px solid ${better ? `${colors.warning}44` : colors.border}`,
+          }}
+        >
+          +{others}
+        </span>
+      )}
+    </span>
   );
 }
 

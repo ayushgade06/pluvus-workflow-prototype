@@ -10,6 +10,7 @@ import {
   parseBool,
   parseCount,
   parsePercent,
+  summarizePlatforms,
 } from "./creatorFields.js";
 
 let n = 0;
@@ -328,6 +329,74 @@ function main() {
     const row = mapCreatorRow({ email: "a@x.com", youtube_description: "my channel" });
     // It is the youtube bio, reachable only when YouTube is the primary network.
     assert.equal(row.metadata, null);
+  });
+
+  // --- platform summary (the "+N" indicator) --------------------------------
+
+  test("summarizePlatforms orders by audience, biggest first", () => {
+    const row = mapCreatorRow({
+      email: "a@x.com",
+      instagram_follower_count: "50k",
+      tiktok_follower_count: "900k",
+      youtube_subscriber_count: "310k",
+    });
+    assert.deepEqual(
+      summarizePlatforms(row.platformStats).map((p) => p.key),
+      ["tiktok", "youtube", "instagram"],
+    );
+  });
+
+  test("the first entry is the network the table displays", () => {
+    const row = mapCreatorRow({
+      email: "a@x.com",
+      instagram_follower_count: "50k",
+      tiktok_follower_count: "900k",
+    });
+    const [primary] = summarizePlatforms(row.platformStats);
+    assert.equal(primary!.label, row.platform);
+    assert.equal(primary!.followers, row.followerCount);
+  });
+
+  test("a single-network creator yields no extra platforms to advertise", () => {
+    const row = mapCreatorRow({ email: "a@x.com", tiktok_follower_count: "900k" });
+    assert.equal(summarizePlatforms(row.platformStats).length, 1);
+  });
+
+  test("engagement-only networks still count — a 0-follower block is not the same as no data", () => {
+    const row = mapCreatorRow({
+      email: "a@x.com",
+      youtube_subscriber_count: "580k",
+      youtube_engagement_percent: "0",
+      tiktok_engagement_percent: "7.1",
+    });
+    const keys = summarizePlatforms(row.platformStats).map((p) => p.key);
+    assert.equal(keys.includes("tiktok"), true);
+    // Unknown audience sorts last even though it has the better engagement.
+    assert.deepEqual(keys, ["youtube", "tiktok"]);
+  });
+
+  test("a link-only network is not advertised as an audience", () => {
+    // instagram_link alone gives a platform, but no followers/engagement — it
+    // would be noise in a breakdown that exists to compare audiences.
+    const row = mapCreatorRow({ email: "a@x.com", instagram_link: "https://instagram.com/a" });
+    assert.equal(summarizePlatforms(row.platformStats).length, 0);
+  });
+
+  test("summarizePlatforms tolerates junk without throwing", () => {
+    for (const junk of [null, undefined, "nope", 42, [1, 2]]) {
+      assert.deepEqual(summarizePlatforms(junk), []);
+    }
+    assert.deepEqual(summarizePlatforms({ tiktok: null }), []);
+  });
+
+  test("handle and link ride along for the breakdown tooltip", () => {
+    const row = mapCreatorRow({
+      email: "a@x.com",
+      tiktok_username: "@tt", tiktok_link: "https://tiktok.com/@tt", tiktok_follower_count: "900k",
+    });
+    const [p] = summarizePlatforms(row.platformStats);
+    assert.equal(p!.handle, "tt");
+    assert.equal(p!.link, "https://tiktok.com/@tt");
   });
 
   console.log(`\n${n} passed\n`);

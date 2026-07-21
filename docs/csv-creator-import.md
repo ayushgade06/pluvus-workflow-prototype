@@ -85,6 +85,20 @@ Recognised networks: `instagram_*`, `tiktok_*`, `youtube_*`, `twitter_*` (or `x_
 Because `platform`, `handle`, `profileUrl`, and `engagementRate` all come from the *same*
 winning network, they can never disagree with each other.
 
+### Cross-platform creators: the "+N" badge
+
+The table has one Platform column, so it shows the winning network only. When a creator
+has others, a **`+N`** badge appears next to it — hover for the full per-network
+breakdown (followers, engagement, handle), with a `•` marking the one on display.
+
+**The badge turns amber when a hidden network engages meaningfully better** (half a
+percentage point or more) than the figure shown. This is not cosmetic. In a real
+102-creator import, 39 were cross-platform and **12 displayed a worse engagement rate
+than their own best network** — one showed *0.0%* on a 580k YouTube channel while their
+54k TikTok ran at 7.1%. Sorting by engagement alone would have buried them.
+
+An amber `+N` means: *this creator is stronger than the number next to them suggests.*
+
 Everything else is retained in three structured fields:
 
 - **`platformStats`** — per-network metrics (`followers`, `engagementPct`, `avgLikes`,

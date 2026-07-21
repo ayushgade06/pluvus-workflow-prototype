@@ -283,6 +283,61 @@ export interface MappedCreatorRow {
   metadata: Record<string, string> | null;
 }
 
+/**
+ * One network's audience, flattened for display.
+ *
+ * Derived from `platformStats`, which only ever holds the five NETWORKS above.
+ * Patreon and OnlyFans are link-only (LINK_ONLY_COLUMNS) and live in
+ * `socialLinks`, never here — which is why this projection is safe to put in a
+ * list DTO while `socialLinks`, `metadata` and `signals` are not.
+ */
+export interface CreatorPlatformSummary {
+  key: string;
+  label: string;
+  followers: number | null;
+  engagementPct: number | null;
+  handle: string | null;
+  link: string | null;
+}
+
+const NETWORK_LABELS = new Map(NETWORKS.map((n) => [n.key, n.label]));
+
+/**
+ * Flatten a stored `platformStats` blob into a display list, biggest audience
+ * first (unknown audiences last).
+ *
+ * The table shows only the primary network, so this is what lets the UI say
+ * "…and 2 more" instead of silently hiding that a creator is cross-platform —
+ * which matters because a creator's best-engaging network is often not their
+ * biggest one.
+ */
+export function summarizePlatforms(platformStats: unknown): CreatorPlatformSummary[] {
+  if (!platformStats || typeof platformStats !== "object" || Array.isArray(platformStats)) {
+    return [];
+  }
+  const out: CreatorPlatformSummary[] = [];
+  for (const [key, raw] of Object.entries(platformStats as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const s = raw as PlatformStat;
+    // A block with no audience signal at all is noise in a summary.
+    if (s.followers == null && s.engagementPct == null) continue;
+    out.push({
+      key,
+      label: NETWORK_LABELS.get(key) ?? key,
+      followers: s.followers ?? null,
+      engagementPct: s.engagementPct ?? null,
+      handle: s.username ?? null,
+      link: s.link ?? null,
+    });
+  }
+  return out.sort((a, b) => {
+    if (a.followers === b.followers) return a.label.localeCompare(b.label);
+    if (a.followers === null) return 1;
+    if (b.followers === null) return -1;
+    return b.followers - a.followers;
+  });
+}
+
 /** True if the header list contains something we recognise as the email column. */
 export function hasEmailColumn(headers: string[]): boolean {
   const emailAliases = new Set(SCALAR_ALIASES.email.map(normalizeHeader));

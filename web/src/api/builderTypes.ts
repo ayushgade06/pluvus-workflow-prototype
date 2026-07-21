@@ -250,6 +250,16 @@ export interface WorkflowExecutionSummary {
 // Creator (enrollment)
 // ---------------------------------------------------------------------------
 
+/** One network's audience. `platform`/`followerCount` above reflect the biggest. */
+export interface CreatorPlatformSummary {
+  key: string;
+  label: string;
+  followers: number | null;
+  engagementPct: number | null;
+  handle: string | null;
+  link: string | null;
+}
+
 export interface CreatorItem {
   id: string;
   name: string;
@@ -263,6 +273,12 @@ export interface CreatorItem {
   engagementRate: number | null;
   location: string | null;
   language: string | null;
+  /**
+   * Every network with audience data, biggest first. The table shows only the
+   * first; this is what surfaces "and 2 more" so a cross-platform creator is
+   * not silently reduced to one network.
+   */
+  platforms?: CreatorPlatformSummary[];
 }
 
 // ---------------------------------------------------------------------------
