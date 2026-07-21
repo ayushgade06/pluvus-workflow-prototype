@@ -155,6 +155,9 @@ export async function executePaymentInfo(
     creator,
     draft,
     `payment:request:${instance.id}`,
+    undefined, // deps — default
+    undefined, // recipient — creator
+    ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
   );
 
   // Enter the waiting state. Stay on THIS node so the form submission is handled

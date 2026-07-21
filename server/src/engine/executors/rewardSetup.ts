@@ -140,6 +140,9 @@ export async function executeRewardSetup(
     creator,
     draft,
     `reward:confirmation:${instance.id}`,
+    undefined, // deps — default
+    undefined, // recipient — creator
+    ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
   );
 
   // Enter the waiting state. Stay on THIS node so an inbound reply is handled by

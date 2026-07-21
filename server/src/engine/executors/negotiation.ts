@@ -251,6 +251,9 @@ async function sendCloseEmail(
       creator,
       draft,
       `negotiation:close:${instance.id}:${instance.negotiationRound}`,
+      undefined, // deps — default
+      undefined, // recipient — creator
+      ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
     );
   } catch (err) {
     // Best-effort (#15, Q2): never let a close-email failure block the REJECTED
@@ -543,7 +546,16 @@ export async function executeNegotiation(
       const presentKey = latestInbound
         ? `negotiation:present:${instance.id}:${instance.negotiationRound}:${latestInbound.id}`
         : `negotiation:present:${instance.id}:${instance.negotiationRound}`;
-      await sendOnce(email, instance.id, creator, draft, presentKey);
+      await sendOnce(
+        email,
+        instance.id,
+        creator,
+        draft,
+        presentKey,
+        undefined, // deps — default
+        undefined, // recipient — creator
+        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
+      );
 
       // Back to AWAITING_REPLY at the SAME node. The round is unchanged on a
       // "free" present turn; past the MED-W3 cap it advances so the loop is
@@ -648,6 +660,9 @@ export async function executeNegotiation(
         creator,
         draft,
         `negotiation:acceptance:${instance.id}:${instance.negotiationRound}`,
+        undefined, // deps — default
+        undefined, // recipient — creator
+        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
       );
 
       return {
@@ -774,6 +789,9 @@ export async function executeNegotiation(
         creator,
         draft,
         `negotiation:counter_offer:${instance.id}:${newRound}`,
+        undefined, // deps — default
+        undefined, // recipient — creator
+        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
       );
 
       return {

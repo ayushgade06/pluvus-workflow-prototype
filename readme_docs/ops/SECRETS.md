@@ -44,8 +44,25 @@ file).
 | `VITE_OPERATOR_API_KEY` (web) | Compiled INTO the browser bundle — it is **not** a secret from the browser's perspective. This is intentional for the single-operator model (only Pluvus staff load the dashboard). It must equal the server's `OPERATOR_API_KEY`. Do NOT treat it as private; rotate it together with `OPERATOR_API_KEY`. Lives in the gitignored `web/.env.local`. |
 
 Non-secret config (ports, provider selectors, model slugs, timeouts, TTLs,
-concurrency, `PAYMENT_BASE_URL`, `LOG_FILE/DIR`, …) is documented in
-`.env.example` and carries no rotation concern.
+concurrency, `PAYMENT_BASE_URL`, `LOG_FILE/DIR`, `GMAIL_LABELS_ENABLED`,
+`GMAIL_LABEL_PREFIX`, …) is documented in `.env.example` and carries no rotation
+concern.
+
+### Gmail Campaign Labels — grant scope prerequisite (feature: gmail-campaign-labels)
+
+`GMAIL_LABELS_ENABLED=true` applies real Gmail labels (`Pluvus/<Campaign name>`)
+to conversation threads via the Nylas **Folders** API. This is not a new secret,
+but it has a one-time **grant-scope** prerequisite that lives with `NYLAS_GRANT_ID`:
+
+- The connected `NYLAS_GRANT_ID` must be a **Google/Gmail** grant (Nylas Folders ==
+  Gmail labels) consented with **Gmail mail-MODIFY scope**
+  (`https://www.googleapis.com/auth/gmail.modify`) — send/read-only is not enough
+  to create or apply a label.
+- If the current grant lacks modify scope, **re-consent the mailbox in Nylas** with
+  the modify scope added (produces a new grant id — update `NYLAS_GRANT_ID`).
+- Until then, keep `GMAIL_LABELS_ENABLED=false`. With the flag on but the scope
+  missing, labeling simply **no-ops with a logged `[labels]` warning** — email
+  delivery is never affected — so this is safe to leave off and flip on later.
 
 ---
 
