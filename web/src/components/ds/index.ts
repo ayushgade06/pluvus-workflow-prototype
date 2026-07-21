@@ -14,6 +14,7 @@ export { SectionHeader } from "./SectionHeader";
 export { Skeleton, SkeletonLines, SkeletonRows } from "./Skeleton";
 export { EmptyState } from "./EmptyState";
 export { Tooltip } from "./Tooltip";
+export { HoverCard } from "./HoverCard";
 export { Breadcrumbs } from "./Breadcrumbs";
 export type { Crumb } from "./Breadcrumbs";
 export { Tabs } from "./Tabs";

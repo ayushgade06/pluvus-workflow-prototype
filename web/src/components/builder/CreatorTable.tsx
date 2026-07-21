@@ -13,7 +13,7 @@
 // status stays visual.
 
 import { colors, radii, font } from "../../theme";
-import { Chip, IconButton } from "../ds";
+import { Chip, HoverCard, IconButton } from "../ds";
 import type { CreatorItem, CreatorPlatformSummary } from "../../api/builderTypes";
 
 /**
@@ -79,19 +79,6 @@ function betterEngagementElsewhere(
   if (!best || best.engagementPct == null) return null;
   if (shown === null) return best;
   return best.engagementPct - shown >= ENGAGEMENT_HEADROOM ? best : null;
-}
-
-/** Multi-line breakdown for the native title tooltip. */
-function platformBreakdown(platforms: CreatorPlatformSummary[], primaryKey?: string): string {
-  return platforms
-    .map((p) => {
-      const marker = p.key === primaryKey ? "\u2022 " : "  ";
-      const followers = p.followers === null ? "unknown" : p.followers.toLocaleString("en-US");
-      const eng = p.engagementPct === null ? "" : ` \u00b7 ${p.engagementPct.toFixed(1)}% engagement`;
-      const handle = p.handle ? ` \u00b7 @${p.handle}` : "";
-      return `${marker}${p.label}: ${followers} followers${eng}${handle}`;
-    })
-    .join("\n");
 }
 
 function initials(name: string): string {
@@ -391,21 +378,27 @@ function PlatformCell({ creator }: { creator: CreatorItem }) {
   const better =
     others > 0 ? betterEngagementElsewhere(platforms, creator.engagementRate, primaryKey) : null;
 
-  const title =
-    platforms.length > 1
-      ? `${platformBreakdown(platforms, primaryKey)}${
-          better ? `\n\n${better.label} engages better than the ${creator.platform ?? "shown"} figure.` : ""
-        }`
-      : undefined;
+  const label = (
+    <Truncate style={{ fontSize: font.size.sm, color: colors.textMuted, minWidth: 0 }}>
+      {creator.platform ?? UNKNOWN}
+    </Truncate>
+  );
+
+  if (others <= 0) {
+    return (
+      <span style={{ display: "flex", alignItems: "center", minWidth: 0 }}>{label}</span>
+    );
+  }
 
   return (
-    <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }} title={title}>
-      <Truncate style={{ fontSize: font.size.sm, color: colors.textMuted, minWidth: 0 }}>
-        {creator.platform ?? UNKNOWN}
-      </Truncate>
-      {others > 0 && (
+    <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+      {label}
+      <HoverCard
+        label={`${creator.name}: ${others} more network${others !== 1 ? "s" : ""}`}
+        maxWidth={330}
+        content={<PlatformBreakdown platforms={platforms} primaryKey={primaryKey} better={better} />}
+      >
         <span
-          aria-label={`and ${others} more network${others !== 1 ? "s" : ""}`}
           style={{
             flexShrink: 0,
             fontSize: font.size.xs,
@@ -413,7 +406,6 @@ function PlatformCell({ creator }: { creator: CreatorItem }) {
             lineHeight: 1.5,
             padding: "1px 5px",
             borderRadius: radii.pill,
-            cursor: "default",
             color: better ? colors.warning : colors.textMuted,
             background: better ? `${colors.warning}1a` : colors.panelAlt,
             border: `1px solid ${better ? `${colors.warning}44` : colors.border}`,
@@ -421,8 +413,75 @@ function PlatformCell({ creator }: { creator: CreatorItem }) {
         >
           +{others}
         </span>
-      )}
+      </HoverCard>
     </span>
+  );
+}
+
+/** The hover card body: every network, biggest first, primary marked. */
+function PlatformBreakdown({
+  platforms,
+  primaryKey,
+  better,
+}: {
+  platforms: CreatorPlatformSummary[];
+  primaryKey: string | undefined;
+  better: CreatorPlatformSummary | null;
+}) {
+  return (
+    <div style={{ fontSize: font.size.xs, lineHeight: 1.5 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <tbody>
+          {platforms.map((p) => {
+            const isPrimary = p.key === primaryKey;
+            const isBetter = better?.key === p.key;
+            return (
+              <tr key={p.key}>
+                <td style={{ padding: "2px 8px 2px 0", whiteSpace: "nowrap" }}>
+                  <span style={{ color: isPrimary ? colors.text : colors.textDim }}>
+                    {isPrimary ? "● " : "○ "}
+                    {p.label}
+                  </span>
+                </td>
+                <td
+                  style={{
+                    padding: "2px 8px 2px 0",
+                    textAlign: "right",
+                    fontVariantNumeric: "tabular-nums",
+                    color: p.followers === null ? colors.textMuted : colors.text,
+                  }}
+                >
+                  {p.followers === null ? UNKNOWN : p.followers.toLocaleString("en-US")}
+                </td>
+                <td
+                  style={{
+                    padding: "2px 0",
+                    textAlign: "right",
+                    fontVariantNumeric: "tabular-nums",
+                    color: isBetter ? colors.warning : colors.textDim,
+                    fontWeight: isBetter ? font.weight.semibold : font.weight.regular,
+                  }}
+                >
+                  {p.engagementPct === null ? UNKNOWN : `${p.engagementPct.toFixed(1)}%`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {better && (
+        <div
+          style={{
+            marginTop: 7,
+            paddingTop: 7,
+            borderTop: `1px solid ${colors.border}`,
+            color: colors.warning,
+          }}
+        >
+          Engages better on {better.label} than the figure shown.
+        </div>
+      )}
+    </div>
   );
 }
 
