@@ -58,53 +58,52 @@ update({ identifier, messageId, requestBody }: {
 `Message.folders: string[]` is readable on `messages.find`, and
 `UpdateMessageRequest.folders` sets the folder-id set the message appears in.
 
-## 3. ★ Deciding spike: message-label vs. native thread-label (§5.4 / §15.2)
+## 3. ★ Deciding spike: how to apply the label to the whole conversation (§5.4 / §15.2)
 
-Two candidate mechanisms, both surfaced by the SDK:
+The engine seam is `IThreadLabeler.applyThreadLabel(threadId, label)` — it carries
+the **threadId** (which `sendOnce` has from the `SentResult`), NOT a messageId.
+Whatever mechanism we pick must key off the threadId and label the **entire
+conversation**. Three candidates the SDK surfaces:
 
-| Mechanism | SDK field | Semantics (from the SDK model docs) |
+| Mechanism | SDK call | Semantics (from the SDK model docs) |
 |---|---|---|
-| **(a) label the sent message** | `messages.update({ folders })` | "The IDs of the folders the message should appear in." Gmail's data model labels the **thread**, so a label on any message surfaces on the whole conversation. |
-| **(b) native thread label** | `threads.update({ folders })` | ⚠ "The IDs of the folders to apply, **overwriting all previous folders for all messages in the thread**." |
+| (a) label the sent message | `messages.update({ folders })` | needs a messageId (not on the seam); message-level, propagates to the thread |
+| (b) naive thread label | `threads.update({ folders: [labelId] })` | ⚠ "The IDs of the folders to apply, **overwriting all previous folders for all messages in the thread**" — DESTRUCTIVE |
+| **(c) read-then-union thread label** | `threads.find` → `threads.update({ folders: [...existing, labelId] })` | additive: read the thread's current folder set, add our label id, write back |
 
-**Decision: (a) — label the just-sent message via `messages.update`.**
+**Decision: (c) — read-then-union at the THREAD level.**
 
 **Why, with evidence:**
 
-1. **(b) is destructive.** The SDK doc for `UpdateThreadRequest.folders` is explicit
-   that it **overwrites all previous folders for all messages in the thread**.
-   Passing `[labelId]` there would strip `INBOX` / `SENT` / `IMPORTANT` etc. from
-   every message in the conversation — a data-loss bug, not a label add. `threads.update`
-   has no add-only mode. So (b) is rejected outright.
+1. **It matches the seam exactly.** `applyThreadLabel` receives `threadId`, and
+   `threads.find({ threadId })` → `Thread.folders: string[]` reads the thread's
+   current folder/label set, so no messageId plumbing is needed. (Mechanism (a)
+   would require adding a messageId to the seam — an unnecessary signature change.)
 
-2. **(a) propagates to the whole conversation.** Gmail's own model attaches labels
-   at the thread level; a label on one message shows on the entire thread in the
-   Gmail UI, and a later reply on that thread inherits the thread's labels. This is
-   the exact behavior §5.4 requires, and it is Gmail-native (not a Nylas quirk), so
-   it holds for future replies too.
+2. **Naive (b) is destructive.** `UpdateThreadRequest.folders` is documented to
+   **overwrite all previous folders for all messages in the thread**. Passing
+   `[labelId]` alone would strip `INBOX` / `SENT` / `IMPORTANT` from the whole
+   conversation — data loss, not a label add. So we NEVER pass the label alone.
 
-3. **`folders` is still set-semantics on the message.** `UpdateMessageRequest.folders`
-   replaces *that one message's* folder set (Gmail messages can be in multiple
-   folders/labels at once). To **add** our label without dropping the message's
-   existing folders (SENT, etc.), the implementation MUST **read-then-union**:
-   - `messages.find(messageId)` → read `data.folders` (current set),
-   - if `labelId` already present → no-op (idempotent, self-healing),
-   - else `messages.update({ folders: [...current, labelId] })`.
-   This keeps the operation additive and idempotent: re-applying an already-present
-   label is a no-op, matching the spec's self-healing contract (§6.4).
+3. **Read-then-union makes (b)'s overwrite safe and additive.** We first
+   `threads.find` to read `data.folders`, then:
+   - if `labelId` already present → **no-op** (skip the update entirely →
+     idempotent, self-healing, and it means a follow-up/counter re-apply is free),
+   - else `threads.update({ folders: [...existing, labelId] })` — the write-back
+     is the FULL prior set plus our label, so nothing is stripped.
+   Because Gmail models labels at the thread level, the label then shows on the
+   whole conversation and a later reply inherits it — the exact §5.4 requirement,
+   Gmail-native (not a Nylas quirk).
 
-> **Note (refinement over PLAN.md):** the spec's §6.5 step 3 said "apply the
-> resolved label id to the thread" without specifying that the underlying Nylas
-> `folders` field is overwrite-not-add. The read-then-union above is the concrete,
-> non-destructive realization of "apply the label" — it does not change the
-> architecture (still one message-scoped update, best-effort, post-send) but it is
-> the detail that makes the apply *safe*. Recorded here per §5.4's mandate to
-> "record the decision + evidence in the ADR."
-
-**We label the just-sent message** (whose id `sendOnce` already has as
-`messageId`) rather than an arbitrary thread message, because it is guaranteed to
-exist and belong to the thread, and Gmail propagates the label to the whole
-conversation from there.
+> **Refinement over PLAN.md:** the spec's §6.5 step 3 said "apply the resolved
+> label id to the thread" without noting that Nylas's `threads.update.folders` is
+> overwrite-not-add. The read-then-union above is the concrete, non-destructive
+> realization of "apply the label" — same architecture (one thread-scoped update,
+> best-effort, post-send, keyed on the seam's threadId), plus the detail that makes
+> the apply *safe*. `messages.update` + `Message.folders` are still added to the
+> `NylasClientLike` surface as a documented fallback should a deployment ever need
+> message-level labeling, but the built path is (c). Recorded here per §5.4's
+> mandate to "record the decision + evidence in the ADR."
 
 ## 4. Nesting & the parent `Pluvus` folder (§5.5)
 

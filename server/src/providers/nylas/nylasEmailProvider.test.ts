@@ -20,6 +20,7 @@ import test from "node:test";
 import { NylasEmailProvider } from "./nylasEmailProvider.js";
 import { MockNylasClient } from "./mockNylasClient.js";
 import type { NylasClientLike } from "./client.js";
+import { MockEmailProvider, isThreadLabeler } from "../../engine/providers.js";
 import type { Creator } from "../../db/schema.js";
 import type { EmailDraft } from "../../engine/types.js";
 
@@ -33,12 +34,225 @@ const draft: EmailDraft = { subject: "Re: Collaboration", body: "Hello Robin," }
 
 // Build a provider over a fresh MockNylasClient with a fixed grant id. The third
 // constructor arg (thread-URL template) is passed explicitly so these tests never
-// depend on process.env leaking in.
-function makeProvider(threadUrlTemplate?: string) {
+// depend on process.env leaking in. The fourth (labelsEnabled) is likewise passed
+// explicitly so the Gmail-label tests don't depend on GMAIL_LABELS_ENABLED leaking.
+function makeProvider(threadUrlTemplate?: string, labelsEnabled = false) {
   const client = new MockNylasClient();
-  const provider = new NylasEmailProvider(client, "grant-test", threadUrlTemplate);
+  const provider = new NylasEmailProvider(
+    client,
+    "grant-test",
+    threadUrlTemplate,
+    labelsEnabled,
+  );
   return { client, provider };
 }
+
+// ── Gmail Campaign Labels — isThreadLabeler guard (§6.1) ──────────────────────
+
+test("labels: isThreadLabeler is TRUE for NylasEmailProvider", () => {
+  const { provider } = makeProvider();
+  assert.equal(isThreadLabeler(provider), true);
+});
+
+test("labels: isThreadLabeler is FALSE for MockEmailProvider (feature no-ops under mock)", () => {
+  assert.equal(isThreadLabeler(new MockEmailProvider()), false);
+});
+
+// ── Gmail Campaign Labels — applyThreadLabel (§6.5, §6.6) ─────────────────────
+
+test("labels: flag OFF ⇒ applyThreadLabel is a pure no-op (no list/create/update)", async () => {
+  const { client, provider } = makeProvider(undefined, /* labelsEnabled */ false);
+  await provider.applyThreadLabel("nylas-thread-x", "Pluvus/Summer Skincare");
+  assert.equal(client.listCalls, 0);
+  assert.equal(client.createCalls, 0);
+  assert.equal(client.threadUpdateCalls, 0);
+});
+
+test("labels: flag ON ⇒ creates the label then applies it to the thread (unioned)", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  // Send so the thread exists with its seeded INBOX folder.
+  const { threadId } = await provider.send(draft, creator);
+  await provider.applyThreadLabel(threadId, "Pluvus/Summer Skincare");
+
+  // One list (miss) + one create + one thread update.
+  assert.equal(client.listCalls, 1, "listed folders once on the cache miss");
+  assert.equal(client.createCalls, 1, "created the missing label once");
+  assert.equal(client.threadUpdateCalls, 1, "applied the label to the thread once");
+  // The label folder exists...
+  const created = client.folderStore.find((f) => f.name === "Pluvus/Summer Skincare");
+  assert.ok(created, "the Pluvus/<name> folder was created");
+  // ...and the thread now carries INBOX (preserved) + the new label id (unioned).
+  const threadSet = client.threadFolders.get(threadId)!;
+  assert.ok(threadSet.includes("INBOX"), "existing INBOX folder is preserved (not clobbered)");
+  assert.ok(threadSet.includes(created!.id), "the new label id was added");
+});
+
+test("labels: reuses an EXISTING label (no create) and finds it by exact name", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  // Pre-seed the label as if a prior run created it.
+  const seeded = await client.folders.create({
+    identifier: "grant-test",
+    requestBody: { name: "Pluvus/Existing" },
+  });
+  client.createCalls = 0; // reset after seeding
+
+  const { threadId } = await provider.send(draft, creator);
+  await provider.applyThreadLabel(threadId, "Pluvus/Existing");
+
+  assert.equal(client.createCalls, 0, "an existing label is NOT re-created");
+  const threadSet = client.threadFolders.get(threadId)!;
+  assert.ok(threadSet.includes(seeded.data.id), "the existing label id was applied");
+});
+
+test("labels: second apply for the same label hits the CACHE (only one folders.list)", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  const { threadId } = await provider.send(draft, creator);
+
+  await provider.applyThreadLabel(threadId, "Pluvus/Cached");
+  await provider.applyThreadLabel(threadId, "Pluvus/Cached");
+
+  assert.equal(client.listCalls, 1, "the second apply reused the cached label id (no re-list)");
+  assert.equal(client.createCalls, 1, "the label is created exactly once");
+});
+
+test("labels: re-applying an already-present label is a no-op (no second thread update)", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  const { threadId } = await provider.send(draft, creator);
+
+  await provider.applyThreadLabel(threadId, "Pluvus/Once");
+  const afterFirst = client.threadUpdateCalls;
+  // Second apply: label already on the thread → must skip the update entirely.
+  await provider.applyThreadLabel(threadId, "Pluvus/Once");
+
+  assert.equal(afterFirst, 1);
+  assert.equal(client.threadUpdateCalls, 1, "already-present label → no redundant thread update");
+});
+
+test("labels: concurrent applies for a brand-new label collapse to a SINGLE create (single-flight)", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  const { threadId } = await provider.send(draft, creator);
+
+  // Two overlapping applies for the SAME brand-new label.
+  await Promise.all([
+    provider.applyThreadLabel(threadId, "Pluvus/Race"),
+    provider.applyThreadLabel(threadId, "Pluvus/Race"),
+  ]);
+
+  assert.equal(client.createCalls, 1, "single-flight: the create fires exactly once");
+  const matches = client.folderStore.filter((f) => f.name === "Pluvus/Race");
+  assert.equal(matches.length, 1, "no duplicate label folder created");
+});
+
+test("labels: create-conflict is recovered by re-reading the list (never throws)", async () => {
+  // A client whose create() ALWAYS conflicts, but whose second list() surfaces the
+  // now-existing label (as if another process created it). applyThreadLabel must
+  // recover and apply it — and never throw.
+  let listCount = 0;
+  const conflictLabel = "Pluvus/Conflict";
+  const conflictId = "folder-from-other-process";
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "m1", threadId: "t1" } }),
+      find: async (p) => ({ data: { id: p.messageId, threadId: "t1" } }),
+    },
+    folders: {
+      list: async () => {
+        listCount++;
+        // First list (initial miss): empty. Second list (post-conflict re-read):
+        // the label now exists.
+        return listCount === 1
+          ? { data: [] }
+          : { data: [{ id: conflictId, name: conflictLabel }] };
+      },
+      create: async () => {
+        throw new Error("409 folder already exists");
+      },
+    },
+    threads: {
+      find: async (p) => ({ data: { id: p.threadId, folders: ["INBOX"] } }),
+      update: async (p) => ({
+        data: {
+          id: p.threadId,
+          ...(p.requestBody.folders ? { folders: p.requestBody.folders } : {}),
+        },
+      }),
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test", undefined, true);
+
+  // Must resolve (not reject) and recover the conflicting label.
+  await provider.applyThreadLabel("t1", conflictLabel);
+  assert.equal(listCount, 2, "re-read the list after the create conflict");
+});
+
+test("labels: a folders.list failure never throws — the send is unaffected", async () => {
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "m1", threadId: "t1" } }),
+      find: async (p) => ({ data: { id: p.messageId, threadId: "t1" } }),
+    },
+    folders: {
+      list: async () => {
+        throw new Error("nylas list boom");
+      },
+      create: async () => ({ data: { id: "x", name: "x" } }),
+    },
+    threads: {
+      find: async (p) => ({ data: { id: p.threadId, folders: [] } }),
+      update: async (p) => ({
+        data: {
+          id: p.threadId,
+          ...(p.requestBody.folders ? { folders: p.requestBody.folders } : {}),
+        },
+      }),
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test", undefined, true);
+  // The whole point: this resolves, never rejects.
+  await provider.applyThreadLabel("t1", "Pluvus/X");
+});
+
+test("labels: a threads.update failure never throws (best-effort apply)", async () => {
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "m1", threadId: "t1" } }),
+      find: async (p) => ({ data: { id: p.messageId, threadId: "t1" } }),
+    },
+    folders: {
+      list: async () => ({ data: [{ id: "lbl-1", name: "Pluvus/X" }] }),
+      create: async () => ({ data: { id: "lbl-1", name: "Pluvus/X" } }),
+    },
+    threads: {
+      find: async (p) => ({ data: { id: p.threadId, folders: ["INBOX"] } }),
+      update: async () => {
+        throw new Error("nylas update boom");
+      },
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test", undefined, true);
+  await provider.applyThreadLabel("t1", "Pluvus/X"); // resolves, never rejects
+});
+
+test("labels: missing SDK folders/threads surface ⇒ no-op (no crash on a read-only fake)", async () => {
+  // A client WITHOUT the folders/threads surface (e.g. an older fake) must no-op.
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "m1", threadId: "t1" } }),
+      find: async (p) => ({ data: { id: p.messageId, threadId: "t1" } }),
+    },
+    // no folders, no threads
+  };
+  const provider = new NylasEmailProvider(client, "grant-test", undefined, true);
+  await provider.applyThreadLabel("t1", "Pluvus/X"); // resolves, never rejects
+});
+
+test("labels: empty threadId or label ⇒ no-op", async () => {
+  const { client, provider } = makeProvider(undefined, true);
+  await provider.applyThreadLabel("", "Pluvus/X");
+  await provider.applyThreadLabel("t1", "");
+  assert.equal(client.listCalls, 0);
+  assert.equal(client.threadUpdateCalls, 0);
+});
 
 // ── E4: replyToMessageId mapping ──────────────────────────────────────────────
 

@@ -21,10 +21,31 @@ export interface SentMessageRecord {
   // Email Threading — E4: the reply-linkage field, when the send threaded onto a
   // prior message. undefined for a new-thread send (the field was omitted).
   replyToMessageId: string | undefined;
+  // Gmail Campaign Labels: the folder/label ids this message currently appears
+  // in. Seeded to a couple of "system" folders so a test can prove
+  // applyThreadLabel UNIONs (adds) the label rather than overwriting the set.
+  folders: string[];
+}
+
+/** A fake Gmail label/folder as Nylas models it (id + name). */
+export interface FolderRecord {
+  id: string;
+  name: string;
 }
 
 export class MockNylasClient implements NylasClientLike {
   readonly sent: SentMessageRecord[] = [];
+  // Gmail Campaign Labels: the fake label/folder store + call counters so tests
+  // can assert find-or-create hits the cache (one list) and creates race-collapse
+  // to a single create.
+  readonly folderStore: FolderRecord[] = [];
+  listCalls = 0;
+  createCalls = 0;
+  // Gmail Campaign Labels — per-thread folder/label id sets, seeded lazily to the
+  // "INBOX" system folder on first touch so a label apply must UNION (add), not
+  // overwrite. Tests read this back to prove the system folders were preserved.
+  readonly threadFolders = new Map<string, string[]>();
+  threadUpdateCalls = 0;
   private counter = 0;
 
   // Deterministic id generator (no Date.now()/random so tests are stable).
@@ -57,6 +78,9 @@ export class MockNylasClient implements NylasClientLike {
         id,
         threadId,
         replyToMessageId: params.requestBody.replyToMessageId,
+        // Seed the message with the "sent" system folder so a label apply must
+        // UNION (add) rather than overwrite — mirroring a real Gmail message.
+        folders: ["SENT"],
       });
 
       return { data: { id, threadId } };
@@ -76,6 +100,7 @@ export class MockNylasClient implements NylasClientLike {
         id: string;
         threadId?: string;
         headers?: Array<{ name: string; value: string }>;
+        folders?: string[];
       };
     }> => {
       const record = this.sent.find((m) => m.id === params.messageId);
@@ -84,13 +109,95 @@ export class MockNylasClient implements NylasClientLike {
         data: {
           id: params.messageId,
           ...(record ? { threadId: record.threadId } : {}),
+          // Gmail Campaign Labels: expose the message's current folder set so
+          // applyThreadLabel reads it and unions the new label id.
+          ...(record ? { folders: record.folders } : {}),
           ...(wantHeaders
             ? { headers: [{ name: "Message-ID", value: `<${params.messageId}@mail.gmail.com>` }] }
             : {}),
         },
       };
     },
+
+    // Gmail Campaign Labels: set the message's folder id set (Nylas overwrite
+    // semantics). applyThreadLabel passes the UNION of existing + label, so this
+    // records the full resulting set — a test can read it back to prove the
+    // system folders were preserved (not clobbered).
+    update: async (params: {
+      identifier: string;
+      messageId: string;
+      requestBody: { folders?: string[] };
+    }): Promise<{ data: { id: string; folders?: string[] } }> => {
+      const record = this.sent.find((m) => m.id === params.messageId);
+      if (record && params.requestBody.folders) {
+        record.folders = [...params.requestBody.folders];
+      }
+      return {
+        data: {
+          id: params.messageId,
+          ...(record ? { folders: record.folders } : {}),
+        },
+      };
+    },
   };
+
+  // Gmail Campaign Labels — the fake Folders (== Gmail labels) API.
+  folders = {
+    list: async (_params: {
+      identifier: string;
+    }): Promise<{ data: FolderRecord[] }> => {
+      this.listCalls += 1;
+      // Return a shallow copy so callers can't mutate the store by reference.
+      return { data: this.folderStore.map((f) => ({ ...f })) };
+    },
+    create: async (params: {
+      identifier: string;
+      requestBody: { name: string };
+    }): Promise<{ data: FolderRecord }> => {
+      this.createCalls += 1;
+      const folder: FolderRecord = {
+        id: this.nextId("nylas-folder"),
+        name: params.requestBody.name,
+      };
+      this.folderStore.push(folder);
+      return { data: folder };
+    },
+  };
+
+  // Gmail Campaign Labels — the fake Threads API (chosen apply mechanism, ADR §3).
+  threads = {
+    find: async (params: {
+      identifier: string;
+      threadId: string;
+    }): Promise<{ data: { id: string; folders?: string[] } }> => {
+      const folders = this.threadFoldersFor(params.threadId);
+      return { data: { id: params.threadId, folders: [...folders] } };
+    },
+    update: async (params: {
+      identifier: string;
+      threadId: string;
+      requestBody: { folders?: string[] };
+    }): Promise<{ data: { id: string; folders?: string[] } }> => {
+      this.threadUpdateCalls += 1;
+      if (params.requestBody.folders) {
+        this.threadFolders.set(params.threadId, [...params.requestBody.folders]);
+      }
+      return {
+        data: { id: params.threadId, folders: this.threadFoldersFor(params.threadId) },
+      };
+    },
+  };
+
+  // Lazily seed a thread's folder set with the "INBOX" system folder so a label
+  // apply must union (not clobber) it. Returns the live array reference.
+  private threadFoldersFor(threadId: string): string[] {
+    let folders = this.threadFolders.get(threadId);
+    if (!folders) {
+      folders = ["INBOX"];
+      this.threadFolders.set(threadId, folders);
+    }
+    return folders;
+  }
 }
 
 // ---------------------------------------------------------------------------
