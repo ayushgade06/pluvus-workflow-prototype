@@ -63,6 +63,8 @@ const REASON_LABELS: Record<string, string> = {
   pricing_exception: "Custom fee structure / bonus / guarantee ask",
   undefined_terms: "Undefined campaign term — needs a human to clarify",
   usage_rights_or_licensing: "Usage rights / exclusivity / licensing ask",
+  // Content submission: the creator replied with the link(s) to their content.
+  content_links_submitted: "Creator submitted content links",
 };
 
 function reasonLabel(reason: string): string {
@@ -109,6 +111,26 @@ function deriveEscalation(events: Event[]): { reason: string; escalatedAt: strin
     reason: "escalated",
     escalatedAt: transition ? transition.occurredAt.toISOString() : null,
   };
+}
+
+/**
+ * Extract the submitted content URLs for an instance from its event log. Reads
+ * the most recent CONTENT_LINKS_SUBMITTED event that carried a non-empty `urls`
+ * array (the no-URL nudge self-loop emits the same type with an empty array).
+ * Returns [] when there is no such event.
+ */
+function deriveSubmittedUrls(events: Event[]): string[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "CONTENT_LINKS_SUBMITTED") continue;
+    const p = asRecord(e.payload);
+    const raw = p?.["urls"];
+    if (Array.isArray(raw)) {
+      const urls = raw.filter((u): u is string => typeof u === "string" && u.length > 0);
+      if (urls.length > 0) return urls;
+    }
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +182,9 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
               "MANUAL_REVIEW_FLAGGED",
               "NEGOTIATION_TURN",
               "STATE_TRANSITION",
+              // Content-links escalation: carries the submitted URLs so the queue
+              // entry can show the link count + list without a per-item read.
+              "CONTENT_LINKS_SUBMITTED",
             ]),
           ),
         )
@@ -216,12 +241,15 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
     }
 
     const items = instRows.map(({ instance: inst, creator }) => {
-      const { reason, escalatedAt } = deriveEscalation(eventsByInstance.get(inst.id) ?? []);
+      const instEvents = eventsByInstance.get(inst.id) ?? [];
+      const { reason, escalatedAt } = deriveEscalation(instEvents);
       const notification = notifications.get(inst.id) ?? null;
       const threadId = threadIdByInstance.get(inst.id) ?? null;
       // Build the deep-link only when both a threadId and a provider URL builder
       // yield one; otherwise the UI simply shows no thread link (no broken link).
       const threadUrl = threadId && threadUrlFor ? threadUrlFor(threadId) ?? null : null;
+      // Content-links escalation: the submitted URLs (empty for every other reason).
+      const submittedUrls = deriveSubmittedUrls(instEvents);
       return {
         instanceId: inst.id,
         creatorId: inst.creatorId,
@@ -237,6 +265,9 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
         updatedAt: inst.updatedAt.toISOString(),
         // E6: the thread deep-link (null when unavailable — the UI omits it).
         threadUrl,
+        // Content-links: the submitted URLs + count (empty/0 for other reasons).
+        submittedUrls,
+        linkCount: submittedUrls.length,
         notification: notification
           ? {
               status: notification.status,
