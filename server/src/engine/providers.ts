@@ -98,6 +98,40 @@ export interface IEmailProvider {
 }
 
 // ---------------------------------------------------------------------------
+// IThreadLabeler — optional label capability (Gmail Campaign Labels — §6.1)
+// ---------------------------------------------------------------------------
+// A transport-neutral seam for applying a human label to a conversation thread,
+// mirroring how EmailSendOptions was added for threading (optional + feature-
+// detected, so every existing caller/provider compiles and behaves unchanged).
+//
+// Providers that CAN label a thread implement this; callers feature-detect with
+// the isThreadLabeler type guard. MockEmailProvider deliberately does NOT
+// implement it, so the whole feature is a no-op under EMAIL_PROVIDER=mock and in
+// every unit test that uses the mock — labeling only ever fires against a real
+// Gmail grant. No Gmail/Nylas concept appears here: the engine only knows there
+// is an optional "apply this string label to this threadId" capability.
+export interface IThreadLabeler {
+  /**
+   * Ensure `label` exists (find-or-create) and apply it to the thread the given
+   * provider threadId belongs to. Best-effort by contract: implementations MUST
+   * NOT throw into the caller — a labeling failure never blocks or fails a send.
+   */
+  applyThreadLabel(threadId: string, label: string): Promise<void>;
+}
+
+/**
+ * Type guard: true when a provider also implements IThreadLabeler. Lets the send
+ * path apply a label only when the active provider supports it (NylasEmailProvider)
+ * and skip it silently otherwise (MockEmailProvider, or any provider without
+ * label support), so labeling is a pure no-op wherever it isn't available.
+ */
+export function isThreadLabeler(
+  p: IEmailProvider,
+): p is IEmailProvider & IThreadLabeler {
+  return typeof (p as Partial<IThreadLabeler>).applyThreadLabel === "function";
+}
+
+// ---------------------------------------------------------------------------
 // MockEmailProvider
 // ---------------------------------------------------------------------------
 

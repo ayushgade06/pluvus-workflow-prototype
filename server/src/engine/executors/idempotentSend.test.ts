@@ -89,6 +89,39 @@ function makeEmail() {
   return { email, sends: () => sends, calls };
 }
 
+// A labeler-capable email fake (implements IThreadLabeler) that records every
+// applyThreadLabel call and lets a test control whether it rejects / hangs. Used
+// to prove the best-effort, non-blocking labeling contract (§6.4, Refinements
+// #3/#6). `behavior`:
+//   "ok"    — resolves after recording (default)
+//   "throw" — rejects (labeling failure must never surface to sendOnce)
+//   "hang"  — never resolves (sendOnce must NOT await it)
+function makeLabelerEmail(behavior: "ok" | "throw" | "hang" = "ok") {
+  let sends = 0;
+  const labelCalls: { threadId: string; label: string }[] = [];
+  const email: IEmailProvider & {
+    applyThreadLabel(threadId: string, label: string): Promise<void>;
+  } = {
+    async draft() {
+      return draft;
+    },
+    async send() {
+      sends++;
+      return { messageId: `ext-${sends}`, threadId: `thread-${sends}` };
+    },
+    async applyThreadLabel(threadId: string, label: string) {
+      labelCalls.push({ threadId, label });
+      if (behavior === "throw") throw new Error("nylas label boom");
+      if (behavior === "hang") return new Promise<void>(() => {}); // never resolves
+    },
+  };
+  return { email, sends: () => sends, labelCalls };
+}
+
+// Flush microtasks so a fire-and-forget label promise (which sendOnce does NOT
+// await) has a chance to record its call before the test asserts on it.
+const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
 async function main() {
   console.log("\nidempotentSend.sendOnce\n");
 
@@ -272,6 +305,117 @@ async function main() {
     assert.equal(calls[0]!.options?.replyToExternalId, undefined, "new thread on degrade");
     assert.equal(rows.size, 1, "no duplicate row");
     assert.equal(rows.get("outreach:i1").externalMessageId, "ext-1");
+  });
+
+  // -------------------------------------------------------------------------
+  // Gmail Campaign Labels — best-effort, pass-through, async (§6.4)
+  // -------------------------------------------------------------------------
+
+  await test("labels: passes campaignName through and applies Pluvus/<name> after send", async () => {
+    const { deps } = makeDeps();
+    const { email, labelCalls, sends } = makeLabelerEmail("ok");
+    const r = await sendOnce(
+      email,
+      "i1",
+      creator,
+      draft,
+      "outreach:i1",
+      deps,
+      undefined, // no explicit recipient
+      "Summer Skincare", // campaignName
+    );
+    await flush();
+    assert.equal(sends(), 1);
+    assert.equal(r.threadId, "thread-1");
+    assert.equal(labelCalls.length, 1, "the label is applied exactly once");
+    assert.equal(labelCalls[0]!.label, "Pluvus/Summer Skincare");
+    assert.equal(labelCalls[0]!.threadId, "thread-1", "labels the just-sent thread");
+  });
+
+  await test("labels: undefined campaignName ⇒ no label attempted (pass-through, no lookup)", async () => {
+    const { deps } = makeDeps();
+    const { email, labelCalls } = makeLabelerEmail("ok");
+    // No campaignName argument at all.
+    await sendOnce(email, "i1", creator, draft, "outreach:i1", deps);
+    await flush();
+    assert.equal(labelCalls.length, 0, "no campaign name ⇒ no label");
+  });
+
+  await test("labels: mock (non-labeler) provider ⇒ labeling is a pure no-op", async () => {
+    const { deps, rows } = makeDeps();
+    const { email, sends } = makeEmail(); // plain email, NOT a labeler
+    const r = await sendOnce(
+      email,
+      "i1",
+      creator,
+      draft,
+      "outreach:i1",
+      deps,
+      undefined,
+      "Summer Skincare",
+    );
+    await flush();
+    // Behaviour is byte-identical to a no-label send: one send, row finalized.
+    assert.equal(sends(), 1);
+    assert.equal(r.alreadySent, false);
+    assert.equal(rows.get("outreach:i1").externalMessageId, "ext-1");
+  });
+
+  await test("labels: a THROWING labeler never fails, delays, or re-sends (Refinement #3)", async () => {
+    const { deps, rows } = makeDeps();
+    const { email, sends, labelCalls } = makeLabelerEmail("throw");
+    // Must resolve cleanly despite applyThreadLabel rejecting.
+    const r = await sendOnce(
+      email,
+      "i1",
+      creator,
+      draft,
+      "outreach:i1",
+      deps,
+      undefined,
+      "Summer Skincare",
+    );
+    await flush();
+    assert.equal(r.alreadySent, false, "send still succeeds");
+    assert.equal(r.messageId, "ext-1");
+    assert.equal(sends(), 1, "label failure never re-invokes email.send");
+    assert.equal(labelCalls.length, 1, "the label WAS attempted (and swallowed on failure)");
+    // No extra Message row written by the labeling path.
+    assert.equal(rows.size, 1, "labeling writes no Message row");
+  });
+
+  await test("labels: a HANGING labeler does NOT block the send (async / non-blocking #6)", async () => {
+    const { deps } = makeDeps();
+    const { email, sends } = makeLabelerEmail("hang"); // applyThreadLabel never resolves
+    // sendOnce must resolve promptly — it does not await the label promise.
+    const r = await sendOnce(
+      email,
+      "i1",
+      creator,
+      draft,
+      "outreach:i1",
+      deps,
+      undefined,
+      "Summer Skincare",
+    );
+    assert.equal(r.alreadySent, false, "sendOnce resolves without awaiting the label");
+    assert.equal(r.messageId, "ext-1");
+    assert.equal(sends(), 1);
+  });
+
+  await test("labels: applied on the alreadySent idempotent-replay branch too (self-healing)", async () => {
+    const { deps } = makeDeps();
+    const { email, labelCalls, sends } = makeLabelerEmail("ok");
+    // First send labels once.
+    await sendOnce(email, "i1", creator, draft, "outreach:i1", deps, undefined, "Summer Skincare");
+    // Retry (same key) → alreadySent branch. It must STILL fire the label
+    // (cheap, idempotent) so a first-apply failure can self-heal on a later send.
+    const r2 = await sendOnce(email, "i1", creator, draft, "outreach:i1", deps, undefined, "Summer Skincare");
+    await flush();
+    assert.equal(r2.alreadySent, true);
+    assert.equal(sends(), 1, "no second email send");
+    assert.equal(labelCalls.length, 2, "label re-applied on the idempotent replay");
+    assert.equal(labelCalls[1]!.label, "Pluvus/Summer Skincare");
   });
 
   console.log(`\n✓ idempotentSend: all ${n} tests passed\n`);
