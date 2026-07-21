@@ -64,13 +64,31 @@ export class MockNylasClient implements NylasClientLike {
 
     // Resolve a sent message back to its threadId, mirroring nylas.messages.find.
     // Used by NylasEmailProvider.resolveThreadId when a send response omits the
-    // threadId. Returns the recorded threadId for a known message id.
+    // threadId. Returns the recorded threadId for a known message id. When
+    // `fields=include_headers` is requested it also returns a synthetic RFC822
+    // Message-ID header, mirroring the real API — used to test rfc822MessageId().
     find: async (params: {
       identifier: string;
       messageId: string;
-    }): Promise<{ data: { id: string; threadId?: string } }> => {
+      queryParams?: { fields?: string };
+    }): Promise<{
+      data: {
+        id: string;
+        threadId?: string;
+        headers?: Array<{ name: string; value: string }>;
+      };
+    }> => {
       const record = this.sent.find((m) => m.id === params.messageId);
-      return { data: { id: params.messageId, ...(record ? { threadId: record.threadId } : {}) } };
+      const wantHeaders = params.queryParams?.fields === "include_headers";
+      return {
+        data: {
+          id: params.messageId,
+          ...(record ? { threadId: record.threadId } : {}),
+          ...(wantHeaders
+            ? { headers: [{ name: "Message-ID", value: `<${params.messageId}@mail.gmail.com>` }] }
+            : {}),
+        },
+      };
     },
   };
 }

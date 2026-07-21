@@ -134,6 +134,35 @@ test("E6: threadUrl URL-encodes the thread id", () => {
   );
 });
 
+// ── E6b: rfc822MessageId (Gmail deep-link source) ─────────────────────────────
+
+test("E6b: rfc822MessageId fetches the Message-ID header and strips angle brackets", async () => {
+  const { client, provider } = makeProvider();
+  // Send so the mock has a known message id; find(...) returns a synthetic
+  // "<{id}@mail.gmail.com>" header when include_headers is requested.
+  const { messageId } = await provider.send(draft, creator);
+  const rfc822 = await provider.rfc822MessageId(messageId);
+  assert.equal(rfc822, `${messageId}@mail.gmail.com`); // brackets stripped
+});
+
+test("E6b: rfc822MessageId returns undefined for an empty id (no fetch)", async () => {
+  const { provider } = makeProvider();
+  assert.equal(await provider.rfc822MessageId(""), undefined);
+});
+
+test("E6b: rfc822MessageId returns undefined (never throws) when the fetch fails", async () => {
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "x", threadId: "t" } }),
+      find: async () => {
+        throw new Error("nylas find boom");
+      },
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test");
+  assert.equal(await provider.rfc822MessageId("some-id"), undefined);
+});
+
 // ── E7: recovery & degradation at the provider ────────────────────────────────
 
 // A client that fails the FIRST send whose requestBody carries replyToMessageId

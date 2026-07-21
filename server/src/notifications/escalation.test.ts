@@ -55,6 +55,7 @@ function makeDeps(opts?: {
         notifyEmail: opts?.notifyEmail ?? null,
         transcript: opts?.transcript ?? [],
         threadId: opts?.threadId ?? null,
+        gmailRfc822MessageId: null,
       };
     },
     async createBrandNotification(data: any) {
@@ -152,6 +153,7 @@ async function main() {
         notifyEmail: null,
         transcript: [],
         threadId: null,
+        gmailRfc822MessageId: null,
       },
       "low_confidence_reply",
     );
@@ -165,7 +167,9 @@ async function main() {
     assert.ok(!/Open the full email thread/.test(draft.body));
   });
 
-  await test("buildEscalationEmail renders the both-sides transcript when present", async () => {
+  await test("buildEscalationEmail no longer inlines the transcript, but keeps the rest", async () => {
+    // The inline conversation block is TEMPORARILY DISABLED (the Gmail deep-link
+    // opens the real thread instead). The rest of the notice is unchanged.
     const draft = buildEscalationEmail(
       {
         creator,
@@ -179,40 +183,18 @@ async function main() {
           { role: "creator", message: "I want 40% commission or this doesn't happen." },
         ],
         threadId: null,
+        gmailRfc822MessageId: null,
       },
       "pricing_exception",
     );
-    // The conversation block appears with both sides labeled.
-    assert.match(draft.body, /Conversation so far/);
-    assert.match(draft.body, /Robin Vega:/); // creator turn labeled by name
-    assert.match(draft.body, /Acme Co — round 1, PRESENT_OFFER, \$350:/); // our turn tagged
-    assert.match(draft.body, /I want 40% commission/); // the escalation trigger is visible
-    // Tells the operator how to actually respond (reply to creator, not this alert).
+    // The inline conversation block is gone.
+    assert.ok(!/Conversation so far/.test(draft.body));
+    assert.ok(!/I want 40% commission/.test(draft.body));
+    // …but the who/why and reply instructions still render.
+    assert.match(draft.body, /Robin Vega/);
+    assert.match(draft.body, /custom fee structure, bonus, or guarantee/); // pricing_exception reason label
     assert.match(draft.body, /reply to Robin Vega directly at robin@creators\.test/);
     assert.match(draft.body, /Replying to THIS notification does nothing/);
-  });
-
-  await test("buildEscalationEmail caps a very long transcript and notes omissions", async () => {
-    const many = Array.from({ length: 25 }, (_, i) => ({
-      role: (i % 2 === 0 ? "creator" : "us") as "creator" | "us",
-      message: `msg ${i}`,
-    }));
-    const draft = buildEscalationEmail(
-      {
-        creator,
-        campaignName: null,
-        brandName: "Acme Co",
-        workflowName: null,
-        notifyEmail: null,
-        transcript: many,
-        threadId: null,
-      },
-      "escalated",
-    );
-    // 25 > cap(20): notes that earlier turns were omitted, shows the newest.
-    assert.match(draft.body, /most recent 20 of 25 messages; 5 earlier omitted/);
-    assert.match(draft.body, /msg 24/); // newest is kept
-    assert.ok(!/\bmsg 0\b/.test(draft.body)); // oldest is dropped
   });
 
   await test("E6: includes the thread deep-link when a threadId + URL builder are present", async () => {
@@ -225,6 +207,7 @@ async function main() {
         notifyEmail: null,
         transcript: [],
         threadId: "thread-xyz",
+        gmailRfc822MessageId: null,
       },
       "escalated",
       (threadId) => `https://mail.example.test/threads/${threadId}`,
@@ -242,6 +225,7 @@ async function main() {
         notifyEmail: null,
         transcript: [],
         threadId: "thread-xyz", // threadId present …
+        gmailRfc822MessageId: null,
       },
       "escalated",
       // … but no URL builder passed → link omitted gracefully (mock-provider path).
@@ -259,6 +243,7 @@ async function main() {
         notifyEmail: null,
         transcript: [],
         threadId: null, // no thread yet …
+        gmailRfc822MessageId: null,
       },
       "escalated",
       // … a builder exists but is never invoked without a threadId.
@@ -278,6 +263,79 @@ async function main() {
       sent[0]!.body,
       /Open the full email thread: https:\/\/mail\.example\.test\/threads\/thread-live/,
     );
+  });
+
+  // ── Gmail deep-link (rfc822msgid — cold-load-safe) ─────────────────────────
+  await test("Gmail link: prominent section with the default rfc822msgid search URL", async () => {
+    delete process.env["GMAIL_THREAD_URL_TEMPLATE"]; // exercise the default template
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: "19f82873dea651de",
+        gmailRfc822MessageId: "CALpXEbZ6jsiRZ@mail.gmail.com",
+      },
+      "escalated",
+      // No provider threadUrl builder — the Gmail link is independent of E6.
+    );
+    assert.match(draft.body, /Official Creator Conversation/);
+    assert.match(
+      draft.body,
+      /Open Gmail Thread: https:\/\/mail\.google\.com\/mail\/u\/0\/#search\/rfc822msgid:CALpXEbZ6jsiRZ(%40|@)mail\.gmail\.com/,
+    );
+    // The prominent section sits ABOVE the "escalated to the manual review queue" line.
+    assert.ok(
+      draft.body.indexOf("Official Creator Conversation") <
+        draft.body.indexOf("escalated to the manual review queue"),
+    );
+  });
+
+  await test("Gmail link: honors GMAIL_THREAD_URL_TEMPLATE override with {messageId}", async () => {
+    process.env["GMAIL_THREAD_URL_TEMPLATE"] =
+      "https://mail.google.com/mail/u/2/#search/rfc822msgid:{messageId}";
+    try {
+      const draft = buildEscalationEmail(
+        {
+          creator,
+          campaignName: "Summer Launch",
+          brandName: "Acme Co",
+          workflowName: "Summer Outreach",
+          notifyEmail: null,
+          transcript: [],
+          threadId: "abc123",
+          gmailRfc822MessageId: "msg-abc@mail.gmail.com",
+        },
+        "escalated",
+      );
+      assert.match(
+        draft.body,
+        /Open Gmail Thread: https:\/\/mail\.google\.com\/mail\/u\/2\/#search\/rfc822msgid:msg-abc(%40|@)mail\.gmail\.com/,
+      );
+    } finally {
+      delete process.env["GMAIL_THREAD_URL_TEMPLATE"];
+    }
+  });
+
+  await test("Gmail link: hidden entirely when the rfc822 Message-ID is absent", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: "19f82873dea651de", // a thread exists …
+        gmailRfc822MessageId: null, // … but the rfc822 id couldn't be resolved
+      },
+      "escalated",
+    );
+    assert.ok(!/Official Creator Conversation/.test(draft.body));
+    assert.ok(!/Open Gmail Thread/.test(draft.body));
   });
 
   await test("fresh escalation sends to the campaign recipient and records SENT", async () => {

@@ -58,11 +58,24 @@ export interface NylasClientLike {
      * Fetch a single message by id. Used to resolve the real threadId when the
      * send response omits it (common for a brand-new thread) — the persisted
      * message resource always carries its threadId.
+     *
+     * `queryParams.fields: "include_headers"` additionally returns the RFC822
+     * headers (incl. the `Message-ID`), which the escalation Gmail deep-link needs
+     * — Gmail's cold-load-safe URL keys off the rfc822 Message-ID, not the hex
+     * thread id. Optional so existing callers/fakes that only read threadId are
+     * unaffected.
      */
     find(params: {
       identifier: string;
       messageId: string;
-    }): Promise<{ data: { id: string; threadId?: string } }>;
+      queryParams?: { fields?: string };
+    }): Promise<{
+      data: {
+        id: string;
+        threadId?: string;
+        headers?: Array<{ name: string; value: string }>;
+      };
+    }>;
   };
 }
 

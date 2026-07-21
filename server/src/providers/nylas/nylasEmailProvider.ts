@@ -166,6 +166,38 @@ export class NylasEmailProvider implements IEmailProvider {
   }
 
   /**
+   * Resolve the RFC822 `Message-ID` header of a stored message (E6b — Gmail
+   * deep-link). Fetches the message with `fields=include_headers` and returns the
+   * `Message-ID` value with the surrounding angle brackets stripped (Gmail's
+   * `#search/rfc822msgid:` operator wants the bare id). Best-effort: any failure
+   * (fetch error, header absent) yields undefined so the caller omits the link.
+   */
+  async rfc822MessageId(externalMessageId: string): Promise<string | undefined> {
+    if (!externalMessageId) return undefined;
+    try {
+      const fetched = await this.client.messages.find({
+        identifier: this.grantId,
+        messageId: externalMessageId,
+        queryParams: { fields: "include_headers" },
+      });
+      const header = (fetched.data.headers ?? []).find(
+        (h) => h.name.toLowerCase() === "message-id",
+      );
+      const raw = header?.value?.trim();
+      if (!raw) return undefined;
+      // Strip the RFC822 angle brackets: "<abc@mail.gmail.com>" → "abc@mail.gmail.com".
+      return raw.replace(/^<|>$/g, "");
+    } catch (err) {
+      console.warn(
+        `[nylas] could not resolve rfc822 Message-ID for ${externalMessageId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * Resolve the real Nylas thread id for a just-sent message.
    *
    * Nylas frequently omits threadId on the immediate send response for a

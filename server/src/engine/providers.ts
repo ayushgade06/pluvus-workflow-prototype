@@ -81,6 +81,20 @@ export interface IEmailProvider {
    * performs no I/O.
    */
   threadUrl?(threadId: string): string | undefined;
+
+  /**
+   * Resolve the RFC822 `Message-ID` header of a stored provider message, given its
+   * provider message id (what we persist as `Message.externalMessageId`). Used to
+   * build the escalation Gmail deep-link: Gmail's only cold-load-safe web URL is a
+   * `#search/rfc822msgid:<id>` search, which keys off this header — NOT the hex
+   * thread id (that `#all/<id>` alias only resolves when Gmail is already warm).
+   *
+   * Provider-specific and does real I/O (a message fetch), so it is async and
+   * best-effort: returns `undefined` when the provider can't supply it (the mock,
+   * an unconfigured provider, or a fetch failure) and callers omit the link
+   * gracefully. Optional so existing providers/tests need no change.
+   */
+  rfc822MessageId?(externalMessageId: string): Promise<string | undefined>;
 }
 
 // ---------------------------------------------------------------------------
