@@ -1266,7 +1266,23 @@ def _apply_decision_guards(
         # number. The executor re-drafts from the outcome (HARD-N1 §4).
         if creator_ask is not None and creator_ask > tolerance_ceiling:
             return NegotiationDecision(action="ESCALATE", proposed_rate=None)
-        return NegotiationDecision(action="ACCEPT", proposed_rate=guarded)
+        # BUG (live $250): the coerced final-round close must land on a number that
+        # is ACTUALLY ON THE TABLE — never the model's countered figure invented in
+        # between. `guarded` is the clamped MODEL counter (e.g. $250); closing there
+        # over-pays when the creator only asked $200 and our standing offer was $200,
+        # settling at a price NEITHER side proposed. This is the SAME drift the
+        # ACCEPT branch (above) already guards; it leaked here because this
+        # final-round return fires BEFORE the anti-over-pay COUNTER guards below.
+        # Mirror them inline: close at the creator's own in-band ask when they named
+        # one (never above it), else at our prior standing offer when it's lower
+        # (BUG-A4), else fall back to the clamped counter. Never raise the close UP
+        # to `guarded` — only ever down to what was really offered/asked.
+        close_rate = guarded
+        if creator_ask is not None:
+            close_rate = min(close_rate, creator_ask)
+        elif prior_offer is not None:
+            close_rate = min(close_rate, prior_offer)
+        return NegotiationDecision(action="ACCEPT", proposed_rate=close_rate)
 
     # Anti-over-pay guards on a COUNTER (money bank A-14/19/25/53–62/87). The LLM
     # (esp. a weaker local model) tends to counter at a default/midpoint that is

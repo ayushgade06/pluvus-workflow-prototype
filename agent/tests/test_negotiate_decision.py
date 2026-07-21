@@ -19,6 +19,7 @@ from app.routes.negotiate import (
     NegotiationDecision,
     NegotiationHistoryEntry,
     NegotiationTerm,
+    _apply_decision_guards,
     _coerce_rate,
     _decide_action,
     _last_offered_rate,
@@ -287,6 +288,79 @@ def test_floor_zero_default_passes_a_real_rate_through():
     d = _decide_with_floor("ACCEPTANCE", 250, floor=0)
     assert d.action == "ACCEPT"
     assert d.proposed_rate == 250.0
+
+
+# ---------------------------------------------------------------------------
+# Final-round COUNTER→ACCEPT must not over-pay (live $250 drift bug)
+# ---------------------------------------------------------------------------
+# The LLM path feeds the model's RAW action straight into _apply_decision_guards.
+# On the final round the model returned COUNTER @ 250 while the creator had only
+# asked $200 (and our standing offer was $200). The final-round COUNTER→ACCEPT
+# coercion used to close at the clamped MODEL counter ($250) — a figure NEITHER
+# side proposed — because it returned BEFORE the anti-over-pay COUNTER guards.
+# The close must land on a real on-the-table number: the creator's ask (never
+# above it), else our prior standing offer when lower, else the clamped counter.
+
+
+def _guard_counter(rate, *, is_final_round, creator_ask=None, prior_offer=None,
+                   floor=200.0, ceiling=500.0, tolerance=500.0):
+    """Drive _apply_decision_guards on the LLM path with a raw COUNTER action."""
+    return _apply_decision_guards(
+        "COUNTER",
+        rate,
+        floor_rate=floor,
+        ceiling_rate=ceiling,
+        tolerance_ceiling=tolerance,
+        is_final_round=is_final_round,
+        creator_ask=creator_ask,
+        prior_offer=prior_offer,
+    )
+
+
+def test_final_round_counter_does_not_overpay_creator_ask():
+    # The live bug: COUNTER @ 250 on the final round, creator asked 200, prior 200.
+    # Must close at the creator's own $200 — never the invented $250.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=200.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_non_final_counter_already_clamped_to_creator_ask():
+    # The non-final path already clamped down to the ask; the final-round fix makes
+    # both rounds behave the same for this shape.
+    d = _guard_counter(250.0, is_final_round=False, creator_ask=200.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_final_round_counter_falls_back_to_prior_offer_when_no_ask():
+    # No creator ask this turn → close at our lower standing offer, not the model's
+    # counter (BUG-A4: never close above the figure we ourselves offered).
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=None, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 200.0
+
+
+def test_final_round_counter_with_no_ask_no_prior_keeps_clamped_counter():
+    # Nothing else on the table → the clamped in-band counter is the honest close.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=None, prior_offer=None)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250.0
+
+
+def test_final_round_counter_never_raises_close_up_to_higher_ask():
+    # Creator asked MORE (400) than our counter (250): we close at our lower 250,
+    # never raise the close up toward their ask.
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=400.0, prior_offer=200.0)
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 250.0
+
+
+def test_final_round_counter_over_tolerance_ask_still_escalates():
+    # An over-tolerance creator ask escalates on the final round (unchanged).
+    d = _guard_counter(250.0, is_final_round=True, creator_ask=600.0, prior_offer=200.0)
+    assert d.action == "ESCALATE"
+    assert d.proposed_rate is None
 
 
 @pytest.mark.parametrize("intent", ["NEGOTIATION", "OBJECTION", "WAT"])
