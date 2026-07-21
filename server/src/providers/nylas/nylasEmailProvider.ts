@@ -15,6 +15,25 @@ import {
 } from "./client.js";
 import { plainTextToHtmlEmail } from "./emailFormatter.js";
 
+// Gmail's READ-ONLY system labels — ones Gmail owns and rejects when a
+// threads.update write-back tries to re-assert them (`unsupported Google label:
+// SENT`, found in live testing). We exclude these from the label union; Gmail
+// re-applies them itself, so the thread keeps them (non-destructive). We KEEP the
+// user-modifiable system labels (INBOX, UNREAD, STARRED, IMPORTANT) and any user
+// labels, and add ours. See applyLabelToThread().
+const GMAIL_READONLY_SYSTEM_LABELS = new Set<string>([
+  "SENT",
+  "DRAFT",
+  "CHAT",
+  "SPAM",
+  "TRASH",
+  "CATEGORY_PERSONAL",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_UPDATES",
+  "CATEGORY_FORUMS",
+]);
+
 // ---------------------------------------------------------------------------
 // NylasEmailProvider
 // ---------------------------------------------------------------------------
@@ -401,9 +420,16 @@ export class NylasEmailProvider implements IEmailProvider, IThreadLabeler {
 
   /**
    * Apply the resolved label id to the whole conversation via read-then-union at
-   * the thread level (ADR §3): read the thread's current folder set, and if our
-   * label is absent, write back the UNION (never the label alone — that would
-   * strip INBOX/SENT/…). Applying an already-present label is a no-op.
+   * the thread level (ADR §3): read the thread's current folder set, drop Gmail's
+   * READ-ONLY system labels, and write back [remaining user/modifiable labels +
+   * our label id]. Applying an already-present label is a no-op.
+   *
+   * Why the system-label filter (found in live testing): Gmail's threads.update
+   * rejects a write-back that re-asserts an immutable system label — e.g. a thread
+   * carrying "SENT" fails with `unsupported Google label: SENT`. Gmail owns those
+   * labels and re-applies them itself, so we MUST exclude them from our write-back
+   * (we still never strip them — Gmail keeps them). We keep INBOX/UNREAD/STARRED/
+   * IMPORTANT and any user labels, and add ours.
    */
   private async applyLabelToThread(
     threadId: string,
@@ -425,10 +451,16 @@ export class NylasEmailProvider implements IEmailProvider, IThreadLabeler {
         });
         return;
       }
+      // Union = current folders MINUS Gmail's read-only system labels, PLUS ours.
+      // Gmail re-adds the filtered system labels itself, so this is non-destructive.
+      const writeBack = [
+        ...current.filter((f) => !GMAIL_READONLY_SYSTEM_LABELS.has(f)),
+        labelId,
+      ];
       await threads.update({
         identifier: this.grantId,
         threadId,
-        requestBody: { folders: [...current, labelId] },
+        requestBody: { folders: writeBack },
       });
       logTrace("label.applied", {
         tag: "labels",

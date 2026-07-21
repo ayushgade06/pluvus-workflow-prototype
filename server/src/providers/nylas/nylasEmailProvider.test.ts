@@ -87,6 +87,48 @@ test("labels: flag ON ⇒ creates the label then applies it to the thread (union
   assert.ok(threadSet.includes(created!.id), "the new label id was added");
 });
 
+test("labels: filters Gmail read-only system labels from the thread write-back", async () => {
+  // A thread carrying read-only system labels (SENT/CATEGORY_*) alongside
+  // user-modifiable ones. Gmail's threads.update rejects re-asserting the
+  // read-only ones ("unsupported Google label: SENT"), so applyThreadLabel must
+  // send back only [modifiable labels + our label], never the read-only ones.
+  let sentFolders: string[] | undefined;
+  const client: NylasClientLike = {
+    messages: {
+      send: async () => ({ data: { id: "m1", threadId: "t1" } }),
+      find: async (p) => ({ data: { id: p.messageId, threadId: "t1" } }),
+    },
+    folders: {
+      list: async () => ({ data: [{ id: "lbl-1", name: "Pluvus/X" }] }),
+      create: async () => ({ data: { id: "lbl-1", name: "Pluvus/X" } }),
+    },
+    threads: {
+      find: async (p) => ({
+        data: {
+          id: p.threadId,
+          folders: ["INBOX", "SENT", "IMPORTANT", "CATEGORY_PERSONAL", "UNREAD"],
+        },
+      }),
+      update: async (p) => {
+        sentFolders = p.requestBody.folders;
+        return { data: { id: p.threadId, ...(p.requestBody.folders ? { folders: p.requestBody.folders } : {}) } };
+      },
+    },
+  };
+  const provider = new NylasEmailProvider(client, "grant-test", undefined, true);
+  await provider.applyThreadLabel("t1", "Pluvus/X");
+
+  assert.ok(sentFolders, "threads.update was called");
+  // Read-only system labels are excluded...
+  assert.ok(!sentFolders!.includes("SENT"), "SENT (read-only) is filtered out");
+  assert.ok(!sentFolders!.includes("CATEGORY_PERSONAL"), "CATEGORY_* (read-only) is filtered out");
+  // ...modifiable labels are preserved, and our label added.
+  assert.ok(sentFolders!.includes("INBOX"), "INBOX (modifiable) is preserved");
+  assert.ok(sentFolders!.includes("IMPORTANT"), "IMPORTANT (modifiable) is preserved");
+  assert.ok(sentFolders!.includes("UNREAD"), "UNREAD (modifiable) is preserved");
+  assert.ok(sentFolders!.includes("lbl-1"), "the new label id is added");
+});
+
 test("labels: reuses an EXISTING label (no create) and finds it by exact name", async () => {
   const { client, provider } = makeProvider(undefined, true);
   // Pre-seed the label as if a prior run created it.
