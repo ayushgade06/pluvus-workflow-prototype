@@ -1,6 +1,6 @@
-email,name,handle,platform,niche,Followers
-jane@example.com,Jane Doe,janedoe,Instagram,Fitness,120k
-sam@creators.io,Sam Lee,samlee,TikTok,Comedy,89k
-"riya@studio.co","Patel, Riya",riyacreates,YouTube,Tech,54k
-alex@mail.com,,alexc,YouTube,Gaming,31k
-morgan@brandmail.com,Morgan Blake,mblake,Instagram,Travel,
+email,name,handle,platform,niche,profile_url,instagram_url,Followers
+jane@example.com,Jane Doe,janedoe,Instagram,Fitness,https://instagram.com/janedoe,https://instagram.com/janedoe,120k
+sam@creators.io,Sam Lee,samlee,TikTok,Comedy,https://tiktok.com/@samlee,,89k
+"riya@studio.co","Patel, Riya",riyacreates,YouTube,Tech,https://youtube.com/@riyacreates,,54k
+alex@mail.com,,alexc,YouTube,Gaming,,,31k
+morgan@brandmail.com,Morgan Blake,mblake,Instagram,Travel,,https://instagram.com/mblake,

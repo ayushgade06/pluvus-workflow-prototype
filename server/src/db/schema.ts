@@ -228,6 +228,22 @@ export const payoutStatusEnum = pgEnum("PayoutStatus", [
 ]);
 export const payoutTypeEnum = pgEnum("PayoutType", ["COMMISSION", "FIXED_FEE"]);
 
+// PLU-109: creator CSV import.
+export const importBatchStatusEnum = pgEnum("ImportBatchStatus", [
+  "DRAFT",
+  "COMMITTED",
+  "ARCHIVED",
+]);
+
+// PENDING is the draft state: parsed and valid, but nothing written to Creator
+// yet. Commit rewrites each PENDING row to CREATED or UPDATED.
+export const importRowOutcomeEnum = pgEnum("ImportRowOutcome", [
+  "PENDING",
+  "CREATED",
+  "UPDATED",
+  "SKIPPED",
+]);
+
 // String-literal union types with the same names @prisma/client exported.
 export type InstanceState = (typeof instanceStateEnum.enumValues)[number];
 export type NodeType = (typeof nodeTypeEnum.enumValues)[number];
@@ -318,10 +334,81 @@ export const creators = pgTable(
     niche: text("niche"),
     platform: text("platform"),
     metadata: jsonb("metadata").$type<JsonValue>(),
+    // PLU-109: promoted from a CSV / creator-discovery vendor export. These are
+    // columns rather than JSON keys because the enroll picker SORTS by
+    // followerCount/engagementRate and the outreach prompt interpolates
+    // platform/niche/name — see src/validation/creatorFields.ts.
+    profileUrl: text("profileUrl"),
+    // NULL means UNKNOWN, never 0 — so an unknown creator does not sort as
+    // "zero followers" at the bottom of the picker.
+    followerCount: integer("followerCount"),
+    engagementRate: doublePrecision("engagementRate"),
+    location: text("location"),
+    language: text("language"),
+    bio: text("bio"),
+    socialLinks: jsonb("socialLinks").$type<JsonValue>(),
+    platformStats: jsonb("platformStats").$type<JsonValue>(),
+    signals: jsonb("signals").$type<JsonValue>(),
     createdAt: tsNow("createdAt"),
     updatedAt: tsUpdatedAt("updatedAt"),
   },
-  (table) => [uniqueIndex("Creator_email_key").on(table.email)],
+  (table) => [
+    uniqueIndex("Creator_email_key").on(table.email),
+    index("Creator_followerCount_idx").on(table.followerCount),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Creator import models (PLU-109)
+// ---------------------------------------------------------------------------
+
+export const creatorImportBatches = pgTable(
+  "CreatorImportBatch",
+  {
+    id: cuidId("id"),
+    label: text("label").notNull(),
+    sourceFilename: text("sourceFilename").notNull(),
+    /** Opaque storage-seam reference, not a path. */
+    fileReference: text("fileReference"),
+    delimiter: text("delimiter"),
+    status: importBatchStatusEnum("status").notNull().default("DRAFT"),
+    rowCount: integer("rowCount").notNull().default(0),
+    createdCount: integer("createdCount").notNull().default(0),
+    updatedCount: integer("updatedCount").notNull().default(0),
+    skippedCount: integer("skippedCount").notNull().default(0),
+    createdAt: tsNow("createdAt"),
+    committedAt: ts("committedAt"),
+    archivedAt: ts("archivedAt"),
+  },
+  (table) => [
+    index("CreatorImportBatch_status_createdAt_idx").on(table.status, table.createdAt),
+  ],
+);
+
+export const creatorImportBatchMembers = pgTable(
+  "CreatorImportBatchMember",
+  {
+    id: cuidId("id"),
+    batchId: text("batchId")
+      .notNull()
+      .references(() => creatorImportBatches.id, { onDelete: "cascade" }),
+    // Nullable: a SKIPPED row has no creator, and ON DELETE SET NULL means the
+    // audit row outlives a deleted creator rather than vanishing with them.
+    creatorId: text("creatorId").references(() => creators.id, { onDelete: "set null" }),
+    rowNumber: integer("rowNumber").notNull(),
+    outcome: importRowOutcomeEnum("outcome").notNull().default("PENDING"),
+    errorReason: text("errorReason"),
+    rawRow: jsonb("rawRow").$type<JsonValue>(),
+    createdAt: tsNow("createdAt"),
+  },
+  (table) => [
+    uniqueIndex("CreatorImportBatchMember_batchId_rowNumber_key").on(
+      table.batchId,
+      table.rowNumber,
+    ),
+    index("CreatorImportBatchMember_batchId_outcome_idx").on(table.batchId, table.outcome),
+    index("CreatorImportBatchMember_creatorId_idx").on(table.creatorId),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -723,6 +810,12 @@ export const insertCreatorSchema = createInsertSchema(creators).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertCreatorImportBatchSchema = createInsertSchema(
+  creatorImportBatches,
+).omit({ id: true, createdAt: true });
+export const insertCreatorImportBatchMemberSchema = createInsertSchema(
+  creatorImportBatchMembers,
+).omit({ id: true, createdAt: true });
 export const insertExecutionInstanceSchema = createInsertSchema(
   executionInstances,
 ).omit({ id: true, createdAt: true, updatedAt: true, enrolledAt: true });
@@ -781,6 +874,8 @@ export type Campaign = typeof campaigns.$inferSelect;
 export type Workflow = typeof workflows.$inferSelect;
 export type WorkflowVersion = typeof workflowVersions.$inferSelect;
 export type Creator = typeof creators.$inferSelect;
+export type CreatorImportBatch = typeof creatorImportBatches.$inferSelect;
+export type CreatorImportBatchMember = typeof creatorImportBatchMembers.$inferSelect;
 export type ExecutionInstance = typeof executionInstances.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Event = typeof events.$inferSelect;
@@ -822,6 +917,8 @@ export type CampaignInsert = typeof campaigns.$inferInsert;
 export type WorkflowInsert = typeof workflows.$inferInsert;
 export type WorkflowVersionInsert = typeof workflowVersions.$inferInsert;
 export type CreatorInsert = typeof creators.$inferInsert;
+export type CreatorImportBatchInsert = typeof creatorImportBatches.$inferInsert;
+export type CreatorImportBatchMemberInsert = typeof creatorImportBatchMembers.$inferInsert;
 export type ExecutionInstanceInsert = typeof executionInstances.$inferInsert;
 export type MessageInsert = typeof messages.$inferInsert;
 export type EventInsert = typeof events.$inferInsert;

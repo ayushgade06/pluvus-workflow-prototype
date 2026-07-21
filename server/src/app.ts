@@ -15,6 +15,7 @@ import campaignsRouter from "./routes/campaigns.js";
 import workflowsRouter from "./routes/workflows.js";
 import manualQueueRouter from "./routes/manualQueue.js";
 import creatorsRouter from "./routes/creators.js";
+import creatorImportsRouter from "./routes/creatorImports.js";
 import paymentRouter from "./routes/payment.js";
 import uploadsRouter from "./routes/uploads.js";
 import trackingRouter from "./routes/tracking.js";
@@ -131,6 +132,9 @@ export function createApp(): Express {
   // Phase 11 — Manual Queue (escalated-creator data + notify mutation).
   app.use("/manual-queue", requireOperatorKey, manualQueueRouter);
   // Creator roster + CSV import — used by the enrollment UI.
+  // Mounted BEFORE /creators so "/creators/imports" is not swallowed by the
+  // roster router's own "/" and ":id" handlers.
+  app.use("/creators/imports", requireOperatorKey, creatorImportsRouter);
   app.use("/creators", requireOperatorKey, creatorsRouter);
   // Phase 16 — Content Brief: brand file uploads (Campaign Brief PDF).
   app.use("/uploads", requireOperatorKey, uploadsRouter);
@@ -178,6 +182,7 @@ export function createApp(): Express {
     apiRouter.use("/campaigns", requireOperatorKey, campaignsRouter);
     apiRouter.use("/workflows", requireOperatorKey, workflowsRouter);
     apiRouter.use("/manual-queue", requireOperatorKey, manualQueueRouter);
+    apiRouter.use("/creators/imports", requireOperatorKey, creatorImportsRouter);
     apiRouter.use("/creators", requireOperatorKey, creatorsRouter);
     apiRouter.use("/uploads", requireOperatorKey, uploadsRouter);
     apiRouter.use("/partnerships", requireOperatorKey, partnershipsRouter);

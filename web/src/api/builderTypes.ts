@@ -239,6 +239,8 @@ export interface WorkflowExecutionSummary {
   versionId: string | null;
   version: number | null;
   totalInstances: number;
+  /** Creator ids already enrolled in this workflow — drives the ENROLLED badge. */
+  enrolledCreatorIds?: string[];
   stateCounts: Record<string, number>;
   recentEvents: RecentExecutionEvent[];
   generatedAt: string;
@@ -255,26 +257,90 @@ export interface CreatorItem {
   handle: string | null;
   platform: string | null;
   niche: string | null;
+  profileUrl: string | null;
+  /** Null means UNKNOWN audience, not zero — these sort last. */
+  followerCount: number | null;
+  engagementRate: number | null;
+  location: string | null;
+  language: string | null;
 }
 
-/** One parsed CSV row sent to POST /creators/import. `email` is required. */
-export interface CreatorImportRow {
+// ---------------------------------------------------------------------------
+// Creator import batches (PLU-109)
+// ---------------------------------------------------------------------------
+// One upload = one batch. Keeping them separate is what lets you come back the
+// next day, pick "yesterday's list", and enroll only what is new.
+
+export type ImportBatchStatus = "DRAFT" | "COMMITTED" | "ARCHIVED";
+export type ImportRowOutcome = "PENDING" | "CREATED" | "UPDATED" | "SKIPPED";
+
+export interface ImportBatch {
+  id: string;
+  label: string;
+  sourceFilename: string;
+  status: ImportBatchStatus;
+  delimiter: string | null;
+  rowCount: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  hasFile: boolean;
+  createdAt: string;
+  committedAt: string | null;
+}
+
+export interface ImportRowError {
+  row: number;
+  reason: string;
+}
+
+/** A sample row shown in the pre-commit preview. */
+export interface ImportPreviewRow {
+  row: number;
   email: string;
-  name?: string;
-  handle?: string;
-  platform?: string;
-  niche?: string;
-  /** Any CSV columns that don't map to a known field, preserved as JSON. */
-  metadata?: Record<string, string>;
+  name: string;
+  handle: string | null;
+  platform: string | null;
+  niche: string | null;
+  followerCount: number | null;
+  engagementRate: number | null;
+  isNew: boolean;
 }
 
-export interface CreatorImportResponse {
+/** Response to the upload — nothing has been written to the roster yet. */
+export interface ImportDraftResponse {
+  batch: ImportBatch;
+  headers: string[];
+  delimiter: string;
+  rowCount: number;
+  validCount: number;
+  /** Rows whose email is not already in the roster. */
+  newCount: number;
+  existingCount: number;
+  skippedCount: number;
+  errors: ImportRowError[];
+  preview: ImportPreviewRow[];
+}
+
+export interface ImportCommitResponse {
+  batch: ImportBatch;
   created: number;
   updated: number;
-  skipped: number;
-  errors: Array<{ row: number; reason: string }>;
-  /** Upserted creators, for immediate pre-selection in the enroll list. */
   creators: CreatorItem[];
+}
+
+export interface ImportBatchMember {
+  rowNumber: number;
+  outcome: ImportRowOutcome;
+  errorReason: string | null;
+  creator: CreatorItem | null;
+  /** Labels of other committed batches this creator also appears in. */
+  alsoInBatches: string[];
+}
+
+export interface ImportBatchDetail {
+  batch: ImportBatch;
+  members: ImportBatchMember[];
 }
 
 // ---------------------------------------------------------------------------
