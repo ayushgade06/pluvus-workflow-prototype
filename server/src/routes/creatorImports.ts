@@ -435,10 +435,17 @@ router.patch("/:id", async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /creators/imports/:id — discard a draft
+// DELETE /creators/imports/:id — delete a list (draft or committed)
 // ---------------------------------------------------------------------------
-// Only a DRAFT may be deleted. A committed batch is an audit record of creators
-// that now exist in the roster; hiding it is what `archived` is for.
+// Removes the batch, its member rows (ON DELETE CASCADE), and the stored file.
+//
+// IT NEVER TOUCHES Creator. Deleting a list is "I don't want this list any more",
+// not "undo this import" — the creators it introduced may since have been
+// enrolled, partnered, or enriched by a later upload, and they belong to the
+// roster now rather than to the file that happened to introduce them.
+//
+// Archiving remains a distinct, softer action: hide from the picker, keep the
+// history. Both are useful, so both exist.
 
 router.delete("/:id", async (req: Request, res: Response) => {
   try {
@@ -447,16 +454,17 @@ router.delete("/:id", async (req: Request, res: Response) => {
       res.status(404).json({ error: "import batch not found" });
       return;
     }
-    if (batch.status !== "DRAFT") {
-      res.status(409).json({
-        error: "only a draft import can be discarded — archive a committed batch instead",
-      });
-      return;
-    }
+
+    // Counted before the cascade removes them, so the UI can report what went.
+    const memberCount = (await listMembers(batch.id)).length;
 
     if (batch.fileReference) await deleteStoredFile(batch.fileReference);
     await deleteBatch(batch.id);
-    res.status(204).end();
+
+    res.json({
+      deletedBatch: { id: batch.id, label: batch.label, status: batch.status },
+      memberCount,
+    });
   } catch (err) {
     console.error("[creatorImports] delete error:", err);
     res.status(500).json({ error: "internal server error" });

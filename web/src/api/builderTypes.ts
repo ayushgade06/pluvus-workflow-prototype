@@ -344,6 +344,32 @@ export interface ImportBatchDetail {
 }
 
 // ---------------------------------------------------------------------------
+// Deletion
+// ---------------------------------------------------------------------------
+
+/** A creator deliberately KEPT because removing them would destroy history. */
+export interface CreatorDeleteBlock {
+  id: string;
+  email: string;
+  name: string;
+  /** e.g. "enrolled in 2 workflows · has 1 partnership" */
+  reason: string;
+}
+
+export interface CreatorDeleteResult {
+  deleted: string[];
+  blocked: CreatorDeleteBlock[];
+  deletedCount: number;
+  blockedCount: number;
+}
+
+export interface ImportBatchDeleteResult {
+  deletedBatch: { id: string; label: string; status: ImportBatchStatus };
+  /** Import rows removed with the list. Creators are never removed. */
+  memberCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // Publish / Enroll / Launch responses
 // ---------------------------------------------------------------------------
 

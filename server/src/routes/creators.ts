@@ -15,7 +15,7 @@
 
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { listCreators, upsertCreatorByEmail } from "../db/creators.js";
+import { deleteCreators, listCreators, upsertCreatorByEmail } from "../db/creators.js";
 import { stripAt } from "../validation/creatorFields.js";
 import { EMAIL_RE } from "../validation/creatorImport.js";
 import { toCreatorDto } from "./creatorDto.js";
@@ -78,6 +78,36 @@ router.post("/", async (req: Request, res: Response) => {
     res.status(201).json({ creator: toCreatorDto(creator) });
   } catch (err) {
     console.error("[creators] create error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /creators/delete — remove creators from the roster
+// ---------------------------------------------------------------------------
+// Body: { creatorIds: string[] }  →  { deleted: string[], blocked: [...] }
+//
+// POST rather than DELETE /creators/:id for two reasons: a request body on
+// DELETE is unevenly supported, and the bulk case needs PARTIAL-failure
+// reporting, which a 204/409 cannot express. The row-level trash button sends an
+// array of one, so the guard in deleteCreators has exactly one code path.
+//
+// A creator who is enrolled or partnered is kept and reported — see
+// deleteCreators for why that must never become a cascade.
+
+router.post("/delete", async (req: Request, res: Response) => {
+  const { creatorIds } = req.body as { creatorIds?: unknown };
+  if (!Array.isArray(creatorIds) || creatorIds.length === 0) {
+    res.status(400).json({ error: "creatorIds must be a non-empty array" });
+    return;
+  }
+
+  try {
+    const ids = creatorIds.filter((id): id is string => typeof id === "string" && !!id);
+    const { deleted, blocked } = await deleteCreators(ids);
+    res.json({ deleted, blocked, deletedCount: deleted.length, blockedCount: blocked.length });
+  } catch (err) {
+    console.error("[creators] delete error:", err);
     res.status(500).json({ error: "internal server error" });
   }
 });

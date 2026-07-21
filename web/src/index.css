@@ -164,6 +164,16 @@ select {
   color: #f2f3f5;
 }
 
+/* Destructive icon action (row delete). Dimmed at rest so it does not compete
+   with the data, full-strength danger on hover/focus. Always rendered rather
+   than revealed on hover, so it stays reachable by keyboard. */
+.ds-danger-hover:not(:disabled):hover,
+.ds-danger-hover:not(:disabled):focus-visible {
+  opacity: 1 !important;
+  background: rgba(242, 85, 95, 0.14);
+  color: #f2555f;
+}
+
 /* Inputs / selects / textareas ----------------------------------------- */
 .ds-input {
   transition: border-color 0.14s ease, box-shadow 0.14s ease,

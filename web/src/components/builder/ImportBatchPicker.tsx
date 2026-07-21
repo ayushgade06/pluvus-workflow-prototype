@@ -10,7 +10,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { colors, radii, font } from "../../theme";
-import { Button, Select } from "../ds";
+import { Button, IconButton, Select } from "../ds";
 import type { ImportBatch } from "../../api/builderTypes";
 
 export interface SelectScope {
@@ -29,12 +29,54 @@ interface Props {
   scopes: SelectScope[];
   onClear: () => void;
   clearDisabled: boolean;
+  /** List management — only offered while a list is selected. */
+  activeBatch: ImportBatch | null;
+  onRenameList: () => void;
+  onArchiveList: () => void;
+  onDeleteList: () => void;
 }
 
 function batchOptionLabel(b: ImportBatch): string {
   const n = b.createdCount + b.updatedCount;
   return `${b.label} (${n})`;
 }
+
+/** Shared dismiss behaviour: a bare dropdown that ignores Escape is worse than none. */
+function useDismiss(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") close();
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, close]);
+  return ref;
+}
+
+const menuItemStyle = (enabled: boolean, danger?: boolean) =>
+  ({
+    display: "flex",
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "9px 13px",
+    background: "transparent",
+    border: "none",
+    color: !enabled ? colors.textMuted : danger ? colors.danger : colors.text,
+    fontSize: font.size.sm,
+    textAlign: "left" as const,
+    cursor: enabled ? "pointer" : "default",
+  });
 
 export function ImportBatchPicker({
   batches,
@@ -43,27 +85,15 @@ export function ImportBatchPicker({
   scopes,
   onClear,
   clearDisabled,
+  activeBatch,
+  onRenameList,
+  onArchiveList,
+  onDeleteList,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click / Escape — a bare dropdown that traps focus is worse
-  // than no dropdown.
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const [listOpen, setListOpen] = useState(false);
+  const menuRef = useDismiss(open, () => setOpen(false));
+  const listRef = useDismiss(listOpen, () => setListOpen(false));
 
   const usable = scopes.filter((s) => s.apply !== null);
 
@@ -82,6 +112,76 @@ export function ImportBatchPicker({
           </option>
         ))}
       </Select>
+
+      {/* List management — only meaningful once a list is chosen. */}
+      {activeBatch && (
+        <div ref={listRef} style={{ position: "relative", flexShrink: 0 }}>
+          <IconButton
+            label={`Manage list “${activeBatch.label}”`}
+            icon="⋯"
+            onClick={() => setListOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={listOpen}
+            style={{ border: `1px solid ${colors.border}`, height: 34, width: 34 }}
+          />
+          {listOpen && (
+            <div
+              role="menu"
+              className="ds-fade-in"
+              style={{
+                position: "absolute",
+                top: "calc(100% + 6px)",
+                left: 0,
+                zIndex: 20,
+                minWidth: 210,
+                background: colors.panel,
+                border: `1px solid ${colors.border}`,
+                borderRadius: radii.md,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                overflow: "hidden",
+              }}
+            >
+              <button
+                role="menuitem"
+                className="ds-row ds-focusable"
+                onClick={() => {
+                  setListOpen(false);
+                  onRenameList();
+                }}
+                style={{ ...menuItemStyle(true), borderBottom: `1px solid ${colors.border}` }}
+              >
+                Rename list…
+              </button>
+              <button
+                role="menuitem"
+                className="ds-row ds-focusable"
+                onClick={() => {
+                  setListOpen(false);
+                  onArchiveList();
+                }}
+                style={{ ...menuItemStyle(true), borderBottom: `1px solid ${colors.border}` }}
+              >
+                Archive list
+                <span style={{ color: colors.textMuted, fontSize: font.size.xs }}>hide, keep</span>
+              </button>
+              <button
+                role="menuitem"
+                className="ds-row ds-focusable"
+                onClick={() => {
+                  setListOpen(false);
+                  onDeleteList();
+                }}
+                style={menuItemStyle(true, true)}
+              >
+                Delete list…
+                <span style={{ color: colors.textMuted, fontSize: font.size.xs }}>
+                  keeps creators
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }}>
         <Button
@@ -122,19 +222,8 @@ export function ImportBatchPicker({
                 }}
                 disabled={s.count === 0}
                 style={{
-                  display: "flex",
-                  width: "100%",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "9px 13px",
-                  background: "transparent",
-                  border: "none",
+                  ...menuItemStyle(s.count > 0),
                   borderBottom: `1px solid ${colors.border}`,
-                  color: s.count === 0 ? colors.textMuted : colors.text,
-                  fontSize: font.size.sm,
-                  textAlign: "left",
-                  cursor: s.count === 0 ? "default" : "pointer",
                 }}
               >
                 <span>{s.label}</span>
@@ -151,17 +240,7 @@ export function ImportBatchPicker({
                 setOpen(false);
               }}
               disabled={clearDisabled}
-              style={{
-                display: "block",
-                width: "100%",
-                padding: "9px 13px",
-                background: "transparent",
-                border: "none",
-                color: clearDisabled ? colors.textMuted : colors.textDim,
-                fontSize: font.size.sm,
-                textAlign: "left",
-                cursor: clearDisabled ? "default" : "pointer",
-              }}
+              style={menuItemStyle(!clearDisabled)}
             >
               Clear selection
             </button>

@@ -1,7 +1,13 @@
-import { asc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { asc, count, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { db } from "./drizzle.js";
-import { creators, type Creator, type CreatorInsert } from "./schema.js";
+import {
+  creators,
+  executionInstances,
+  partnerships,
+  type Creator,
+  type CreatorInsert,
+} from "./schema.js";
 
 export async function findCreatorById(id: string): Promise<Creator | null> {
   const rows = await db.select().from(creators).where(eq(creators.id, id)).limit(1);
@@ -188,4 +194,105 @@ export async function bulkUpsertCreators(
   }
 
   return { creators: ordered, created, updated, existingEmails: existingSet };
+}
+
+// ---------------------------------------------------------------------------
+// Deletion
+// ---------------------------------------------------------------------------
+
+export interface CreatorDeleteBlock {
+  id: string;
+  email: string;
+  name: string;
+  /** Human-readable, e.g. "enrolled in 2 workflows · has 1 partnership". */
+  reason: string;
+}
+
+export interface CreatorDeleteResult {
+  /** Ids actually removed. */
+  deleted: string[];
+  /** Creators deliberately kept, each with the reason they could not be removed. */
+  blocked: CreatorDeleteBlock[];
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Count rows in `table` grouped by its creatorId, chunked for the bind-param ceiling. */
+async function countByCreator(
+  table: typeof executionInstances | typeof partnerships,
+  ids: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const part of chunk(ids, UPSERT_CHUNK_SIZE)) {
+    const rows = await db
+      .select({ creatorId: table.creatorId, n: count() })
+      .from(table)
+      .where(inArray(table.creatorId, part))
+      .groupBy(table.creatorId);
+    for (const r of rows) out.set(r.creatorId, Number(r.n));
+  }
+  return out;
+}
+
+/**
+ * Delete creators by id, refusing any that still carry history.
+ *
+ * DELETION BLOCKS; IT NEVER CASCADES. `ExecutionInstance.creatorId` and
+ * `Partnership.creatorId` are both NOT NULL with no ON DELETE rule, so the
+ * database would reject the delete anyway — but the reason we do not simply add
+ * a cascade is that following those keys would destroy execution instances,
+ * messages, events, partnerships, obligations and PAYOUTS. Removing a roster row
+ * must never be able to erase financial history.
+ *
+ * Callers get per-creator outcomes rather than a single status so a mixed
+ * selection deletes what it safely can and explains the rest, instead of failing
+ * whole or under-deleting silently.
+ *
+ * Import audit rows survive: CreatorImportBatchMember.creatorId is ON DELETE SET
+ * NULL, so the row keeps its rawRow and outcome with no creator attached.
+ */
+export async function deleteCreators(ids: string[]): Promise<CreatorDeleteResult> {
+  const unique = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+  if (unique.length === 0) return { deleted: [], blocked: [] };
+
+  // Load the real rows: unknown ids simply appear in neither list.
+  const found: Creator[] = [];
+  for (const part of chunk(unique, UPSERT_CHUNK_SIZE)) {
+    found.push(...(await db.select().from(creators).where(inArray(creators.id, part))));
+  }
+  if (found.length === 0) return { deleted: [], blocked: [] };
+
+  const foundIds = found.map((c) => c.id);
+  const [instanceCounts, partnershipCounts] = await Promise.all([
+    countByCreator(executionInstances, foundIds),
+    countByCreator(partnerships, foundIds),
+  ]);
+
+  const blocked: CreatorDeleteBlock[] = [];
+  const deletable: string[] = [];
+
+  for (const c of found) {
+    const enrolled = instanceCounts.get(c.id) ?? 0;
+    const partnered = partnershipCounts.get(c.id) ?? 0;
+    if (enrolled === 0 && partnered === 0) {
+      deletable.push(c.id);
+      continue;
+    }
+    const reasons: string[] = [];
+    if (enrolled > 0) reasons.push(`enrolled in ${plural(enrolled, "workflow", "workflows")}`);
+    if (partnered > 0) reasons.push(`has ${plural(partnered, "partnership", "partnerships")}`);
+    blocked.push({ id: c.id, email: c.email, name: c.name, reason: reasons.join(" · ") });
+  }
+
+  if (deletable.length > 0) {
+    await db.transaction(async (tx) => {
+      for (const part of chunk(deletable, UPSERT_CHUNK_SIZE)) {
+        await tx.delete(creators).where(inArray(creators.id, part));
+      }
+    });
+  }
+
+  return { deleted: deletable, blocked };
 }

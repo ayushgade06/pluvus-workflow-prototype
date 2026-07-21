@@ -148,6 +148,41 @@ an email already used by an earlier row in the same file. Each is reported with 
 number and reason in the preview, and retained in the import's audit trail with its
 original cells, so a bad file stays diagnosable later.
 
-Lists can be **renamed** or **archived** (hidden from the picker, audit kept). The original
-uploaded file is retained and can be re-downloaded. A draft you discard is deleted along
-with its file; a committed list cannot be deleted, only archived.
+---
+
+## Removing things
+
+### Creators
+
+Use the trash icon on a row, or select several and press **Remove N**. Both ask for
+confirmation first.
+
+**A creator who is enrolled in a workflow or holds a partnership will not be deleted.**
+They are kept and listed back to you with the reason (`enrolled in 2 workflows`). This is
+deliberate and not a limitation to work around: `ExecutionInstance` and `Partnership` both
+point at `Creator`, and following those links would destroy execution history,
+negotiations, obligations and **payout records** in order to tidy a roster row. Remove the
+enrollment first if you genuinely need the creator gone.
+
+A mixed selection deletes everything it safely can and reports the rest, rather than
+failing as a whole.
+
+Deleting a creator leaves the import audit intact — their row stays in the list it came
+from, with its original CSV cells, just without a creator attached.
+
+### Lists
+
+The **⋯** menu beside the source-list dropdown offers:
+
+| Action | Effect |
+|---|---|
+| **Rename list** | Change the label only |
+| **Archive list** | Hides it from the dropdown, keeps all history. Reversible |
+| **Delete list** | Removes the list, its import rows, and the stored file |
+
+**Deleting a list never deletes creators.** The people it introduced stay in your roster —
+they may since have been enrolled, partnered, or enriched by a later upload, and they
+belong to the roster now rather than to the file that happened to introduce them. If you
+want a list out of the way but recoverable, archive it instead.
+
+The original uploaded file is retained and can be re-downloaded until the list is deleted.

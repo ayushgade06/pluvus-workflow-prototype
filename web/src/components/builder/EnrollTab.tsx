@@ -3,7 +3,9 @@ import {
   useCreators,
   addCreator,
   commitImport,
-  discardImport,
+  deleteCreators,
+  deleteImportBatch,
+  updateImportBatch,
   uploadImport,
   useImportBatchDetail,
   useImportBatches,
@@ -12,14 +14,23 @@ import {
   useBuilderInvalidator,
 } from "../../api/builderClient";
 import { colors, radii, font } from "../../theme";
-import { Button, Input, Select, StatTile, EmptyState, SkeletonRows } from "../ds";
+import { Button, ConfirmDialog, Input, Modal, StatTile, EmptyState, SkeletonRows } from "../ds";
 import { useToast } from "../ds";
 import { ImportBatchPicker, type SelectScope } from "./ImportBatchPicker";
 import { ImportPreviewPanel } from "./ImportPreviewPanel";
+import {
+  CreatorTableHeader,
+  CreatorTableRow,
+  CREATOR_MIN_WIDTH,
+  type CreatorRowData,
+  type SortDir,
+  type SortKey,
+} from "./CreatorTable";
 import type {
   EnrollResponse,
   WorkflowDetail,
-  CreatorItem,
+  CreatorDeleteBlock,
+  ImportBatch,
   ImportDraftResponse,
 } from "../../api/builderTypes";
 
@@ -28,20 +39,14 @@ interface Props {
   onEnrolled: () => void;
 }
 
-type SortKey = "followers" | "engagement" | "name";
-
 /**
- * A creator as the list renders them: the creator plus the provenance that
- * makes duplicates and prior enrollments visible BEFORE you click enroll.
+ * What a destructive confirm is currently asking about. Null = no dialog.
+ * Modelled as a discriminated union so the dialog copy can be exact about what
+ * will happen rather than generically scary.
  */
-interface Row {
-  creator: CreatorItem;
-  /** True when this import created the creator (not already in the roster). */
-  isNewFromBatch: boolean;
-  /** Other committed lists this creator also appears in. */
-  alsoInBatches: string[];
-  isEnrolled: boolean;
-}
+type PendingDelete =
+  | { kind: "creators"; ids: string[]; label: string }
+  | { kind: "list"; batch: ImportBatch };
 
 export function EnrollTab({ workflow, onEnrolled }: Props) {
   const { data: creators, isLoading } = useCreators();
@@ -50,6 +55,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   const {
     invalidateCreators,
     invalidateImportBatches,
+    invalidateImportBatch,
     invalidateExecution,
   } = useBuilderInvalidator(workflow.id);
 
@@ -59,6 +65,14 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("followers");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [blocked, setBlocked] = useState<CreatorDeleteBlock[]>([]);
+  // Rename uses a real dialog rather than window.prompt: prompt() is blocked in
+  // sandboxed iframes (the Replit preview pane is one), so it would silently do
+  // nothing there.
+  const [renaming, setRenaming] = useState<{ batch: ImportBatch; value: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<EnrollResponse | null>(null);
   const [draft, setDraft] = useState<ImportDraftResponse | null>(null);
@@ -75,6 +89,11 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   const enrolledIds = useMemo(
     () => new Set(execution?.enrolledCreatorIds ?? []),
     [execution?.enrolledCreatorIds],
+  );
+
+  const activeBatch = useMemo(
+    () => (batches ?? []).find((b) => b.id === activeBatchId) ?? null,
+    [batches, activeBatchId],
   );
 
   // --- upload (phase 1: parse + preview, writes nothing) --------------------
@@ -123,7 +142,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     const id = draft.batch.id;
     setDraft(null);
     try {
-      await discardImport(id);
+      await deleteImportBatch(id);
       await invalidateImportBatches();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not discard the draft");
@@ -160,7 +179,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   // Either the whole roster, or one import batch's members. Batch mode is what
   // keeps yesterday's list separate from today's.
 
-  const rows = useMemo<Row[]>(() => {
+  const rows = useMemo<CreatorRowData[]>(() => {
     if (activeBatchId) {
       return (batchDetail?.members ?? [])
         .filter((m) => m.creator !== null)
@@ -189,24 +208,37 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
       : rows;
 
     // Sort a copy — `rows` is memoized upstream.
+    const dir = sortDir === "asc" ? 1 : -1;
     return [...matched].sort((a, b) => {
-      if (sortKey === "name") return a.creator.name.localeCompare(b.creator.name);
+      if (sortKey === "name") return a.creator.name.localeCompare(b.creator.name) * dir;
       const key = sortKey === "followers" ? "followerCount" : "engagementRate";
       const av = a.creator[key];
       const bv = b.creator[key];
-      // NULL means UNKNOWN, so unknowns sort last rather than as zero.
+      // NULL means UNKNOWN. Unknowns sort last in BOTH directions — flipping the
+      // sort should not promote "we don't know" to the top of the list.
       if (av === null && bv === null) return a.creator.name.localeCompare(b.creator.name);
       if (av === null) return 1;
       if (bv === null) return -1;
-      return bv - av;
+      return (av - bv) * dir;
     });
-  }, [rows, filter, sortKey]);
+  }, [rows, filter, sortKey, sortDir]);
+
+  /** Click a column: same column flips direction, new column starts sensibly. */
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Names read naturally A→Z; audience numbers read naturally biggest-first.
+      setSortDir(key === "name" ? "asc" : "desc");
+    }
+  }
 
   // --- selection scopes -----------------------------------------------------
   // Each is a predicate over `filtered`. This is the whole answer to "how do we
   // only select the new ones".
 
-  function selectAll(list: Row[]) {
+  function selectAll(list: CreatorRowData[]) {
     setSelected(new Set(list.map((r) => r.creator.id)));
   }
 
@@ -240,6 +272,81 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelected(next);
+  }
+
+  // --- deletion -------------------------------------------------------------
+  // Both paths funnel through one confirm dialog so nothing destructive happens
+  // without the operator reading what it will do.
+
+  async function runDelete() {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      if (pendingDelete.kind === "creators") {
+        const res = await deleteCreators(pendingDelete.ids);
+        // Anyone enrolled or partnered is KEPT — surface that rather than
+        // letting the count quietly come up short.
+        setBlocked(res.blocked);
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of res.deleted) next.delete(id);
+          return next;
+        });
+        await Promise.all([invalidateCreators(), invalidateImportBatches()]);
+        if (activeBatchId) await invalidateImportBatch(activeBatchId);
+        if (res.deletedCount > 0) {
+          toast.success(
+            `Removed ${res.deletedCount} creator${res.deletedCount !== 1 ? "s" : ""}` +
+              (res.blockedCount > 0 ? ` · ${res.blockedCount} kept` : "."),
+          );
+        } else {
+          toast.error(`Nothing removed — ${res.blockedCount} kept, see the note above.`);
+        }
+      } else {
+        const res = await deleteImportBatch(pendingDelete.batch.id);
+        setActiveBatchId(null);
+        setSelected(new Set());
+        await Promise.all([invalidateImportBatches(), invalidateCreators()]);
+        toast.success(
+          `Deleted “${res.deletedBatch.label}” (${res.memberCount} row${res.memberCount !== 1 ? "s" : ""}). Its creators stay in your roster.`,
+        );
+      }
+      setPendingDelete(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function submitRename() {
+    if (!renaming) return;
+    const label = renaming.value.trim();
+    if (!label || label === renaming.batch.label) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      await updateImportBatch(renaming.batch.id, { label });
+      await invalidateImportBatches();
+      toast.success(`Renamed to “${label}”.`);
+      setRenaming(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Rename failed");
+    }
+  }
+
+  async function handleArchiveList() {
+    if (!activeBatch) return;
+    try {
+      await updateImportBatch(activeBatch.id, { archived: true });
+      setActiveBatchId(null);
+      setSelected(new Set());
+      await invalidateImportBatches();
+      toast.success(`Archived “${activeBatch.label}” — its creators stay in your roster.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Archive failed");
+    }
   }
 
   async function handleEnroll() {
@@ -334,6 +441,14 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           scopes={scopes}
           onClear={() => setSelected(new Set())}
           clearDisabled={selected.size === 0}
+          activeBatch={activeBatch}
+          onRenameList={() =>
+            activeBatch && setRenaming({ batch: activeBatch, value: activeBatch.label })
+          }
+          onArchiveList={() => void handleArchiveList()}
+          onDeleteList={() =>
+            activeBatch && setPendingDelete({ kind: "list", batch: activeBatch })
+          }
         />
         <Input
           value={filter}
@@ -342,16 +457,6 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           aria-label="Search creators"
           style={{ flex: 1, minWidth: 200 }}
         />
-        <Select
-          value={sortKey}
-          onChange={(e) => setSortKey(e.target.value as SortKey)}
-          aria-label="Sort creators"
-          style={{ maxWidth: 170, flexShrink: 0 }}
-        >
-          <option value="followers">Sort: Followers</option>
-          <option value="engagement">Sort: Engagement</option>
-          <option value="name">Sort: Name</option>
-        </Select>
         <input
           ref={fileInputRef}
           type="file"
@@ -435,7 +540,44 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         </form>
       )}
 
-      {/* Creator list */}
+      {/* Creators kept back by a delete, with the reason. */}
+      {blocked.length > 0 && (
+        <Banner color={colors.warning}>
+          <div>
+            {blocked.length} creator{blocked.length !== 1 ? "s were" : " was"} kept — removing
+            them would destroy execution or payout history.
+          </div>
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: "pointer" }}>Show which</summary>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {blocked.map((b) => (
+                <li key={b.id}>
+                  {b.name} ({b.email}) — {b.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
+          <button
+            onClick={() => setBlocked([])}
+            style={{
+              marginTop: 8,
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              color: colors.textDim,
+              fontSize: font.size.sm,
+              cursor: "pointer",
+              textDecoration: "underline",
+            }}
+          >
+            Dismiss
+          </button>
+        </Banner>
+      )}
+
+      {/* Creator table. The container scrolls in BOTH axes: vertically through
+          rows, horizontally when the viewport is narrower than the columns
+          need — better than letting the columns crush and lose alignment. */}
       <div
         style={{
           flex: 1,
@@ -449,7 +591,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
       >
         {listLoading ? (
           <div style={{ padding: 16 }}>
-            <SkeletonRows count={6} height={48} />
+            <SkeletonRows count={6} height={44} />
           </div>
         ) : filtered.length === 0 ? (
           <EmptyState
@@ -465,14 +607,36 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             }
           />
         ) : (
-          filtered.map((row) => (
-            <CreatorRow
-              key={row.creator.id}
-              row={row}
-              selected={selected.has(row.creator.id)}
-              onToggle={() => toggleOne(row.creator.id)}
+          <div style={{ minWidth: CREATOR_MIN_WIDTH }}>
+            <CreatorTableHeader
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              allSelected={filtered.length > 0 && filtered.every((r) => selected.has(r.creator.id))}
+              someSelected={filtered.some((r) => selected.has(r.creator.id))}
+              onToggleAll={() =>
+                filtered.every((r) => selected.has(r.creator.id))
+                  ? setSelected(new Set())
+                  : selectAll(filtered)
+              }
             />
-          ))
+            {filtered.map((row) => (
+              <CreatorTableRow
+                key={row.creator.id}
+                row={row}
+                selected={selected.has(row.creator.id)}
+                onToggle={() => toggleOne(row.creator.id)}
+                onDelete={() =>
+                  setPendingDelete({
+                    kind: "creators",
+                    ids: [row.creator.id],
+                    label: row.creator.name,
+                  })
+                }
+                showBatchStatus={!!activeBatchId}
+              />
+            ))}
+          </div>
         )}
       </div>
 
@@ -491,6 +655,21 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             ? "Select creators above to enroll them into this workflow."
             : `${selected.size} creator${selected.size !== 1 ? "s" : ""} selected`}
         </span>
+        {selected.size > 0 && (
+          <Button
+            variant="secondary"
+            onClick={() =>
+              setPendingDelete({
+                kind: "creators",
+                ids: [...selected],
+                label: `${selected.size} creator${selected.size !== 1 ? "s" : ""}`,
+              })
+            }
+            style={{ height: 40, color: colors.danger, borderColor: `${colors.danger}55` }}
+          >
+            Remove {selected.size}
+          </Button>
+        )}
         <Button
           variant="primary"
           disabled={selected.size === 0 || submitting}
@@ -504,143 +683,87 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             : `Enroll ${selected.size} creator${selected.size !== 1 ? "s" : ""}`}
         </Button>
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          destructive
+          busy={deleting}
+          title={
+            pendingDelete.kind === "creators"
+              ? `Remove ${pendingDelete.label}?`
+              : `Delete “${pendingDelete.batch.label}”?`
+          }
+          confirmLabel={pendingDelete.kind === "creators" ? "Remove" : "Delete list"}
+          message={
+            pendingDelete.kind === "creators" ? (
+              <>
+                This permanently removes them from your roster.
+                <br />
+                <br />
+                Anyone enrolled in a workflow or holding a partnership will be{" "}
+                <strong>kept</strong> and listed afterwards — removing them would destroy
+                execution and payout history.
+              </>
+            ) : (
+              <>
+                This removes the list and its import history.
+                <br />
+                <br />
+                The{" "}
+                <strong>
+                  {pendingDelete.batch.createdCount + pendingDelete.batch.updatedCount} creator
+                  {pendingDelete.batch.createdCount + pendingDelete.batch.updatedCount !== 1
+                    ? "s"
+                    : ""}
+                </strong>{" "}
+                it added <strong>stay in your roster</strong>. To hide the list but keep it,
+                archive it instead.
+              </>
+            )
+          }
+          onConfirm={() => void runDelete()}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {renaming && (
+        <Modal
+          title="Rename list"
+          width={420}
+          onClose={() => setRenaming(null)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setRenaming(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => void submitRename()}
+                disabled={!renaming.value.trim()}
+              >
+                Rename
+              </Button>
+            </>
+          }
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitRename();
+            }}
+            style={{ padding: "18px 22px" }}
+          >
+            <Input
+              value={renaming.value}
+              onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+              aria-label="List name"
+              autoFocus
+              style={{ width: "100%" }}
+            />
+          </form>
+        </Modal>
+      )}
     </div>
-  );
-}
-
-// Deterministic avatar tint per creator (pure presentation — derived from the
-// name we already render).
-const AVATAR_COLORS = ["#6e7cf5", "#a78bfa", "#57d9a3", "#d9a03f", "#e0784a", "#8b96f8"];
-function avatarColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length]!;
-}
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "?";
-  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
-  return (first + last).toUpperCase();
-}
-
-function formatFollowers(n: number | null): string | null {
-  if (n === null) return null;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-  return String(n);
-}
-
-function CreatorRow({
-  row,
-  selected,
-  onToggle,
-}: {
-  row: Row;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const { creator, isNewFromBatch, alsoInBatches, isEnrolled } = row;
-  const tint = avatarColor(creator.name);
-  const followers = formatFollowers(creator.followerCount);
-
-  return (
-    <label
-      className="ds-row"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: "12px 16px",
-        borderBottom: `1px solid ${colors.border}`,
-        cursor: "pointer",
-        background: selected ? `${colors.accent}0f` : "transparent",
-        boxShadow: selected ? `inset 2px 0 0 ${colors.accent}` : "none",
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={onToggle}
-        className="ds-focusable"
-        aria-label={`Select ${creator.name}`}
-        style={{ width: 16, height: 16, accentColor: colors.accent, cursor: "pointer", flexShrink: 0 }}
-      />
-      <span
-        aria-hidden
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: "50%",
-          background: `${tint}1c`,
-          border: `1px solid ${tint}33`,
-          color: tint,
-          fontSize: 11,
-          fontWeight: font.weight.semibold,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          letterSpacing: 0.3,
-        }}
-      >
-        {initials(creator.name)}
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: font.size.md, fontWeight: font.weight.medium, color: colors.text }}>
-          {creator.name}
-          {creator.handle && (
-            <span
-              style={{
-                fontSize: font.size.sm,
-                fontWeight: font.weight.regular,
-                color: colors.textDim,
-                marginLeft: 7,
-              }}
-            >
-              @{creator.handle}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: font.size.sm, color: colors.textDim, marginTop: 1 }}>
-          {creator.email}
-          {alsoInBatches.length > 0 && (
-            <span style={{ color: colors.textMuted }}> · also in {alsoInBatches[0]}</span>
-          )}
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-        {followers && <Pill color={colors.textMuted}>{followers}</Pill>}
-        {creator.engagementRate !== null && (
-          <Pill color={colors.textMuted}>{creator.engagementRate.toFixed(1)}%</Pill>
-        )}
-        {creator.platform && <Pill color={colors.textMuted}>{creator.platform}</Pill>}
-        {creator.niche && <Pill color={colors.textDim}>{creator.niche}</Pill>}
-        {/* Provenance badges: the answer to "how do we check". */}
-        {isNewFromBatch && <Pill color={colors.success}>NEW</Pill>}
-        {alsoInBatches.length > 0 && !isNewFromBatch && <Pill color={colors.textDim}>DUPLICATE</Pill>}
-        {isEnrolled && <Pill color={colors.accent}>ENROLLED</Pill>}
-      </div>
-    </label>
-  );
-}
-
-function Pill({ children, color }: { children: React.ReactNode; color: string }) {
-  return (
-    <span
-      style={{
-        fontSize: font.size.xs,
-        fontWeight: font.weight.medium,
-        color,
-        background: colors.panelAlt,
-        border: `1px solid ${colors.border}`,
-        borderRadius: radii.pill,
-        padding: "2px 9px",
-        lineHeight: 1.5,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {children}
-    </span>
   );
 }
 

@@ -14,7 +14,9 @@ import type {
   WorkflowVersion,
   WorkflowExecutionSummary,
   CreatorItem,
+  CreatorDeleteResult,
   ImportBatch,
+  ImportBatchDeleteResult,
   ImportBatchDetail,
   ImportCommitResponse,
   ImportDraftResponse,
@@ -201,6 +203,18 @@ export function useCreators() {
   });
 }
 
+/**
+ * Remove creators from the roster.
+ *
+ * Returns per-creator outcomes: anyone enrolled in a workflow or holding a
+ * partnership is KEPT and reported in `blocked`, because deleting them would
+ * mean destroying execution history and payout records. A row-level delete
+ * sends an array of one.
+ */
+export function deleteCreators(creatorIds: string[]) {
+  return postJson<CreatorDeleteResult>("/api/creators/delete", { creatorIds });
+}
+
 /** Add one creator by hand. Upserts on email, so re-adding enriches. */
 export function addCreator(data: {
   email: string;
@@ -257,9 +271,16 @@ export function commitImport(batchId: string) {
   return postJson<ImportCommitResponse>(`/api/creators/imports/${batchId}/commit`, {});
 }
 
-/** Discard a draft and its stored file. Only DRAFT batches may be discarded. */
-export function discardImport(batchId: string) {
-  return apiFetch<void>(`/api/creators/imports/${batchId}`, { method: "DELETE" });
+/**
+ * Delete a list: the batch, its import rows, and the stored file.
+ *
+ * Used both to discard an unconfirmed draft and to remove a committed list.
+ * It NEVER removes creators — the people a list introduced stay in the roster.
+ */
+export function deleteImportBatch(batchId: string) {
+  return apiFetch<ImportBatchDeleteResult>(`/api/creators/imports/${batchId}`, {
+    method: "DELETE",
+  });
 }
 
 /** Rename a batch, or archive it (hides from the picker; audit is retained). */
