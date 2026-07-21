@@ -206,6 +206,57 @@ _ANSWERABLE_SUBTOPIC_BY_TOPIC: dict[str, re.Pattern[str]] = {
     "pricing_exception": re.compile(r"\bcommission\b", re.IGNORECASE),
 }
 
+# The two pricing_exception patterns that fire on a QUOTED commission percentage
+# (e.g. "the 10% commission"). These match agreement as well as a change-demand,
+# so a same-rate quote must be checked against the configured rate before it
+# escalates (see _pricing_is_only_same_rate_commission_quote).
+_COMMISSION_PCT_QUOTE = re.compile(
+    r"\bcommission\b[^.\d]{0,40}?(\d{1,3})\s*(?:%|percent)"
+    r"|(\d{1,3})\s*(?:%|percent)[^.]{0,40}?\bcommission\b",
+    re.IGNORECASE,
+)
+# The other pricing_exception patterns (equity, guarantees, tiered/performance,
+# custom structures, commission-only) — these ALWAYS escalate regardless of the
+# configured rate, so a same-rate suppression must NOT apply when one of these hit.
+_PRICING_NON_QUOTE = re.compile(
+    "|".join(
+        p for p in _TOPIC_PATTERNS["pricing_exception"]
+        if p not in (r"\bcommission\b.*?\d{1,3}\s*(?:%|percent)", r"\d{1,3}\s*(?:%|percent).*?\bcommission\b")
+    ),
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _pricing_is_only_same_rate_commission_quote(
+    text: str, commission_rate: float | None
+) -> bool:
+    """True when a clause tripped ``pricing_exception`` SOLELY because it quotes the
+    commission percentage that EQUALS the brand's configured rate — i.e. the creator
+    is agreeing to / restating the fixed commission, not asking to change it.
+
+    Requires a configured ``commission_rate``. False when: no rate configured, the
+    clause matches any OTHER pricing_exception shape (equity/guarantee/tiered/
+    commission-only), the quoted number differs from the configured rate, or the
+    clause reads as a change-DEMAND (``_DEMAND_SIGNAL``). Conservative: any doubt →
+    False (escalate).
+    """
+    if commission_rate is None:
+        return False
+    # A genuine structural pricing ask (not a bare quote) always escalates.
+    if _PRICING_NON_QUOTE.search(text):
+        return False
+    # A change-demand ("bump the commission", "make it 20%") always escalates.
+    if _DEMAND_SIGNAL.search(text):
+        return False
+    m = _COMMISSION_PCT_QUOTE.search(text)
+    if not m:
+        return False
+    quoted = m.group(1) or m.group(2)
+    try:
+        return int(quoted) == int(round(commission_rate))
+    except (TypeError, ValueError):
+        return False
+
 # DEMAND / removal / ultimatum language: the creator is not asking about a term,
 # they are trying to CHANGE, REMOVE, REQUIRE, or CONDITION THE DEAL on it. Any of
 # these on a sensitive topic keeps the escalation even under intent-aware gating.
@@ -330,7 +381,9 @@ def detect_escalation_topic(text: str) -> str | None:
     return topic
 
 
-def detect_escalation_topic_ex(text: str) -> tuple[str | None, str | None]:
+def detect_escalation_topic_ex(
+    text: str, commission_rate: float | None = None
+) -> tuple[str | None, str | None]:
     """Intent-aware variant returning ``(escalation_topic, answered_question_topic)``.
 
     Exactly one of the two is non-None (or both None for no sensitive topic):
@@ -341,12 +394,29 @@ def detect_escalation_topic_ex(text: str) -> tuple[str | None, str | None]:
         it. Surfaced so a caller can log / annotate that a topic was recognized
         but intentionally not escalated.
 
+    ``commission_rate`` — the brand's configured commission %. When provided, a
+    clause that trips ``pricing_exception`` SOLELY by quoting the SAME percentage
+    (the creator agreeing to / restating the fixed commission, e.g. "happy with the
+    10% commission") is NOT escalated — only a DIFFERENT percentage, a change-demand,
+    or any other pricing-exception shape (equity / guarantee / tiered / commission-
+    only) still escalates. Omit it (None) to keep the original always-escalate
+    behavior for any quoted commission percentage.
+
     This is the primitive; ``detect_escalation_topic`` returns just the first
     element for backward compatibility.
     """
     topic = detect_topic(text)
     if topic is None or TOPIC_POLICY.get(topic) != "escalate":
         return None, None
+    # Same-rate commission agreement: a clause that tripped pricing_exception only
+    # because it quotes the CONFIGURED commission % is the creator accepting the
+    # fixed term, not asking to change it — flow it to the negotiator so the deal
+    # can close. A different %, a change-demand, or any other pricing shape still
+    # escalates (see _pricing_is_only_same_rate_commission_quote).
+    if topic == "pricing_exception" and _pricing_is_only_same_rate_commission_quote(
+        text, commission_rate
+    ):
+        return None, topic
     # Intent-aware suppression: only for an answerable topic, only when the matched
     # text is that topic's knowledge-backed sub-topic (usage/exclusivity/license —
     # NOT whitelisting/paid-media/ownership; commission — NOT equity/guarantees/
@@ -470,17 +540,23 @@ class PerClauseGateResult:
         self.answerable_clauses = answerable_clauses
 
 
-def detect_escalation_per_clause(text: str) -> PerClauseGateResult:
+def detect_escalation_per_clause(
+    text: str, commission_rate: float | None = None
+) -> PerClauseGateResult:
     """Per-clause topic gate (BUG-A1). See PerClauseGateResult / module notes.
 
     Splits ``text`` into clauses and runs the intent-aware escalation gate on each.
     Decides whether the turn must escalate NOW (bare handoff) or may flow to the
     negotiator with the escalated clause surfaced for the human.
+
+    ``commission_rate`` — the brand's configured commission %, threaded to the
+    per-clause gate so a clause that merely quotes the SAME rate (agreement) is not
+    escalated as a pricing exception. A DIFFERENT rate / change-demand still is.
     """
     clauses = _split_clauses(text)
     if not clauses:
         # No splittable content — fall back to whole-text gating for safety.
-        whole, _answered = detect_escalation_topic_ex(text)
+        whole, _answered = detect_escalation_topic_ex(text, commission_rate)
         return PerClauseGateResult(
             escalate_now=whole is not None,
             escalation_topic=whole,
@@ -493,7 +569,7 @@ def detect_escalation_per_clause(text: str) -> PerClauseGateResult:
     answerable_clauses: list[str] = []
 
     for clause in clauses:
-        topic, _answered = detect_escalation_topic_ex(clause)
+        topic, _answered = detect_escalation_topic_ex(clause, commission_rate)
         if topic is not None:
             escalated_clauses.append(clause)
             if escalation_topic is None:
