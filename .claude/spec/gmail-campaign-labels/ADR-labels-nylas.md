@@ -152,15 +152,31 @@ A campaign literally named `A/B Test` must NOT create a spurious nesting level
 
 ## 8. Ops prerequisite reconfirmed (PLAN §10)
 
-Applying a label requires the Gmail grant to have **mail-modify** scope. `messages.update`
-fails on a read/send-only grant. This is an environment prerequisite gated behind
-`GMAIL_LABELS_ENABLED` and documented in `readme_docs/ops/SECRETS.md`. A missing
-scope surfaces as a caught, logged `messages.update` error — the send is unaffected.
+Applying a label requires the Gmail grant to have **mail-modify** scope.
+`threads.update` (and `folders.create`) fail on a read/send-only grant. This is an
+environment prerequisite gated behind `GMAIL_LABELS_ENABLED` and documented in
+`readme_docs/ops/SECRETS.md`. A missing scope surfaces as a caught, logged
+`[labels]` warning — the send is unaffected.
 
-## 9. Net effect on the design
+## 9. Phase 4 backfill — join lookup decision (§15.5)
 
-The spike **passes** the PLAN §5 gate: the installed SDK exposes folders + message
+Open question §15.5 asks whether the optional Phase-4 backfill warrants the one
+isolated `getCampaignNameByInstanceId` helper. **Decision: no dedicated helper —
+the backfill (`scripts/backfill-gmail-labels.ts`) resolves the campaign name with
+an inline `selectDistinct` join** (`messages → executionInstances →
+workflowVersions → workflows → campaigns`, filtered on `messages.threadId IS NOT
+NULL`). This is explicitly sanctioned by PLAN §11 ("a per-instance join lookup is
+fine here — this is a batch job, not the hot send path"). A one-off script is not
+worth a new shared DB helper; the join lives where it's used. The backfill reuses
+the provider's per-process §6.5 cache (one `NylasEmailProvider` for the whole run),
+is dry-run by default (`--apply` to write), and is gated on `EMAIL_PROVIDER=nylas`
++ `GMAIL_LABELS_ENABLED=true` + a labeler-capable provider.
+
+## 10. Net effect on the design
+
+The spike **passes** the PLAN §5 gate: the installed SDK exposes folders + threads
 update, the modify-scope requirement is an ops flag (not a code blocker), and the
-thread-propagation question resolves to mechanism (a) with a read-then-union to keep
-it non-destructive. No architectural change to PLAN.md — only these concretizations,
-all recorded above.
+thread-propagation question resolves to the thread-level read-then-union (decision
+(c)), which is non-destructive and matches the `applyThreadLabel(threadId, label)`
+seam exactly. No architectural change to PLAN.md — only these concretizations, all
+recorded above.
