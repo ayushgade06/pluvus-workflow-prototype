@@ -54,6 +54,16 @@ test("body signs off as the brand", () => {
   assert.match(body, /Thanks,\nPluvus$/);
 });
 
+// ── Content-links request (the close of the funnel) ──────────────────────────
+// The merged brief email now asks the creator to reply IN THIS THREAD with the
+// link(s) to their content once it is live — the entry point for the content-
+// submission flow. It must be present and clearly ask for a reply with the links.
+test("body asks the creator to reply with their content link(s) once content is live", () => {
+  const { body } = full();
+  assert.match(body, /Once your content is live/i);
+  assert.match(body, /reply to this email with the link\(s\)/i);
+});
+
 // ── Finalized offer block ────────────────────────────────────────────────────
 test("body states the finalized terms header + fee + commission", () => {
   const { body } = full();

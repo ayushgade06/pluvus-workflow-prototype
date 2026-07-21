@@ -5,13 +5,14 @@
  * payout link + brief PDF) and collects payout itself. Proves:
  *
  *   ACCEPTED → (auto) merged Content Brief email → PAYMENT_PENDING
- *            → (form submit) → CONTENT_BRIEF_SENT (terminal)
+ *            → (form submit) → CONTENT_LINKS_PENDING (await content links)
  *
  * Also verifies: the merged email carries the finalized offer (fee/commission/
  * deliverables) + the tokenized payout link + referral link + creator notes; the
  * configured PDF is loaded from local storage and attached; the send is
  * idempotent (a re-run does not send a second email); a CONTENT_BRIEF_SENT event
- * is recorded and completedAt is stamped only after the form submission.
+ * is recorded and the instance parks (non-terminal) on CONTENT_LINKS_PENDING after
+ * the form submission.
  *
  * Plus a LEGACY sub-case: a graph that still has REWARD_SETUP → PAYMENT_INFO →
  * CONTENT_BRIEF drives PAYMENT_RECEIVED → CONTENT_BRIEF_SENT with the brief-only
@@ -257,18 +258,23 @@ async function main(): Promise<void> {
     assert.equal(briefEmails.length, 1, "re-run must not send a second merged email");
     console.log("  ✓ idempotent: re-run does not duplicate the merged email");
 
-    // Form submission finalizes the run: PAYMENT_PENDING → CONTENT_BRIEF_SENT.
+    // Form submission mints the ledger and parks on the non-terminal
+    // CONTENT_LINKS_PENDING waiting state (asks the creator for content links).
     await runtime.handlePaymentSubmission(instance.id, {
       method: "PAYPAL",
       accountIdentifier: "casey@paypal.me",
       country: "US",
     });
-    assert.equal(await state(instance.id), "CONTENT_BRIEF_SENT", "form submit must complete the run");
+    assert.equal(
+      await state(instance.id),
+      "CONTENT_LINKS_PENDING",
+      "form submit must park on CONTENT_LINKS_PENDING (await content links)",
+    );
     const sentEvents = await listEventsByInstance(instance.id, { type: "CONTENT_BRIEF_SENT" });
     assert.ok(sentEvents.length >= 1, "a CONTENT_BRIEF_SENT event must be recorded");
-    const done = await findInstanceById(instance.id);
-    assert.ok(done!.completedAt, "completedAt must be stamped after the form submission (terminal)");
-    console.log("  ✓ payout form submit → CONTENT_BRIEF_SENT + completedAt stamped");
+    const parked = await findInstanceById(instance.id);
+    assert.ok(!parked!.completedAt, "completedAt must NOT be stamped — CONTENT_LINKS_PENDING is non-terminal");
+    console.log("  ✓ payout form submit → CONTENT_LINKS_PENDING (ledger minted, awaiting content links)");
 
     // ── LEGACY SUB-CASE: reward → payment → content-brief still reaches terminal ─
     const legacyVersion = (await db.insert(workflowVersions).values({

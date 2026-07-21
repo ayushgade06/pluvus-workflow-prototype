@@ -738,6 +738,15 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // Stop at CONTENT_LINKS_PENDING — after the payout form is submitted, the
+      // merged Content Brief node parks here waiting for the creator's content-links
+      // reply (delivered via handleContentLinksReply), same as the other waiting
+      // states. Without this stop the loop would re-step the CONTENT_BRIEF node with
+      // no reply to process.
+      if (state === "CONTENT_LINKS_PENDING") {
+        return state;
+      }
+
       ctx = await this.stepInstance(instanceId);
     }
   }
