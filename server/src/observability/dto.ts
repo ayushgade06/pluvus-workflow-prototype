@@ -35,6 +35,10 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
   "PAYMENT_RECEIVED",
   "CONTENT_LINKS_PENDING",
   "CONTENT_BRIEF_SENT",
+  // PLU-70 operator-handoff branch — sits after ACCEPTED conceptually, but is
+  // ordered here so the canvas keeps the local-payment path as its main column.
+  "NEEDS_DEAL_FINALIZATION",
+  "HANDOFF_COMPLETE",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -46,6 +50,8 @@ export const TERMINAL_STATES: InstanceState[] = [
   // auto-advance into Reward Setup, Payment Info and Content Brief);
   // CONTENT_BRIEF_SENT is the new success terminal.
   "CONTENT_BRIEF_SENT",
+  // PLU-70: the success terminal of the operator-handoff branch.
+  "HANDOFF_COMPLETE",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -63,6 +69,10 @@ export const WAITING_STATES: InstanceState[] = [
   "REWARD_PENDING",
   "PAYMENT_PENDING",
   "CONTENT_LINKS_PENDING",
+  // PLU-70: waits on an OPERATOR rather than the creator, but it is a waiting
+  // bucket all the same — surfacing it here keeps "parked, needs a human" visible
+  // in the scheduler view instead of looking like a stalled active state.
+  "NEEDS_DEAL_FINALIZATION",
 ];
 
 // ---------------------------------------------------------------------------

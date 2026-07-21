@@ -131,6 +131,10 @@ export class NylasEmailProvider implements IEmailProvider, IThreadLabeler {
       subject: draft.subject,
       body: plainTextToHtmlEmail(draft.body),
       ...(recipient?.replyTo ? { replyTo: [{ email: recipient.replyTo }] } : {}),
+      // PLU-70: CC the operator on the handoff message. Only ever set there, so
+      // for every other send this spread contributes nothing and the request
+      // body is unchanged.
+      ...(recipient?.cc?.length ? { cc: recipient.cc.map((email) => ({ email })) } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     };
 
@@ -168,6 +172,7 @@ export class NylasEmailProvider implements IEmailProvider, IThreadLabeler {
     body?: string;
     replyTo?: Array<{ email: string; name?: string }>;
     replyToMessageId?: string;
+    cc?: Array<{ email: string; name?: string }>;
     attachments?: Array<{ filename: string; contentType: string; content: string }>;
   }): Promise<{ messageId: string; threadId: string }> {
     const response = await this.client.messages.send({

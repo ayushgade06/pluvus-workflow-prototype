@@ -54,6 +54,15 @@ enum InstanceState {
   // sent to the creator. The node has no waiting state — it sends and completes
   // immediately — so this is the single new success terminal state.
   CONTENT_BRIEF_SENT
+  // Operator handoff (PLU-70): the negotiation closed on an execution whose
+  // postAcceptanceMode is operator_handoff. The agreed terms are snapshotted to
+  // DealHandoff, the creator got a short "looping in our campaign manager" note,
+  // and the run PAUSES here — no payout form, no brief. A WAITING state, not a
+  // terminal one: it waits on a human the way PAYMENT_PENDING waits on a form.
+  NEEDS_DEAL_FINALIZATION
+  // Operator handoff: the operator finalized the deal and onboarded the creator
+  // manually in main Pluvus, then marked the handoff complete. Terminal.
+  HANDOFF_COMPLETE
   // Terminal states
   REJECTED
   OPTED_OUT
@@ -144,6 +153,37 @@ enum EventType {
   // Content Brief: the campaign-brief email (PDF attachment + referral link) was
   // sent to the creator.
   CONTENT_BRIEF_SENT
+  // Operator handoff (PLU-70): the acceptance snapshot was persisted and the
+  // creator was told a campaign manager is taking over.
+  DEAL_HANDOFF_REQUESTED
+  // Operator handoff: a creator reply arrived while the run was parked in
+  // NEEDS_DEAL_FINALIZATION. Recorded, forwarded to the operator, not acted on.
+  DEAL_HANDOFF_REPLY
+  // Operator handoff: an operator marked the handoff complete.
+  DEAL_HANDOFF_COMPLETED
+}
+
+/// What happens to an execution after the negotiation is accepted (PLU-70).
+///
+/// local_payment    — the existing behavior: auto-chain into the post-acceptance
+///                    node (Content Brief in the merged flow, Reward Setup in
+///                    legacy graphs), collect payout details via the hosted form,
+///                    send the brief. This is the DEFAULT for every campaign and
+///                    every execution that predates this field, so nothing about
+///                    existing campaigns or in-flight runs changes.
+/// operator_handoff — pause after the agreement: snapshot the agreed terms, tell
+///                    the creator a campaign manager is taking over, notify the
+///                    campaign's escalation email, and park in the Manual Queue
+///                    for a human to finish in the main Pluvus platform.
+enum PostAcceptanceMode {
+  local_payment
+  operator_handoff
+}
+
+/// Operator progress on a single deal handoff.
+enum DealHandoffStatus {
+  AWAITING_FINALIZATION
+  COMPLETED
 }
 
 /// Lifecycle of a Workflow definition.
@@ -218,6 +258,12 @@ model Campaign {
   /// attributionWindow — the affiliate cookie/attribution window (e.g. "30-day
   /// last-click cookie").
   attributionWindow String?
+
+  /// PLU-70: what happens once a creator accepts. This is the campaign-level
+  /// DEFAULT only — enrollment stamps the effective mode onto each
+  /// ExecutionInstance, so editing this later changes the default for FUTURE
+  /// enrollments and can never alter an already-running execution.
+  postAcceptanceMode PostAcceptanceMode @default(local_payment)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -424,6 +470,15 @@ model ExecutionInstance {
   negotiationRound Int           @default(0)
   dueAt            DateTime?
 
+  /// PLU-70: the post-acceptance behavior this execution is LOCKED to. Stamped
+  /// once at enrollment from (enrollment override → campaign default →
+  /// local_payment) and never rewritten. Reading it from the instance — rather
+  /// than the campaign or the workflow version — is what makes a later campaign
+  /// edit unable to change the behavior of a run that has already started.
+  /// Existing rows are backfilled to local_payment by the migration default, so
+  /// every in-flight execution keeps the behavior it was enrolled under.
+  postAcceptanceMode PostAcceptanceMode @default(local_payment)
+
   enrolledAt  DateTime  @default(now())
   completedAt DateTime?
   createdAt   DateTime  @default(now())
@@ -435,6 +490,7 @@ model ExecutionInstance {
   events             Event[]
   brandNotifications BrandNotification[]
   paymentInfo        PaymentInfo?
+  dealHandoff        DealHandoff?
   outboxJobs         OutboxJob[]
 
   @@unique([workflowVersionId, creatorId])
@@ -666,4 +722,65 @@ model PaymentInfo {
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 
   @@index([instanceId])
+}
+
+// ---------------------------------------------------------------------------
+// Deal handoff (PLU-70)
+// ---------------------------------------------------------------------------
+
+/// The structured snapshot of a closed deal that an operator needs in order to
+/// finalize and onboard the creator manually in the main Pluvus platform, plus
+/// that operator's progress on doing so.
+///
+/// Written once, when an operator_handoff execution transitions ACCEPTED →
+/// NEEDS_DEAL_FINALIZATION. `instanceId` is UNIQUE, which is the idempotency
+/// guard: a retried node-execution step re-runs the executor, the insert hits the
+/// constraint, and the retry is a no-op — the acceptance record is never
+/// duplicated no matter how many times notification delivery is retried.
+///
+/// Deliberately NOT a copy of the conversation. The full thread stays in Message
+/// and is read through the existing execution inspector; this table holds only
+/// what is needed to understand and complete the AGREEMENT. It also holds no
+/// payout information — collecting that is exactly what handoff mode skips.
+model DealHandoff {
+  id         String @id @default(cuid())
+  /// The workflow execution this agreement belongs to — also the execution
+  /// reference quoted in the operator notification email.
+  instanceId String @unique
+
+  /// Denormalized so the record is legible on its own (the operator reads it in
+  /// an email and a compact queue row, away from the joins).
+  creatorName  String
+  creatorEmail String
+  campaignName String?
+
+  /// The agreed compensation. `fixedFee` is null for commission-only deals —
+  /// unlike the local flow, an absent fee is NOT an escalation here, because a
+  /// human is already the reviewer.
+  fixedFee       Float?
+  commissionRate Float?
+
+  deliverables String?
+  timeline     String?
+  paymentTerms String?
+
+  /// The accepting turn's message text, and a pointer into the existing thread —
+  /// not the thread itself.
+  acceptanceMessage String?
+  threadId          String?
+
+  acceptedAt DateTime
+
+  /// The minimal operator action: mark the handoff done once the deal is
+  /// finalized and the creator is onboarded in main Pluvus.
+  status      DealHandoffStatus @default(AWAITING_FINALIZATION)
+  completedAt DateTime?
+  completedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+
+  @@index([status])
 }

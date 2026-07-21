@@ -24,6 +24,7 @@ import type {
   BrandNotificationInsert,
   BrandNotificationStatus,
   Creator,
+  DealHandoff,
   Event,
   EventInsert,
   EventType,
@@ -46,6 +47,8 @@ import {
   listEventsByInstance,
   listMessagesByInstance,
 } from "../db/index.js";
+import { findDealHandoffByInstance } from "../db/dealHandoffs.js";
+import { formatAgreedCompensation } from "../engine/dealTerms.js";
 import { buildDraftHistory } from "../engine/executors/negotiationHistory.js";
 import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type { IEmailProvider } from "../engine/providers.js";
@@ -88,6 +91,14 @@ const REASON_LABELS: Record<string, string> = {
   // the links and reviews. (No payout/ledger action is triggered automatically.)
   content_links_submitted: "the creator submitted content links for review",
 };
+
+// PLU-70: the reason codes the operator-handoff branch notifies under. Kept
+// distinct from the escalation reasons above because these are NOT failures —
+// the AI did its job and closed a deal. `handoff_reply` is suffixed with the
+// inbound message id at the call site so each distinct creator reply forwards
+// exactly once while a retried delivery cannot double-send.
+export const DEAL_FINALIZATION_REASON = "needs_deal_finalization";
+export const HANDOFF_REPLY_REASON_PREFIX = "handoff_reply";
 
 function reasonLabel(reason: string): string {
   return REASON_LABELS[reason] ?? `it was escalated for human review (${reason})`;
@@ -146,7 +157,16 @@ interface EscalationContext {
 // P2002 idempotency branch and the FAILED-on-send-error branch) is unit-testable
 // without a live database. Defaults to the real db helpers.
 export interface EscalationDeps {
-  loadContext(instanceId: string): Promise<EscalationContext | null>;
+  /**
+   * `withTranscript: false` skips assembling the both-sides conversation. The
+   * PLU-70 operator notices are deliberately concise and never render it, so
+   * loading it would be pure cost on a path that closes deals in bulk.
+   */
+  loadContext(
+    instanceId: string,
+    opts?: { withTranscript?: boolean },
+  ): Promise<EscalationContext | null>;
+  findDealHandoffByInstance?(instanceId: string): Promise<DealHandoff | null>;
   createBrandNotification(data: BrandNotificationInsert): Promise<BrandNotification>;
   findBrandNotificationByKey(key: string): Promise<BrandNotification | null>;
   updateBrandNotificationStatus(
@@ -156,7 +176,10 @@ export interface EscalationDeps {
   appendEvent(data: EventInsert): Promise<Event>;
 }
 
-async function loadEscalationContext(instanceId: string): Promise<EscalationContext | null> {
+async function loadEscalationContext(
+  instanceId: string,
+  opts?: { withTranscript?: boolean },
+): Promise<EscalationContext | null> {
   // instance → creator + workflowVersion → workflow → (optional) campaign.
   const rows = await db
     .select({
@@ -186,6 +209,24 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
   // degrades to an empty transcript (the email still sends who/why + dashboard
   // pointer). brandReplyMsgIds is derived exactly as loadCreatorInbounds does.
   let transcript: DraftHistoryEntry[] = [];
+  if (opts?.withTranscript === false) {
+    // Concise notices (PLU-70 operator handoff) skip the transcript AND the E6
+    // thread-link resolution — the operator reaches the thread via the CC on the
+    // creator-facing handoff message, not a deep-link in this email, so the
+    // resolver call would be pure cost. threadId/gmailRfc822MessageId are still
+    // set (to null) to satisfy the EscalationContext contract; the handoff draft
+    // builders ignore them.
+    return {
+      creator: row.creator,
+      campaignName: row.campaignName ?? null,
+      brandName: row.brandName ?? null,
+      workflowName: row.workflowName ?? null,
+      notifyEmail: row.notifyEmail ?? null,
+      transcript,
+      threadId: null,
+      gmailRfc822MessageId: null,
+    };
+  }
   try {
     const [events, messages, inboundEvents] = await Promise.all([
       listEventsByInstance(instanceId, { type: "NEGOTIATION_TURN" }),
@@ -281,6 +322,7 @@ export function extractSubmittedUrls(events: Event[]): string[] {
 
 const defaultDeps: EscalationDeps = {
   loadContext: loadEscalationContext,
+  findDealHandoffByInstance,
   createBrandNotification,
   findBrandNotificationByKey,
   updateBrandNotificationStatus,
@@ -491,22 +533,35 @@ export interface EscalationResult {
 }
 
 /**
- * Notify the brand that a creator was escalated to the manual queue.
+ * The shared reserve → send → finalize → audit sequence behind EVERY operator
+ * notice (escalations and the PLU-70 handoff notices alike).
  *
- * Idempotent on (instanceId + reason): a second call for the same escalation
- * returns ALREADY_NOTIFIED without sending. Never throws — failures are recorded
- * as FAILED and returned, so the caller (the state machine) is never blocked.
+ * Parameterized only by the reason code and a draft builder, so all three
+ * callers share one copy of the guarantees that actually matter:
+ *   - idempotent on (instanceId + reason) via the reserved BrandNotification row,
+ *   - a send failure is recorded FAILED with the error rather than thrown,
+ *   - no resolvable recipient is recorded SKIPPED rather than silently dropped,
+ *   - never throws, so a notification can never block or roll back a state commit.
+ *
+ * `buildDraft` returning null means "there is nothing to send after all" — used
+ * when the context a notice depends on is missing. It is recorded as SKIPPED so
+ * the absence is still visible in the Manual Queue.
  */
-export async function notifyBrandOfEscalation(
+async function deliverOperatorNotice(
   email: IEmailProvider,
   instanceId: string,
   reason: string,
-  deps: EscalationDeps = defaultDeps,
+  buildDraft: (ctx: EscalationContext) => Promise<EmailDraft | null> | EmailDraft | null,
+  deps: EscalationDeps,
+  opts?: { withTranscript?: boolean; logLabel?: string },
 ): Promise<EscalationResult> {
   const idempotencyKey = `escalation:${instanceId}:${reason}`;
+  const label = opts?.logLabel ?? "escalation";
 
   try {
-    const ctx = await deps.loadContext(instanceId);
+    const ctx = await deps.loadContext(instanceId, {
+      withTranscript: opts?.withTranscript ?? true,
+    });
     if (!ctx) {
       return { status: "SKIPPED", recipient: null };
     }
@@ -570,22 +625,23 @@ export async function notifyBrandOfEscalation(
     }
 
     // ── Send ──────────────────────────────────────────────────────────────
-    // E6: hand the email builder the provider's own thread-URL helper (bound to
-    // `email` so `this` resolves) so it can deep-link the thread. Providers that
-    // don't implement it (or aren't configured) yield undefined and the link is
-    // omitted — the notice is unaffected.
-    const threadUrl = email.threadUrl?.bind(email);
-    const draft = buildEscalationEmail(
-      { ...ctx, gmailRfc822MessageId },
-      reason,
-      threadUrl,
-    );
+    // Fold the freshly resolved Gmail Message-ID into the ctx handed to the
+    // draft builder (loadContext leaves it null; it can only be resolved here,
+    // where the email provider is available). The escalation builder reads it to
+    // render the E6 cold-load-safe Gmail deep-link; handoff builders ignore it.
+    const draft = await buildDraft({ ...ctx, gmailRfc822MessageId });
+    if (!draft) {
+      // The notice had nothing to say (its backing record was missing). Record
+      // SKIPPED so the gap is visible rather than silently absent.
+      await deps.updateBrandNotificationStatus(reservedId, { status: "SKIPPED" });
+      return { status: "SKIPPED", recipient };
+    }
     // CRITICAL-2: address the brand via the explicit EmailRecipient rather than a
     // forged Creator-shaped object (the "brand-as-Creator" hack the audit flags).
-    // This notice goes out on MANUAL_REVIEW (a terminal state), so unlike the
-    // brand-DECISION email it does not persist a routable Message row — a reply
-    // here has nothing to route back into (the inbound worker skips terminal
-    // instances). The creator is still passed as the thread owner for the
+    // These notices are ALERTS, not routable threads: they persist no Message row,
+    // so a reply to one has nothing to route back into. (For PLU-70 the operator's
+    // route INTO the conversation is the CC on the creator-facing handoff message,
+    // not this email.) The creator is still passed as the thread owner for the
     // provider's fallback fields.
     try {
       await email.send(draft, ctx.creator, {
@@ -596,7 +652,7 @@ export async function notifyBrandOfEscalation(
       const message = sendErr instanceof Error ? sendErr.message : String(sendErr);
       await deps.updateBrandNotificationStatus(reservedId, { status: "FAILED", error: message });
       console.error(
-        `[escalation] failed to email brand for instance ${instanceId} (reason ${reason}): ${message}`,
+        `[${label}] failed to email operator for instance ${instanceId} (reason ${reason}): ${message}`,
       );
       return { status: "FAILED", recipient };
     }
@@ -610,7 +666,7 @@ export async function notifyBrandOfEscalation(
     });
 
     console.log(
-      `[escalation] brand notified for instance ${instanceId} → ${recipient} (reason ${reason})`,
+      `[${label}] operator notified for instance ${instanceId} → ${recipient} (reason ${reason})`,
     );
     return { status: "SENT", recipient };
   } catch (err) {
@@ -618,8 +674,176 @@ export async function notifyBrandOfEscalation(
     // machine. Log and report, but do not throw.
     const message = err instanceof Error ? err.message : String(err);
     console.error(
-      `[escalation] unexpected error notifying brand for instance ${instanceId}: ${message}`,
+      `[${label}] unexpected error notifying operator for instance ${instanceId}: ${message}`,
     );
     return { status: "FAILED", recipient: null };
   }
+}
+
+/**
+ * Notify the brand that a creator was escalated to the manual queue.
+ *
+ * Idempotent on (instanceId + reason): a second call for the same escalation
+ * returns ALREADY_NOTIFIED without sending. Never throws — failures are recorded
+ * as FAILED and returned, so the caller (the state machine) is never blocked.
+ */
+export async function notifyBrandOfEscalation(
+  email: IEmailProvider,
+  instanceId: string,
+  reason: string,
+  deps: EscalationDeps = defaultDeps,
+): Promise<EscalationResult> {
+  // E6: hand the email builder the provider's own thread-URL helper (bound to
+  // `email` so `this` resolves) so it can deep-link the thread. Providers that
+  // don't implement it (or aren't configured) yield undefined and the link is
+  // omitted — the notice is unaffected.
+  const threadUrl = email.threadUrl?.bind(email);
+  return deliverOperatorNotice(
+    email,
+    instanceId,
+    reason,
+    (ctx) => buildEscalationEmail(ctx, reason, threadUrl),
+    deps,
+    { logLabel: "escalation" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PLU-70 — operator handoff notices
+// ---------------------------------------------------------------------------
+
+/**
+ * "A creator agreed and the deal is waiting on you."
+ *
+ * Reuses the campaign's existing escalation contact and the existing email
+ * transport — there is no separate notification-email configuration for handoff.
+ * The only deliberate difference from buildEscalationEmail is brevity: this one
+ * carries the AGREEMENT, not the conversation. The operator opens the execution
+ * inspector when they want the thread.
+ */
+export function buildDealFinalizationEmail(
+  ctx: EscalationContext,
+  handoff: DealHandoff,
+): EmailDraft {
+  const { creator, brandName } = ctx;
+  const brand = brandName ?? "your brand";
+  const creatorLine = creator.handle
+    ? `${creator.name} (@${creator.handle})`
+    : creator.name;
+
+  const subject = `Creator agreement ready for finalization — ${creator.name}`;
+
+  const lines = [
+    `Hi ${brand} team,`,
+    ``,
+    `${creator.name} accepted the offer. The automated workflow has PAUSED here — the deal now needs a human to finalize it and onboard them in Pluvus.`,
+    ``,
+    `Creator:       ${creatorLine}`,
+    `Email:         ${creator.email}`,
+    ...(handoff.campaignName ? [`Campaign:      ${handoff.campaignName}`] : []),
+    `Compensation:  ${formatAgreedCompensation(handoff.fixedFee, handoff.commissionRate)}`,
+    ...(handoff.deliverables ? [`Deliverables:  ${handoff.deliverables}`] : []),
+    ...(handoff.timeline ? [`Timeline:      ${handoff.timeline}`] : []),
+    ...(handoff.paymentTerms ? [`Payment terms: ${handoff.paymentTerms}`] : []),
+    `Accepted:      ${handoff.acceptedAt.toISOString()}`,
+    `Execution:     ${handoff.instanceId}`,
+    ``,
+    `${creator.name} has been told a campaign manager will follow up shortly with their onboarding link.`,
+    ``,
+    `Open the Manual Queue in the Pluvus dashboard to see the full conversation and mark the handoff complete once they're onboarded.`,
+    ``,
+    `— Pluvus Workflow Automation`,
+  ];
+
+  return { subject, body: lines.join("\n") };
+}
+
+/**
+ * Notify the campaign's escalation contact that a deal is ready to finalize.
+ *
+ * Fired by runtime.stepInstance on a fresh transition into
+ * NEEDS_DEAL_FINALIZATION, AFTER the state is committed. Idempotent on
+ * (instanceId + "needs_deal_finalization"), so retried delivery can never
+ * duplicate the transition or the DealHandoff record.
+ *
+ * If no recipient resolves, or the send fails, the handoff is NOT lost: the
+ * instance stays in NEEDS_DEAL_FINALIZATION and remains visible in the Manual
+ * Queue, and the BrandNotification row records SKIPPED/FAILED so the UI can show
+ * that the operator was not reached (and offer a re-send).
+ */
+export async function notifyOperatorOfDealFinalization(
+  email: IEmailProvider,
+  instanceId: string,
+  deps: EscalationDeps = defaultDeps,
+  reason: string = DEAL_FINALIZATION_REASON,
+): Promise<EscalationResult> {
+  const loadHandoff = deps.findDealHandoffByInstance ?? findDealHandoffByInstance;
+  return deliverOperatorNotice(
+    email,
+    instanceId,
+    reason,
+    async (ctx) => {
+      const handoff = await loadHandoff(instanceId);
+      if (!handoff) {
+        console.error(
+          `[deal-handoff] no DealHandoff row for instance ${instanceId} — nothing to notify about`,
+        );
+        return null;
+      }
+      return buildDealFinalizationEmail(ctx, handoff);
+    },
+    deps,
+    // The whole point of this email is that it is short. Skip transcript assembly.
+    { withTranscript: false, logLabel: "deal-handoff" },
+  );
+}
+
+/** Forward a creator reply that arrived while the deal was parked on an operator. */
+export function buildHandoffReplyEmail(
+  ctx: EscalationContext,
+  reply: { subject: string; body: string },
+): EmailDraft {
+  const { creator } = ctx;
+  const subject = `${creator.name} replied — ${creator.email}`;
+
+  const lines = [
+    `${creator.name} replied while their deal is awaiting finalization.`,
+    ``,
+    `From:    ${creator.name} <${creator.email}>`,
+    `Subject: ${reply.subject}`,
+    ``,
+    `─────────────────────────────────────────`,
+    reply.body.trim() || "(no message text)",
+    `─────────────────────────────────────────`,
+    ``,
+    `Reply to ${creator.name} directly at ${creator.email}. The automated workflow will NOT respond on its own — you own this conversation.`,
+    ``,
+    `— Pluvus Workflow Automation`,
+  ];
+
+  return { subject, body: lines.join("\n") };
+}
+
+/**
+ * Forward an inbound creator reply to the operator during NEEDS_DEAL_FINALIZATION.
+ *
+ * The CC on the handoff message already puts the operator in the thread for a
+ * "reply all". This covers the creator who hits plain "reply" and therefore
+ * reaches only our mailbox. Keyed on the inbound message id, so each distinct
+ * reply forwards exactly once while a retried delivery cannot double-send.
+ */
+export async function notifyOperatorOfHandoffReply(
+  email: IEmailProvider,
+  instanceId: string,
+  reply: { externalMessageId: string; subject: string; body: string },
+  deps: EscalationDeps = defaultDeps,
+): Promise<EscalationResult> {
+  return deliverOperatorNotice(
+    email,
+    instanceId,
+    `${HANDOFF_REPLY_REASON_PREFIX}:${reply.externalMessageId}`,
+    (ctx) => buildHandoffReplyEmail(ctx, reply),
+    deps,
+    { withTranscript: false, logLabel: "deal-handoff" },
+  );
 }

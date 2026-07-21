@@ -27,6 +27,16 @@ export interface EmailRecipient {
   /** Optional Reply-To. When set, the message is sent with an explicit Reply-To
    *  header so a reply is directed to a specific address rather than the sender. */
   replyTo?: string;
+  /**
+   * Optional CC addresses (PLU-70). Used by the operator-handoff message so the
+   * campaign's escalation contact is a real participant in the creator thread
+   * from the handoff onward — a creator "reply all" then reaches the operator's
+   * inbox AND our mailbox, so the recorded history stays complete.
+   *
+   * Set on NO other send. Absent → the provider omits the header entirely and
+   * the request body is byte-for-byte what it was before.
+   */
+  cc?: string[];
 }
 
 // Transport-neutral threading options for a send (Email Threading — ADR-2).
@@ -199,6 +209,14 @@ export class MockEmailProvider implements IEmailProvider {
     // email so a simulated brand reply on that address correlates to a distinct
     // thread — mirroring how a real provider threads by recipient.
     const threadKey = recipient?.email ?? creator.id;
+    // PLU-70: surface the CC in mock mode so a dev running EMAIL_PROVIDER=mock
+    // can actually SEE that the operator was looped in, rather than having to
+    // trust it. Logged only when set, so every other send's output is unchanged.
+    if (recipient?.cc?.length) {
+      console.log(
+        `[email:mock] cc ${recipient.cc.join(", ")} on message to ${recipient.email}`,
+      );
+    }
     return {
       messageId: `mock-msg-${creator.id}-${Date.now()}`,
       threadId: `mock-thread-${threadKey}`,

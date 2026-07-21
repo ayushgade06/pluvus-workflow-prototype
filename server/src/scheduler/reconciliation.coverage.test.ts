@@ -33,6 +33,13 @@ import type { NodeExecutionJobData } from "../workers/jobs.js";
 // W-2: FOLLOWED_UP is NOT in this list anymore — it is transient (committed with
 // dueAt=null and auto-chained back to AWAITING_REPLY), so the due poller cannot
 // recover a lost auto-chain enqueue and the sweep must. See RECONCILE_STATES.
+//
+// PLU-70: NEEDS_DEAL_FINALIZATION is a waiting state too — it is parked on an
+// OPERATOR finishing the deal by hand, exactly as PAYMENT_PENDING is parked on
+// the creator submitting a form. There is no queued work to recover, so sweeping
+// it would re-enqueue a step that has nothing to do, every tick, forever.
+// ACCEPTED (already swept) covers the real strand risk: a crash between the
+// accept commit and the handoff enqueue.
 const WAITING_STATES: InstanceState[] = [
   "AWAITING_REPLY",
   "REWARD_PENDING",
@@ -41,6 +48,7 @@ const WAITING_STATES: InstanceState[] = [
   // PAYMENT_PENDING parks on the payout form — a genuine waiting state that must
   // NOT be swept (re-enqueuing has no reply to process → spam, not recovery).
   "CONTENT_LINKS_PENDING",
+  "NEEDS_DEAL_FINALIZATION",
 ];
 
 test("H8: RECONCILE_STATES includes NEGOTIATING and REPLY_RECEIVED (the flagged pair)", () => {

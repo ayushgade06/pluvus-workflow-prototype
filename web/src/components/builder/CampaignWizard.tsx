@@ -1,8 +1,8 @@
 import { useId, useState } from "react";
 import { createCampaign, createWorkflowForCampaign } from "../../api/builderClient";
 import { colors, radii, font } from "../../theme";
-import { Modal, Button, Input, Textarea, Toggle, FormField, useToast } from "../ds";
-import type { TemplateKey } from "../../api/builderTypes";
+import { Modal, Button, Input, Textarea, Toggle, Select, FormField, useToast } from "../ds";
+import type { PostAcceptanceMode, TemplateKey } from "../../api/builderTypes";
 
 interface Props {
   onCreated: (workflowId: string) => void;
@@ -52,6 +52,10 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const [notes, setNotes] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
   const [hiddenParamKey, setHiddenParamKey] = useState("_from");
+  // PLU-70. Defaults to the existing behavior — a brand that ignores this field
+  // gets exactly the campaign they would have got before.
+  const [postAcceptanceMode, setPostAcceptanceMode] =
+    useState<PostAcceptanceMode>("local_payment");
 
   // Step 2 selection
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateKey | null>(null);
@@ -69,6 +73,7 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
   const wfNameId = useId();
   const targetUrlId = useId();
   const hiddenParamKeyId = useId();
+  const postAcceptId = useId();
 
   const notifyEmailInvalid =
     !!notifyEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyEmail.trim());
@@ -127,6 +132,10 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
       if (targetUrl.trim()) campaignData.targetUrl = targetUrl.trim();
       if (hiddenParamKey.trim() && hiddenParamKey.trim() !== "_from")
         campaignData.hiddenParamKey = hiddenParamKey.trim();
+      // Sent only when it differs from the default, so the request body for an
+      // ordinary campaign is unchanged.
+      if (postAcceptanceMode !== "local_payment")
+        campaignData.postAcceptanceMode = postAcceptanceMode;
       const campaign = await createCampaign(campaignData);
       const workflow = await createWorkflowForCampaign(campaign.id, {
         name: workflowName.trim(),
@@ -288,6 +297,26 @@ export function CampaignWizard({ onCreated, onClose }: Props) {
                 placeholder="e.g. partnerships@acme.com"
                 invalid={notifyEmailInvalid}
               />
+            </FormField>
+            <FormField
+              label="After a creator accepts"
+              htmlFor={postAcceptId}
+              hint={
+                postAcceptanceMode === "operator_handoff"
+                  ? "The AI runs outreach and negotiation, then pauses. You get an email with the agreed terms, the creator appears in the Manual Queue, and you finalize the deal and onboard them in Pluvus yourself."
+                  : "The AI runs the whole flow: once the creator accepts it collects their payout details and sends the campaign brief automatically."
+              }
+            >
+              <Select
+                id={postAcceptId}
+                value={postAcceptanceMode}
+                onChange={(e) =>
+                  setPostAcceptanceMode(e.target.value as "local_payment" | "operator_handoff")
+                }
+              >
+                <option value="local_payment">Continue with local payment flow</option>
+                <option value="operator_handoff">Send to operator for onboarding</option>
+              </Select>
             </FormField>
             <FormField label="Objective" htmlFor={objId}>
               <Input

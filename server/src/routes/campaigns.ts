@@ -34,6 +34,7 @@ router.get("/", async (_req: Request, res: Response) => {
         timeline: c.timeline,
         rewardDescription: c.rewardDescription,
         shipsPhysicalProduct: c.shipsPhysicalProduct,
+        postAcceptanceMode: c.postAcceptanceMode,
         createdAt: c.createdAt.toISOString(),
         updatedAt: c.updatedAt.toISOString(),
         workflowCount: c._count.workflows,
@@ -50,6 +51,16 @@ router.get("/", async (_req: Request, res: Response) => {
 // a non-empty value is supplied.
 function isEmailish(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+// PLU-70. Anything not explicitly "operator_handoff" resolves to the existing
+// behavior — an unknown/garbage value must never silently opt a campaign INTO
+// pausing deals, and omitting the field must leave existing campaigns alone.
+const POST_ACCEPTANCE_MODES = ["local_payment", "operator_handoff"] as const;
+type PostAcceptanceModeValue = (typeof POST_ACCEPTANCE_MODES)[number];
+
+function isPostAcceptanceMode(v: unknown): v is PostAcceptanceModeValue {
+  return typeof v === "string" && (POST_ACCEPTANCE_MODES as readonly string[]).includes(v);
 }
 
 // POST /campaigns — create a campaign
@@ -71,6 +82,7 @@ router.post("/", async (req: Request, res: Response) => {
     attributionWindow,
     targetUrl,
     hiddenParamKey,
+    postAcceptanceMode,
   } = req.body as {
     name?: string;
     brand?: string;
@@ -89,6 +101,7 @@ router.post("/", async (req: Request, res: Response) => {
     attributionWindow?: string;
     targetUrl?: string;
     hiddenParamKey?: string;
+    postAcceptanceMode?: string;
   };
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -112,6 +125,15 @@ router.post("/", async (req: Request, res: Response) => {
   const targetUrlCheck = validateTargetUrl(typeof targetUrl === "string" ? targetUrl : null);
   if (!targetUrlCheck.valid) {
     res.status(422).json({ error: targetUrlCheck.reason ?? "invalid targetUrl" });
+    return;
+  }
+
+  // Reject an unrecognized mode loudly rather than defaulting it — a typo here
+  // would otherwise silently give the brand the wrong post-acceptance behavior.
+  if (postAcceptanceMode !== undefined && !isPostAcceptanceMode(postAcceptanceMode)) {
+    res.status(400).json({
+      error: `postAcceptanceMode must be one of: ${POST_ACCEPTANCE_MODES.join(", ")}`,
+    });
     return;
   }
 
@@ -140,6 +162,9 @@ router.post("/", async (req: Request, res: Response) => {
         typeof hiddenParamKey === "string" && hiddenParamKey.trim()
           ? hiddenParamKey.trim()
           : "_from",
+      // Omitted → the column default (local_payment) applies, so a client that
+      // predates this field creates a campaign that behaves exactly as before.
+      ...(isPostAcceptanceMode(postAcceptanceMode) ? { postAcceptanceMode } : {}),
     });
     res.status(201).json({
       id: campaign.id,
@@ -159,6 +184,7 @@ router.post("/", async (req: Request, res: Response) => {
       attributionWindow: campaign.attributionWindow,
       targetUrl: campaign.targetUrl,
       hiddenParamKey: campaign.hiddenParamKey,
+      postAcceptanceMode: campaign.postAcceptanceMode,
       createdAt: campaign.createdAt.toISOString(),
     });
   } catch (err) {
@@ -187,6 +213,7 @@ router.get("/:id", async (req: Request, res: Response) => {
       timeline: campaign.timeline,
       rewardDescription: campaign.rewardDescription,
       shipsPhysicalProduct: campaign.shipsPhysicalProduct,
+      postAcceptanceMode: campaign.postAcceptanceMode,
       createdAt: campaign.createdAt.toISOString(),
       updatedAt: campaign.updatedAt.toISOString(),
       workflows: campaign.workflows.map((w) => ({
@@ -286,6 +313,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     timeline,
     rewardDescription,
     shipsPhysicalProduct,
+    postAcceptanceMode,
   } = req.body as {
     notifyEmail?: string | null;
     objective?: string | null;
@@ -295,6 +323,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
     timeline?: string | null;
     rewardDescription?: string | null;
     shipsPhysicalProduct?: boolean;
+    postAcceptanceMode?: string;
   };
 
   const patch: Parameters<typeof updateCampaign>[1] = {};
@@ -329,6 +358,17 @@ router.patch("/:id", async (req: Request, res: Response) => {
   if (shipsPhysicalProduct !== undefined) {
     patch.shipsPhysicalProduct = shipsPhysicalProduct === true;
   }
+  if (postAcceptanceMode !== undefined) {
+    if (!isPostAcceptanceMode(postAcceptanceMode)) {
+      res.status(400).json({
+        error: `postAcceptanceMode must be one of: ${POST_ACCEPTANCE_MODES.join(", ")}`,
+      });
+      return;
+    }
+    // Changing this affects the default for FUTURE enrollments only. Executions
+    // already running carry their own stamped mode and are untouched.
+    patch.postAcceptanceMode = postAcceptanceMode;
+  }
 
   try {
     const existing = await findCampaignById(req.params["id"]!);
@@ -349,6 +389,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
       timeline: campaign.timeline,
       rewardDescription: campaign.rewardDescription,
       shipsPhysicalProduct: campaign.shipsPhysicalProduct,
+      postAcceptanceMode: campaign.postAcceptanceMode,
       updatedAt: campaign.updatedAt.toISOString(),
     });
   } catch (err) {

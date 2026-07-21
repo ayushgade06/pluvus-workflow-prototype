@@ -190,10 +190,20 @@ export interface CampaignDetail {
 // Workflow
 // ---------------------------------------------------------------------------
 
+/**
+ * PLU-70: what happens after a creator accepts.
+ *   local_payment    — collect payout details and send the brief automatically
+ *   operator_handoff — pause after the agreement; a human finalizes it in Pluvus
+ * Every existing campaign and execution is local_payment.
+ */
+export type PostAcceptanceMode = "local_payment" | "operator_handoff";
+
 export interface WorkflowCampaign {
   id: string;
   name: string;
   brand: string;
+  /** The campaign default the enroll tab pre-selects (and lets you override). */
+  postAcceptanceMode: PostAcceptanceMode;
 }
 
 export interface WorkflowLatestVersion {
@@ -400,6 +410,8 @@ export interface EnrollResponse {
   enrolled: number;
   skipped: number;
   versionId: string;
+  /** The mode actually stamped onto these executions (override or campaign default). */
+  postAcceptanceMode: PostAcceptanceMode;
 }
 
 export interface LaunchResponse {
@@ -439,8 +451,27 @@ export interface ManualQueueNotification {
   sentAt: string;
 }
 
+/** PLU-70: the agreement half of a queue row. Present only when kind==="handoff". */
+export interface ManualQueueHandoff {
+  campaignName: string | null;
+  /** Preformatted by the server, e.g. "$750 fixed fee + 30% commission". */
+  agreedCompensation: string;
+  acceptedAt: string;
+  status: "AWAITING_FINALIZATION" | "COMPLETED";
+  completedAt: string | null;
+  deliverables: string | null;
+  timeline: string | null;
+  paymentTerms: string | null;
+}
+
 export interface ManualQueueItem {
   instanceId: string;
+  /**
+   * Which kind of "a human must act" this row is: an AI escalation, or a closed
+   * deal awaiting operator onboarding. They share one queue because they share
+   * one question — who picks this up?
+   */
+  kind: "escalation" | "handoff";
   creatorId: string;
   creatorName: string;
   creatorEmail: string;
@@ -462,6 +493,7 @@ export interface ManualQueueItem {
   /** Convenience count of submittedUrls (0 for non-content-links escalations). */
   linkCount: number;
   notification: ManualQueueNotification | null;
+  handoff: ManualQueueHandoff | null;
 }
 
 export interface ManualQueueResponse {
@@ -471,6 +503,13 @@ export interface ManualQueueResponse {
   items: ManualQueueItem[];
   total: number;
   generatedAt: string;
+}
+
+export interface CompleteHandoffResult {
+  instanceId: string;
+  state: string;
+  completedAt: string;
+  completedBy: string | null;
 }
 
 export interface NotifyResult {

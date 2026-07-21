@@ -1,16 +1,23 @@
 // ---------------------------------------------------------------------------
 // Manual Queue routes (Phase 11)
 // ---------------------------------------------------------------------------
-// Read + light-action surface for creators that have been escalated to
-// MANUAL_REVIEW. Powers the "Manual Queue" tab in the builder:
+// Read + light-action surface for creators that need a human. Powers the
+// "Manual Queue" tab in the builder:
 //
-//   GET  /manual-queue/workflows/:workflowId   escalated creators + reason +
-//                                               brand-notification status
-//   POST /manual-queue/instances/:id/notify     (re)send the brand notice for one
+//   GET  /manual-queue/workflows/:workflowId    queue items + notification status
+//   POST /manual-queue/instances/:id/notify     (re)send the notice for one
+//   POST /manual-queue/instances/:id/handoff/complete   mark a deal onboarded
 //
-// The escalation reason + timestamp are reconstructed from the event log
-// (MANUAL_REVIEW_FLAGGED / NEGOTIATION_TURN ESCALATE / STATE_TRANSITION). The
-// brand-notification status is joined from the BrandNotification table.
+// Two KINDS of item share this queue (PLU-70), discriminated by `kind`:
+//   - "escalation" (MANUAL_REVIEW) — the AI could not safely proceed. The reason
+//     + timestamp are reconstructed from the event log (MANUAL_REVIEW_FLAGGED /
+//     NEGOTIATION_TURN ESCALATE / STATE_TRANSITION).
+//   - "handoff" (NEEDS_DEAL_FINALIZATION) — the AI closed a deal on an
+//     operator_handoff campaign and a human finalizes it in main Pluvus. The
+//     agreed terms are joined from DealHandoff.
+// They share one surface because they share one question: who picks this up?
+//
+// The notification status is joined from the BrandNotification table for both.
 
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -28,9 +35,19 @@ import {
   findInstanceById,
   listEventsByInstance,
   listLatestBrandNotificationsForInstances,
+  listDealHandoffsForInstances,
+  completeDealHandoff,
+  updateInstanceStateConditional,
+  appendEvent,
 } from "../db/index.js";
 import { emailProvider } from "../engine/providerFactory.js";
-import { notifyBrandOfEscalation, resolveBrandRecipient } from "../notifications/escalation.js";
+import {
+  notifyBrandOfEscalation,
+  notifyOperatorOfDealFinalization,
+  resolveBrandRecipient,
+} from "../notifications/escalation.js";
+import { formatAgreedCompensation } from "../engine/dealTerms.js";
+import { assertTransition, InvalidTransitionError } from "../engine/stateMachine.js";
 
 const router = Router();
 
@@ -65,6 +82,8 @@ const REASON_LABELS: Record<string, string> = {
   usage_rights_or_licensing: "Usage rights / exclusivity / licensing ask",
   // Content submission: the creator replied with the link(s) to their content.
   content_links_submitted: "Creator submitted content links",
+  // PLU-70. Not a failure: the AI closed a deal and a human finishes it.
+  needs_deal_finalization: "Agreement reached — ready for operator onboarding",
 };
 
 function reasonLabel(reason: string): string {
@@ -158,7 +177,15 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
       .where(
         and(
           eq(executionInstances.workflowVersionId, latestVersion.id),
-          eq(executionInstances.currentState, "MANUAL_REVIEW"),
+          // PLU-70: the queue now holds two KINDS of item — AI escalations
+          // (MANUAL_REVIEW) and closed deals awaiting operator onboarding
+          // (NEEDS_DEAL_FINALIZATION). Both are "a human must act", which is
+          // exactly what this surface is for, so they share one list rather than
+          // spawning a second deal-management screen.
+          inArray(executionInstances.currentState, [
+            "MANUAL_REVIEW",
+            "NEEDS_DEAL_FINALIZATION",
+          ]),
         ),
       )
       .orderBy(desc(executionInstances.updatedAt));
@@ -197,6 +224,7 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
     }
 
     const notifications = await listLatestBrandNotificationsForInstances(ids);
+    const handoffs = await listDealHandoffsForInstances(ids);
 
     // E6: resolve each escalated instance's thread id in ONE bulk read so the row
     // can carry a deep-link to the thread that holds the whole conversation. All
@@ -242,6 +270,8 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
 
     const items = instRows.map(({ instance: inst, creator }) => {
       const instEvents = eventsByInstance.get(inst.id) ?? [];
+      const isHandoff = inst.currentState === "NEEDS_DEAL_FINALIZATION";
+      const handoff = handoffs.get(inst.id) ?? null;
       const { reason, escalatedAt } = deriveEscalation(instEvents);
       const notification = notifications.get(inst.id) ?? null;
       const threadId = threadIdByInstance.get(inst.id) ?? null;
@@ -252,6 +282,10 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
       const submittedUrls = deriveSubmittedUrls(instEvents);
       return {
         instanceId: inst.id,
+        // Discriminator the UI switches on: a handoff row shows the agreed
+        // compensation and a "mark completed" action; an escalation row keeps
+        // the existing reason + notify-brand affordances.
+        kind: isHandoff ? ("handoff" as const) : ("escalation" as const),
         creatorId: inst.creatorId,
         creatorName: creator.name,
         creatorEmail: creator.email,
@@ -259,8 +293,8 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
         platform: creator.platform,
         niche: creator.niche,
         negotiationRound: inst.negotiationRound,
-        reason,
-        reasonLabel: reasonLabel(reason),
+        reason: isHandoff ? "needs_deal_finalization" : reason,
+        reasonLabel: reasonLabel(isHandoff ? "needs_deal_finalization" : reason),
         escalatedAt,
         updatedAt: inst.updatedAt.toISOString(),
         // E6: the thread deep-link (null when unavailable — the UI omits it).
@@ -268,6 +302,25 @@ router.get("/workflows/:workflowId", async (req: Request, res: Response) => {
         // Content-links: the submitted URLs + count (empty/0 for other reasons).
         submittedUrls,
         linkCount: submittedUrls.length,
+        // Handoff-only fields. The row stays compact deliberately — creator,
+        // campaign, compensation, accepted date, status and nothing more. The
+        // structured agreement and the thread live in the existing inspector.
+        handoff:
+          isHandoff && handoff
+            ? {
+                campaignName: handoff.campaignName,
+                agreedCompensation: formatAgreedCompensation(
+                  handoff.fixedFee,
+                  handoff.commissionRate,
+                ),
+                acceptedAt: handoff.acceptedAt.toISOString(),
+                status: handoff.status,
+                completedAt: handoff.completedAt?.toISOString() ?? null,
+                deliverables: handoff.deliverables,
+                timeline: handoff.timeline,
+                paymentTerms: handoff.paymentTerms,
+              }
+            : null,
         notification: notification
           ? {
               status: notification.status,
@@ -311,7 +364,13 @@ router.post("/instances/:instanceId/notify", async (req: Request, res: Response)
       res.status(404).json({ error: "instance not found" });
       return;
     }
-    if (inst.currentState !== "MANUAL_REVIEW") {
+    // PLU-70: both queue kinds can be re-notified — an operator whose
+    // deal-finalization email bounced needs the same re-send affordance an
+    // escalation already has.
+    if (
+      inst.currentState !== "MANUAL_REVIEW" &&
+      inst.currentState !== "NEEDS_DEAL_FINALIZATION"
+    ) {
       res.status(409).json({
         error: `instance is not in the manual queue (state: ${inst.currentState})`,
       });
@@ -319,16 +378,110 @@ router.post("/instances/:instanceId/notify", async (req: Request, res: Response)
     }
 
     const events = await listEventsByInstance(instanceId);
-    const { reason } = deriveEscalation(events);
+    const { reason } =
+      inst.currentState === "NEEDS_DEAL_FINALIZATION"
+        ? { reason: "needs_deal_finalization" }
+        : deriveEscalation(events);
 
     // Force a fresh notification distinct from the automatic one so operators can
     // always re-send (e.g. after fixing the brand email or a provider outage).
     const manualReason = `${reason}-manual-${events.length}`;
-    const result = await notifyBrandOfEscalation(emailProvider(), instanceId, manualReason);
+    const result =
+      inst.currentState === "NEEDS_DEAL_FINALIZATION"
+        ? await notifyOperatorOfDealFinalization(emailProvider(), instanceId, undefined, manualReason)
+        : await notifyBrandOfEscalation(emailProvider(), instanceId, manualReason);
 
     res.json({ instanceId, reason, ...result });
   } catch (err) {
     console.error("[manual-queue] notify error:", err);
+    res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /manual-queue/instances/:instanceId/handoff/complete  (PLU-70)
+// ---------------------------------------------------------------------------
+// The single, minimal operator action: "I finalized this deal and onboarded the
+// creator in Pluvus." Deliberately NOT an onboarding state machine — one button,
+// one terminal transition.
+//
+// Driven from a route rather than runtime.stepInstance because there is no node
+// to dispatch: NEEDS_DEAL_FINALIZATION is owned by a human, not by the graph.
+// This mirrors how the notify action above already works. The write still goes
+// through the same OCC helper the engine uses, so a double-click cannot
+// double-transition.
+
+router.post("/instances/:instanceId/handoff/complete", async (req: Request, res: Response) => {
+  try {
+    const instanceId = req.params["instanceId"]!;
+    const { completedBy } = req.body as { completedBy?: unknown };
+
+    const inst = await findInstanceById(instanceId);
+    if (!inst) {
+      res.status(404).json({ error: "instance not found" });
+      return;
+    }
+    if (inst.currentState !== "NEEDS_DEAL_FINALIZATION") {
+      res.status(409).json({
+        error: `instance is not awaiting deal finalization (state: ${inst.currentState})`,
+      });
+      return;
+    }
+
+    // Validate against the same transition table the engine uses, so this route
+    // can never introduce an edge the state machine doesn't sanction.
+    assertTransition("NEEDS_DEAL_FINALIZATION", "HANDOFF_COMPLETE");
+
+    const now = new Date();
+
+    // Record the operator action first. Idempotent: a second call leaves the
+    // original completedAt/completedBy intact.
+    const handoff = await completeDealHandoff(instanceId, {
+      completedBy: typeof completedBy === "string" && completedBy.trim() ? completedBy.trim() : null,
+      completedAt: now,
+    });
+
+    // Then close the execution. OCC-guarded on the expected state: if another
+    // request won the race, this updates 0 rows and we report the conflict
+    // rather than claiming a transition that didn't happen.
+    const updated = await updateInstanceStateConditional(
+      instanceId,
+      "NEEDS_DEAL_FINALIZATION",
+      { currentState: "HANDOFF_COMPLETE", currentNodeId: null, completedAt: now },
+    );
+    if (!updated) {
+      res.status(409).json({ error: "instance was concurrently modified — reload and retry" });
+      return;
+    }
+
+    await appendEvent({
+      instanceId,
+      type: "DEAL_HANDOFF_COMPLETED",
+      payload: {
+        completedBy: handoff?.completedBy ?? null,
+        completedAt: now.toISOString(),
+      },
+      occurredAt: now,
+    });
+    await appendEvent({
+      instanceId,
+      type: "STATE_TRANSITION",
+      payload: { from: "NEEDS_DEAL_FINALIZATION", to: "HANDOFF_COMPLETE", source: "operator" },
+      occurredAt: now,
+    });
+
+    res.json({
+      instanceId,
+      state: updated.currentState,
+      completedAt: now.toISOString(),
+      completedBy: handoff?.completedBy ?? null,
+    });
+  } catch (err) {
+    if (err instanceof InvalidTransitionError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    console.error("[manual-queue] handoff complete error:", err);
     res.status(500).json({ error: "internal server error" });
   }
 });
