@@ -1,20 +1,37 @@
 import { useState, useMemo, useRef } from "react";
 import {
   useCreators,
+  addCreator,
+  commitImport,
+  deleteCreators,
+  deleteImportBatch,
+  updateImportBatch,
+  uploadImport,
+  useImportBatchDetail,
+  useImportBatches,
   enrollCreators,
-  importCreators,
   useWorkflowExecution,
   useBuilderInvalidator,
 } from "../../api/builderClient";
-import { parseCsv } from "../../lib/parseCsv";
 import { colors, radii, font } from "../../theme";
-import { Button, Input, StatTile, EmptyState, SkeletonRows } from "../ds";
+import { Button, ConfirmDialog, Input, Modal, StatTile, EmptyState, SkeletonRows } from "../ds";
 import { useToast } from "../ds";
+import { ImportBatchPicker, type SelectScope } from "./ImportBatchPicker";
+import { ImportPreviewPanel } from "./ImportPreviewPanel";
+import {
+  CreatorTableHeader,
+  CreatorTableRow,
+  CREATOR_MIN_WIDTH,
+  type CreatorRowData,
+  type SortDir,
+  type SortKey,
+} from "./CreatorTable";
 import type {
   EnrollResponse,
   WorkflowDetail,
-  CreatorItem,
-  CreatorImportResponse,
+  CreatorDeleteBlock,
+  ImportBatch,
+  ImportDraftResponse,
 } from "../../api/builderTypes";
 
 interface Props {
@@ -22,16 +39,45 @@ interface Props {
   onEnrolled: () => void;
 }
 
+/**
+ * What a destructive confirm is currently asking about. Null = no dialog.
+ * Modelled as a discriminated union so the dialog copy can be exact about what
+ * will happen rather than generically scary.
+ */
+type PendingDelete =
+  | { kind: "creators"; ids: string[]; label: string }
+  | { kind: "list"; batch: ImportBatch };
+
 export function EnrollTab({ workflow, onEnrolled }: Props) {
   const { data: creators, isLoading } = useCreators();
   const { data: execution } = useWorkflowExecution(workflow.id);
-  const { invalidateCreators } = useBuilderInvalidator(workflow.id);
+  const { data: batches } = useImportBatches();
+  const {
+    invalidateCreators,
+    invalidateImportBatches,
+    invalidateImportBatch,
+    invalidateExecution,
+  } = useBuilderInvalidator(workflow.id);
+
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const { data: batchDetail, isLoading: batchLoading } = useImportBatchDetail(activeBatchId);
+
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("followers");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [blocked, setBlocked] = useState<CreatorDeleteBlock[]>([]);
+  // Rename uses a real dialog rather than window.prompt: prompt() is blocked in
+  // sandboxed iframes (the Replit preview pane is one), so it would silently do
+  // nothing there.
+  const [renaming, setRenaming] = useState<{ batch: ImportBatch; value: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<EnrollResponse | null>(null);
-  const [importResult, setImportResult] = useState<CreatorImportResponse | null>(null);
+  const [draft, setDraft] = useState<ImportDraftResponse | null>(null);
   const [importing, setImporting] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addForm, setAddForm] = useState({ email: "", name: "", handle: "", platform: "" });
@@ -40,33 +86,26 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
 
   const hasVersion = !!workflow.latestVersion;
 
+  const enrolledIds = useMemo(
+    () => new Set(execution?.enrolledCreatorIds ?? []),
+    [execution?.enrolledCreatorIds],
+  );
+
+  const activeBatch = useMemo(
+    () => (batches ?? []).find((b) => b.id === activeBatchId) ?? null,
+    [batches, activeBatchId],
+  );
+
+  // --- upload (phase 1: parse + preview, writes nothing) --------------------
+
   async function handleFile(file: File) {
     setImporting(true);
-    setImportResult(null);
+    setDraft(null);
     setResult(null);
     try {
-      const text = await file.text();
-      const { rows, missingEmailColumn } = parseCsv(text);
-      if (rows.length === 0) {
-        toast.error("That CSV has no data rows.");
-        return;
-      }
-      if (missingEmailColumn) {
-        toast.error('CSV needs an "email" column.');
-        return;
-      }
-      const res = await importCreators(rows);
-      setImportResult(res);
-      // Refetch the roster so the new creators appear, then pre-select them.
-      await invalidateCreators();
-      setSelected((prev) => {
-        const next = new Set(prev);
-        for (const c of res.creators) next.add(c.id);
-        return next;
-      });
-      const parts = [`${res.created} new`, `${res.updated} updated`];
-      if (res.skipped > 0) parts.push(`${res.skipped} skipped`);
-      toast.success(`Imported ${res.creators.length} creator${res.creators.length !== 1 ? "s" : ""} · ${parts.join(", ")}.`);
+      const res = await uploadImport(file);
+      setDraft(res);
+      await invalidateImportBatches();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "CSV import failed");
     } finally {
@@ -76,38 +115,57 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     }
   }
 
-  // Single-creator add — same import endpoint as the CSV path, one row.
+  // --- commit (phase 2: the roster actually changes) ------------------------
+
+  async function handleCommit() {
+    if (!draft) return;
+    setCommitting(true);
+    try {
+      const res = await commitImport(draft.batch.id);
+      await Promise.all([invalidateCreators(), invalidateImportBatches()]);
+      // Scope the view to what was just imported and preselect the new ones —
+      // the common next action is "enroll the people I just added".
+      setActiveBatchId(res.batch.id);
+      setDraft(null);
+      const parts = [`${res.created} new`, `${res.updated} updated`];
+      if (res.batch.skippedCount > 0) parts.push(`${res.batch.skippedCount} skipped`);
+      toast.success(`Imported ${res.creators.length} creator(s) · ${parts.join(", ")}.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  async function handleDiscard() {
+    if (!draft) return;
+    const id = draft.batch.id;
+    setDraft(null);
+    try {
+      await deleteImportBatch(id);
+      await invalidateImportBatches();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not discard the draft");
+    }
+  }
+
+  // --- single-creator add ---------------------------------------------------
+
   async function handleAdd() {
     const email = addForm.email.trim();
     if (!email) return;
     setAdding(true);
-    setImportResult(null);
     setResult(null);
     try {
-      const res = await importCreators([
-        {
-          email,
-          ...(addForm.name.trim() ? { name: addForm.name.trim() } : {}),
-          ...(addForm.handle.trim() ? { handle: addForm.handle.trim() } : {}),
-          ...(addForm.platform.trim() ? { platform: addForm.platform.trim() } : {}),
-        },
-      ]);
-      if (res.errors.length > 0) {
-        toast.error(`Could not add creator: ${res.errors[0]!.reason}`);
-        return;
-      }
-      await invalidateCreators();
-      setSelected((prev) => {
-        const next = new Set(prev);
-        for (const c of res.creators) next.add(c.id);
-        return next;
+      const res = await addCreator({
+        email,
+        ...(addForm.name.trim() ? { name: addForm.name.trim() } : {}),
+        ...(addForm.handle.trim() ? { handle: addForm.handle.trim() } : {}),
+        ...(addForm.platform.trim() ? { platform: addForm.platform.trim() } : {}),
       });
-      const added = res.creators[0];
-      toast.success(
-        res.updated > 0
-          ? `Updated existing creator ${added?.email ?? email} — pre-selected below.`
-          : `Added ${added?.name ?? email} — pre-selected below.`,
-      );
+      await invalidateCreators();
+      setSelected((prev) => new Set(prev).add(res.creator.id));
+      toast.success(`Added ${res.creator.name} — pre-selected below.`);
       setAddForm({ email: "", name: "", handle: "", platform: "" });
       setShowAdd(false);
     } catch (err) {
@@ -117,27 +175,97 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     }
   }
 
+  // --- the visible rows -----------------------------------------------------
+  // Either the whole roster, or one import batch's members. Batch mode is what
+  // keeps yesterday's list separate from today's.
+
+  const rows = useMemo<CreatorRowData[]>(() => {
+    if (activeBatchId) {
+      return (batchDetail?.members ?? [])
+        .filter((m) => m.creator !== null)
+        .map((m) => ({
+          creator: m.creator!,
+          isNewFromBatch: m.outcome === "CREATED",
+          alsoInBatches: m.alsoInBatches,
+          isEnrolled: enrolledIds.has(m.creator!.id),
+        }));
+    }
+    return (creators ?? []).map((c) => ({
+      creator: c,
+      isNewFromBatch: false,
+      alsoInBatches: [],
+      isEnrolled: enrolledIds.has(c.id),
+    }));
+  }, [activeBatchId, batchDetail, creators, enrolledIds]);
+
   const filtered = useMemo(() => {
-    if (!creators) return [];
-    const q = filter.toLowerCase();
-    if (!q) return creators;
-    return creators.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q) ||
-        (c.handle ?? "").toLowerCase().includes(q) ||
-        (c.platform ?? "").toLowerCase().includes(q) ||
-        (c.niche ?? "").toLowerCase().includes(q),
-    );
-  }, [creators, filter]);
+    const q = filter.trim().toLowerCase();
+    const matched = q
+      ? rows.filter(({ creator: c }) =>
+          [c.name, c.email, c.handle, c.platform, c.niche, c.location]
+            .some((v) => (v ?? "").toLowerCase().includes(q)),
+        )
+      : rows;
 
-  const enrolledCount = execution?.totalInstances ?? 0;
-  const allSelected = selected.size === filtered.length && filtered.length > 0;
+    // Sort a copy — `rows` is memoized upstream.
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...matched].sort((a, b) => {
+      if (sortKey === "name") return a.creator.name.localeCompare(b.creator.name) * dir;
+      const key = sortKey === "followers" ? "followerCount" : "engagementRate";
+      const av = a.creator[key];
+      const bv = b.creator[key];
+      // NULL means UNKNOWN. Unknowns sort last in BOTH directions — flipping the
+      // sort should not promote "we don't know" to the top of the list.
+      if (av === null && bv === null) return a.creator.name.localeCompare(b.creator.name);
+      if (av === null) return 1;
+      if (bv === null) return -1;
+      return (av - bv) * dir;
+    });
+  }, [rows, filter, sortKey, sortDir]);
 
-  function toggleAll() {
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(filtered.map((c) => c.id)));
+  /** Click a column: same column flips direction, new column starts sensibly. */
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Names read naturally A→Z; audience numbers read naturally biggest-first.
+      setSortDir(key === "name" ? "asc" : "desc");
+    }
   }
+
+  // --- selection scopes -----------------------------------------------------
+  // Each is a predicate over `filtered`. This is the whole answer to "how do we
+  // only select the new ones".
+
+  function selectAll(list: CreatorRowData[]) {
+    setSelected(new Set(list.map((r) => r.creator.id)));
+  }
+
+  const newRows = filtered.filter((r) => r.isNewFromBatch);
+  const unenrolledRows = filtered.filter((r) => !r.isEnrolled);
+
+  const scopes: SelectScope[] = [
+    {
+      key: "all",
+      label: activeBatchId ? "Select all in this list" : "Select all matching",
+      count: filtered.length,
+      apply: filtered.length > 0 ? () => selectAll(filtered) : null,
+    },
+    {
+      key: "new",
+      label: "Select only the new ones",
+      count: newRows.length,
+      // Only meaningful in batch mode: "new" is defined relative to an import.
+      apply: activeBatchId && newRows.length > 0 ? () => selectAll(newRows) : null,
+    },
+    {
+      key: "unenrolled",
+      label: "Select those not yet enrolled here",
+      count: unenrolledRows.length,
+      apply: unenrolledRows.length > 0 ? () => selectAll(unenrolledRows) : null,
+    },
+  ];
 
   function toggleOne(id: string) {
     const next = new Set(selected);
@@ -146,15 +274,90 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     setSelected(next);
   }
 
+  // --- deletion -------------------------------------------------------------
+  // Both paths funnel through one confirm dialog so nothing destructive happens
+  // without the operator reading what it will do.
+
+  async function runDelete() {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    try {
+      if (pendingDelete.kind === "creators") {
+        const res = await deleteCreators(pendingDelete.ids);
+        // Anyone enrolled or partnered is KEPT — surface that rather than
+        // letting the count quietly come up short.
+        setBlocked(res.blocked);
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of res.deleted) next.delete(id);
+          return next;
+        });
+        await Promise.all([invalidateCreators(), invalidateImportBatches()]);
+        if (activeBatchId) await invalidateImportBatch(activeBatchId);
+        if (res.deletedCount > 0) {
+          toast.success(
+            `Removed ${res.deletedCount} creator${res.deletedCount !== 1 ? "s" : ""}` +
+              (res.blockedCount > 0 ? ` · ${res.blockedCount} kept` : "."),
+          );
+        } else {
+          toast.error(`Nothing removed — ${res.blockedCount} kept, see the note above.`);
+        }
+      } else {
+        const res = await deleteImportBatch(pendingDelete.batch.id);
+        setActiveBatchId(null);
+        setSelected(new Set());
+        await Promise.all([invalidateImportBatches(), invalidateCreators()]);
+        toast.success(
+          `Deleted “${res.deletedBatch.label}” (${res.memberCount} row${res.memberCount !== 1 ? "s" : ""}). Its creators stay in your roster.`,
+        );
+      }
+      setPendingDelete(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function submitRename() {
+    if (!renaming) return;
+    const label = renaming.value.trim();
+    if (!label || label === renaming.batch.label) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      await updateImportBatch(renaming.batch.id, { label });
+      await invalidateImportBatches();
+      toast.success(`Renamed to “${label}”.`);
+      setRenaming(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Rename failed");
+    }
+  }
+
+  async function handleArchiveList() {
+    if (!activeBatch) return;
+    try {
+      await updateImportBatch(activeBatch.id, { archived: true });
+      setActiveBatchId(null);
+      setSelected(new Set());
+      await invalidateImportBatches();
+      toast.success(`Archived “${activeBatch.label}” — its creators stay in your roster.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Archive failed");
+    }
+  }
+
   async function handleEnroll() {
     if (selected.size === 0) return;
     setSubmitting(true);
     setResult(null);
     try {
-      // Identical payload: array of selected creator ids.
       const r = await enrollCreators(workflow.id, [...selected]);
       setResult(r);
       setSelected(new Set());
+      await invalidateExecution();
       toast.success(
         `Enrolled ${r.enrolled} creator${r.enrolled !== 1 ? "s" : ""}${r.skipped > 0 ? ` · ${r.skipped} skipped` : ""}.`,
       );
@@ -176,6 +379,8 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     );
   }
 
+  const listLoading = activeBatchId ? batchLoading : isLoading;
+
   return (
     <div
       className="ds-fade-in"
@@ -193,9 +398,17 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     >
       {/* Summary tiles */}
       <div style={{ display: "flex", gap: 14, flexShrink: 0 }}>
-        <StatTile label="Already Enrolled" value={enrolledCount} color={enrolledCount > 0 ? colors.accent : undefined} />
-        <StatTile label="Selected" value={selected.size} color={selected.size > 0 ? colors.success : undefined} />
-        <StatTile label="Total Creators" value={creators?.length ?? 0} />
+        <StatTile
+          label="Already Enrolled"
+          value={execution?.totalInstances ?? 0}
+          color={(execution?.totalInstances ?? 0) > 0 ? colors.accent : undefined}
+        />
+        <StatTile
+          label="Selected"
+          value={selected.size}
+          color={selected.size > 0 ? colors.success : undefined}
+        />
+        <StatTile label={activeBatchId ? "In This List" : "Total Creators"} value={rows.length} />
       </div>
 
       {result && (
@@ -205,45 +418,49 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         </Banner>
       )}
 
-      {importResult && (
-        <Banner color={importResult.errors.length > 0 ? colors.warning : colors.success}>
-          <div>
-            ✓ Imported {importResult.created + importResult.updated} creator
-            {importResult.created + importResult.updated !== 1 ? "s" : ""}
-            {" "}({importResult.created} new · {importResult.updated} updated
-            {importResult.skipped > 0 ? ` · ${importResult.skipped} skipped` : ""}) — pre-selected below.
-          </div>
-          {importResult.errors.length > 0 && (
-            <details style={{ marginTop: 6 }}>
-              <summary style={{ cursor: "pointer" }}>
-                {importResult.errors.length} row{importResult.errors.length !== 1 ? "s" : ""} skipped
-              </summary>
-              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                {importResult.errors.slice(0, 20).map((e) => (
-                  <li key={e.row}>Row {e.row}: {e.reason}</li>
-                ))}
-                {importResult.errors.length > 20 && (
-                  <li>…and {importResult.errors.length - 20} more</li>
-                )}
-              </ul>
-            </details>
-          )}
-        </Banner>
+      {draft && (
+        <ImportPreviewPanel
+          draft={draft}
+          committing={committing}
+          onCommit={() => void handleCommit()}
+          onDiscard={() => void handleDiscard()}
+        />
       )}
 
-      {/* Search + import + select all */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
+      {/* Source list + search + sort + import + select */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
+        <ImportBatchPicker
+          batches={batches ?? []}
+          activeBatchId={activeBatchId}
+          onChangeBatch={(id) => {
+            setActiveBatchId(id);
+            // Selection is scoped to what you can see; carrying it across lists
+            // would silently enroll people who scrolled out of view.
+            setSelected(new Set());
+          }}
+          scopes={scopes}
+          onClear={() => setSelected(new Set())}
+          clearDisabled={selected.size === 0}
+          activeBatch={activeBatch}
+          onRenameList={() =>
+            activeBatch && setRenaming({ batch: activeBatch, value: activeBatch.label })
+          }
+          onArchiveList={() => void handleArchiveList()}
+          onDeleteList={() =>
+            activeBatch && setPendingDelete({ kind: "list", batch: activeBatch })
+          }
+        />
         <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Search creators by name, email, handle, platform…"
+          placeholder="Search name, email, handle, platform, location…"
           aria-label="Search creators"
-          style={{ flex: 1 }}
+          style={{ flex: 1, minWidth: 200 }}
         />
         <input
           ref={fileInputRef}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain"
           style={{ display: "none" }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -256,12 +473,9 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         <Button
           variant="secondary"
           onClick={() => fileInputRef.current?.click()}
-          disabled={importing}
+          disabled={importing || !!draft}
         >
-          {importing ? "Importing…" : "Upload CSV"}
-        </Button>
-        <Button variant="secondary" onClick={toggleAll} disabled={filtered.length === 0}>
-          {allSelected ? "Deselect all" : "Select all"}
+          {importing ? "Reading…" : "Upload CSV"}
         </Button>
       </div>
 
@@ -326,7 +540,44 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         </form>
       )}
 
-      {/* Creator list */}
+      {/* Creators kept back by a delete, with the reason. */}
+      {blocked.length > 0 && (
+        <Banner color={colors.warning}>
+          <div>
+            {blocked.length} creator{blocked.length !== 1 ? "s were" : " was"} kept — removing
+            them would destroy execution or payout history.
+          </div>
+          <details style={{ marginTop: 6 }}>
+            <summary style={{ cursor: "pointer" }}>Show which</summary>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+              {blocked.map((b) => (
+                <li key={b.id}>
+                  {b.name} ({b.email}) — {b.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
+          <button
+            onClick={() => setBlocked([])}
+            style={{
+              marginTop: 8,
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              color: colors.textDim,
+              fontSize: font.size.sm,
+              cursor: "pointer",
+              textDecoration: "underline",
+            }}
+          >
+            Dismiss
+          </button>
+        </Banner>
+      )}
+
+      {/* Creator table. The container scrolls in BOTH axes: vertically through
+          rows, horizontally when the viewport is narrower than the columns
+          need — better than letting the columns crush and lose alignment. */}
       <div
         style={{
           flex: 1,
@@ -338,21 +589,54 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
           minHeight: 0,
         }}
       >
-        {isLoading ? (
+        {listLoading ? (
           <div style={{ padding: 16 }}>
-            <SkeletonRows count={6} height={48} />
+            <SkeletonRows count={6} height={44} />
           </div>
         ) : filtered.length === 0 ? (
           <EmptyState
             compact
             icon="🔍"
-            title={filter ? "No matching creators" : "No creators available"}
-            description={filter ? `Nothing matches “${filter}”.` : "Add creators to your roster first."}
+            title={filter ? "No matching creators" : "No creators here"}
+            description={
+              filter
+                ? `Nothing matches “${filter}”.`
+                : activeBatchId
+                ? "This import list has no creators."
+                : "Upload a CSV or add a creator to get started."
+            }
           />
         ) : (
-          filtered.map((c) => (
-            <CreatorRow key={c.id} creator={c} selected={selected.has(c.id)} onToggle={() => toggleOne(c.id)} />
-          ))
+          <div style={{ minWidth: CREATOR_MIN_WIDTH }}>
+            <CreatorTableHeader
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              allSelected={filtered.length > 0 && filtered.every((r) => selected.has(r.creator.id))}
+              someSelected={filtered.some((r) => selected.has(r.creator.id))}
+              onToggleAll={() =>
+                filtered.every((r) => selected.has(r.creator.id))
+                  ? setSelected(new Set())
+                  : selectAll(filtered)
+              }
+            />
+            {filtered.map((row) => (
+              <CreatorTableRow
+                key={row.creator.id}
+                row={row}
+                selected={selected.has(row.creator.id)}
+                onToggle={() => toggleOne(row.creator.id)}
+                onDelete={() =>
+                  setPendingDelete({
+                    kind: "creators",
+                    ids: [row.creator.id],
+                    label: row.creator.name,
+                  })
+                }
+                showBatchStatus={!!activeBatchId}
+              />
+            ))}
+          </div>
         )}
       </div>
 
@@ -371,6 +655,21 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             ? "Select creators above to enroll them into this workflow."
             : `${selected.size} creator${selected.size !== 1 ? "s" : ""} selected`}
         </span>
+        {selected.size > 0 && (
+          <Button
+            variant="secondary"
+            onClick={() =>
+              setPendingDelete({
+                kind: "creators",
+                ids: [...selected],
+                label: `${selected.size} creator${selected.size !== 1 ? "s" : ""}`,
+              })
+            }
+            style={{ height: 40, color: colors.danger, borderColor: `${colors.danger}55` }}
+          >
+            Remove {selected.size}
+          </Button>
+        )}
         <Button
           variant="primary"
           disabled={selected.size === 0 || submitting}
@@ -384,123 +683,87 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             : `Enroll ${selected.size} creator${selected.size !== 1 ? "s" : ""}`}
         </Button>
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          destructive
+          busy={deleting}
+          title={
+            pendingDelete.kind === "creators"
+              ? `Remove ${pendingDelete.label}?`
+              : `Delete “${pendingDelete.batch.label}”?`
+          }
+          confirmLabel={pendingDelete.kind === "creators" ? "Remove" : "Delete list"}
+          message={
+            pendingDelete.kind === "creators" ? (
+              <>
+                This permanently removes them from your roster.
+                <br />
+                <br />
+                Anyone enrolled in a workflow or holding a partnership will be{" "}
+                <strong>kept</strong> and listed afterwards — removing them would destroy
+                execution and payout history.
+              </>
+            ) : (
+              <>
+                This removes the list and its import history.
+                <br />
+                <br />
+                The{" "}
+                <strong>
+                  {pendingDelete.batch.createdCount + pendingDelete.batch.updatedCount} creator
+                  {pendingDelete.batch.createdCount + pendingDelete.batch.updatedCount !== 1
+                    ? "s"
+                    : ""}
+                </strong>{" "}
+                it added <strong>stay in your roster</strong>. To hide the list but keep it,
+                archive it instead.
+              </>
+            )
+          }
+          onConfirm={() => void runDelete()}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {renaming && (
+        <Modal
+          title="Rename list"
+          width={420}
+          onClose={() => setRenaming(null)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setRenaming(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => void submitRename()}
+                disabled={!renaming.value.trim()}
+              >
+                Rename
+              </Button>
+            </>
+          }
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitRename();
+            }}
+            style={{ padding: "18px 22px" }}
+          >
+            <Input
+              value={renaming.value}
+              onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+              aria-label="List name"
+              autoFocus
+              style={{ width: "100%" }}
+            />
+          </form>
+        </Modal>
+      )}
     </div>
-  );
-}
-
-// Deterministic avatar tint per creator (pure presentation — derived from the
-// name we already render).
-const AVATAR_COLORS = ["#6e7cf5", "#a78bfa", "#57d9a3", "#d9a03f", "#e0784a", "#8b96f8"];
-function avatarColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length]!;
-}
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "?";
-  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? "" : "";
-  return (first + last).toUpperCase();
-}
-
-function CreatorRow({
-  creator,
-  selected,
-  onToggle,
-}: {
-  creator: CreatorItem;
-  selected: boolean;
-  onToggle: () => void;
-}) {
-  const tint = avatarColor(creator.name);
-  return (
-    <label
-      className="ds-row"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: "12px 16px",
-        borderBottom: `1px solid ${colors.border}`,
-        cursor: "pointer",
-        background: selected ? `${colors.accent}0f` : "transparent",
-        boxShadow: selected ? `inset 2px 0 0 ${colors.accent}` : "none",
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={onToggle}
-        className="ds-focusable"
-        aria-label={`Select ${creator.name}`}
-        style={{ width: 16, height: 16, accentColor: colors.accent, cursor: "pointer", flexShrink: 0 }}
-      />
-      <span
-        aria-hidden
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: "50%",
-          background: `${tint}1c`,
-          border: `1px solid ${tint}33`,
-          color: tint,
-          fontSize: 11,
-          fontWeight: font.weight.semibold,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          letterSpacing: 0.3,
-        }}
-      >
-        {initials(creator.name)}
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: font.size.md, fontWeight: font.weight.medium, color: colors.text }}>
-          {creator.name}
-          {creator.handle && (
-            <span style={{ fontSize: font.size.sm, fontWeight: font.weight.regular, color: colors.textDim, marginLeft: 7 }}>
-              @{creator.handle}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: font.size.sm, color: colors.textDim, marginTop: 1 }}>{creator.email}</div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-        {creator.platform && (
-          <span
-            style={{
-              fontSize: font.size.xs,
-              fontWeight: font.weight.medium,
-              color: colors.textMuted,
-              background: colors.panelAlt,
-              border: `1px solid ${colors.border}`,
-              borderRadius: radii.pill,
-              padding: "2px 9px",
-              lineHeight: 1.5,
-            }}
-          >
-            {creator.platform}
-          </span>
-        )}
-        {creator.niche && (
-          <span
-            style={{
-              fontSize: font.size.xs,
-              fontWeight: font.weight.medium,
-              color: colors.textDim,
-              background: colors.panelAlt,
-              border: `1px solid ${colors.border}`,
-              borderRadius: radii.pill,
-              padding: "2px 9px",
-              lineHeight: 1.5,
-            }}
-          >
-            {creator.niche}
-          </span>
-        )}
-      </div>
-    </label>
   );
 }
 

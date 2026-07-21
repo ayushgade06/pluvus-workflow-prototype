@@ -14,8 +14,12 @@ import type {
   WorkflowVersion,
   WorkflowExecutionSummary,
   CreatorItem,
-  CreatorImportRow,
-  CreatorImportResponse,
+  CreatorDeleteResult,
+  ImportBatch,
+  ImportBatchDeleteResult,
+  ImportBatchDetail,
+  ImportCommitResponse,
+  ImportDraftResponse,
   DraftNode,
   PublishResponse,
   EnrollResponse,
@@ -199,10 +203,101 @@ export function useCreators() {
   });
 }
 
-/** Bulk-import creators from parsed CSV rows. Caller should invalidate the
- * ["creators"] query afterward (see useBuilderInvalidator.invalidateCreators). */
-export function importCreators(rows: CreatorImportRow[]) {
-  return postJson<CreatorImportResponse>("/api/creators/import", { rows });
+/**
+ * Remove creators from the roster.
+ *
+ * Returns per-creator outcomes: anyone enrolled in a workflow or holding a
+ * partnership is KEPT and reported in `blocked`, because deleting them would
+ * mean destroying execution history and payout records. A row-level delete
+ * sends an array of one.
+ */
+export function deleteCreators(creatorIds: string[]) {
+  return postJson<CreatorDeleteResult>("/api/creators/delete", { creatorIds });
+}
+
+/** Add one creator by hand. Upserts on email, so re-adding enriches. */
+export function addCreator(data: {
+  email: string;
+  name?: string;
+  handle?: string;
+  platform?: string;
+}) {
+  return postJson<{ creator: CreatorItem }>("/api/creators", data);
+}
+
+// ---------------------------------------------------------------------------
+// Creator import batches (PLU-109)
+// ---------------------------------------------------------------------------
+// Two-phase: uploadImport() parses and previews but writes NO creators;
+// commitImport() is what actually touches the roster.
+
+/** The source-list dropdown. Archived batches are excluded by default. */
+export function useImportBatches(includeArchived = false) {
+  return useQuery({
+    queryKey: ["import-batches", includeArchived],
+    queryFn: () =>
+      apiFetch<ImportBatch[]>(
+        `/api/creators/imports${includeArchived ? "?includeArchived=true" : ""}`,
+      ),
+  });
+}
+
+/** Members of one batch, joined to their creators. Skipped when no batch is picked. */
+export function useImportBatchDetail(batchId: string | null) {
+  return useQuery({
+    queryKey: ["import-batch", batchId],
+    queryFn: () => apiFetch<ImportBatchDetail>(`/api/creators/imports/${batchId}`),
+    enabled: !!batchId,
+  });
+}
+
+/**
+ * Upload a CSV/TSV. Returns a DRAFT batch plus a preview of what committing
+ * WOULD do — the roster is untouched until commitImport().
+ */
+export function uploadImport(file: File, label?: string): Promise<ImportDraftResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  if (label) form.append("label", label);
+  // Note: do NOT set Content-Type — the browser sets the multipart boundary.
+  return apiFetch<ImportDraftResponse>("/api/creators/imports", {
+    method: "POST",
+    body: form,
+  });
+}
+
+/** Commit a draft: upsert its creators and finalize the audit counts. */
+export function commitImport(batchId: string) {
+  return postJson<ImportCommitResponse>(`/api/creators/imports/${batchId}/commit`, {});
+}
+
+/**
+ * Delete a list: the batch, its import rows, and the stored file.
+ *
+ * Used both to discard an unconfirmed draft and to remove a committed list.
+ * It NEVER removes creators — the people a list introduced stay in the roster.
+ */
+export function deleteImportBatch(batchId: string) {
+  return apiFetch<ImportBatchDeleteResult>(`/api/creators/imports/${batchId}`, {
+    method: "DELETE",
+  });
+}
+
+/** Rename a batch, or archive it (hides from the picker; audit is retained). */
+export function updateImportBatch(
+  batchId: string,
+  patch: { label?: string; archived?: boolean },
+) {
+  return apiFetch<{ batch: ImportBatch }>(`/api/creators/imports/${batchId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** URL for re-downloading the original upload. */
+export function importFileUrl(batchId: string): string {
+  return `/api/creators/imports/${batchId}/file`;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,5 +367,9 @@ export function useBuilderInvalidator(workflowId: string | null) {
       qc.invalidateQueries({ queryKey: ["manual-queue", workflowId] }),
     invalidateCampaigns: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
     invalidateCreators: () => qc.invalidateQueries({ queryKey: ["creators"] }),
+    invalidateImportBatches: () =>
+      qc.invalidateQueries({ queryKey: ["import-batches"] }),
+    invalidateImportBatch: (batchId: string) =>
+      qc.invalidateQueries({ queryKey: ["import-batch", batchId] }),
   };
 }

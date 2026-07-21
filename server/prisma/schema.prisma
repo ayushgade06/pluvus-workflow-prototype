@@ -273,9 +273,17 @@ model WorkflowVersion {
 // Creator model
 // ---------------------------------------------------------------------------
 
-/// A mocked creator profile. In the prototype these are seeded rather than
-/// imported from a real source. In production this would come from the
-/// creator database.
+/// A creator profile. Seeded in the prototype, or bulk-imported from a CSV /
+/// creator-discovery vendor export (PLU-109).
+///
+/// Field tiers (see src/validation/creatorFields.ts):
+///   - name/platform/niche/handle are interpolated into the outreach prompt.
+///     A vendor export has no such columns, so they are DERIVED from the
+///     per-network blocks (the network with the largest audience wins).
+///   - followerCount/engagementRate are the enroll picker's sort keys — that is
+///     why they are real columns rather than JSON.
+///   - socialLinks/platformStats/signals absorb the ~50 per-network columns.
+///   - metadata keeps everything else verbatim; no column is ever dropped.
 model Creator {
   id       String  @id @default(cuid())
   name     String
@@ -285,10 +293,104 @@ model Creator {
   platform String?
   metadata Json?
 
+  /// Primary social link (derived from the largest-audience network).
+  profileUrl String?
+  /// Max audience across networks. NULL means UNKNOWN — never 0, so an unknown
+  /// creator does not sort as "zero followers".
+  followerCount Int?
+  /// Engagement % of the primary network.
+  engagementRate Float?
+  location       String?
+  language       String?
+  /// Personalization context (personal_intro, else the primary network's bio).
+  bio String?
+
+  /// { instagram: "…", tiktok: "…", patreon: "…" }
+  socialLinks Json?
+  /// Per-network metrics: { instagram: { followers, engagementPct, … }, … }
+  platformStats Json?
+  /// Campaign-qualification flags: has_brand_deals, promotes_affiliate_links, …
+  signals Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  instances ExecutionInstance[]
+  instances      ExecutionInstance[]
+  importMembers  CreatorImportBatchMember[]
+
+  @@index([followerCount], map: "Creator_followerCount_idx")
+}
+
+// ---------------------------------------------------------------------------
+// Creator import models (PLU-109)
+// ---------------------------------------------------------------------------
+
+/// One CSV upload. Immutable once committed: it is the audit record of what was
+/// imported, when, and from which file — so "yesterday's list" stays a distinct,
+/// re-selectable thing instead of dissolving into the global roster.
+///
+/// Lifecycle: DRAFT (parsed + previewed, nothing written) → COMMITTED (creators
+/// upserted) → ARCHIVED (hidden from the picker, audit retained).
+model CreatorImportBatch {
+  id             String            @id @default(cuid())
+  label          String
+  sourceFilename String
+  /// Opaque reference into the file-storage seam, not a path. Nullable so the
+  /// batch survives its file being purged.
+  fileReference String?
+  /// The delimiter actually sniffed ("\t", ",", ";") — reported in the preview.
+  delimiter String?
+  status    ImportBatchStatus @default(DRAFT)
+
+  rowCount     Int @default(0)
+  createdCount Int @default(0)
+  updatedCount Int @default(0)
+  skippedCount Int @default(0)
+
+  createdAt   DateTime  @default(now())
+  committedAt DateTime?
+  archivedAt  DateTime?
+
+  members CreatorImportBatchMember[]
+
+  @@index([status, createdAt])
+}
+
+/// One CSV row within a batch. Retains the original cells (`rawRow`) so a bad
+/// import stays diagnosable long after the source file is gone, and records why
+/// a row did not import.
+model CreatorImportBatchMember {
+  id      String @id @default(cuid())
+  batchId String
+  /// Null for SKIPPED rows, and if the creator is later deleted (SetNull) — the
+  /// audit row outlives the creator.
+  creatorId   String?
+  rowNumber   Int
+  outcome     ImportRowOutcome @default(PENDING)
+  errorReason String?
+  rawRow      Json?
+  createdAt   DateTime         @default(now())
+
+  batch   CreatorImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  creator Creator?           @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, rowNumber])
+  @@index([batchId, outcome])
+  @@index([creatorId])
+}
+
+enum ImportBatchStatus {
+  DRAFT
+  COMMITTED
+  ARCHIVED
+}
+
+enum ImportRowOutcome {
+  /// Parsed and valid, but not yet written to Creator (draft state).
+  PENDING
+  CREATED
+  UPDATED
+  SKIPPED
 }
 
 // ---------------------------------------------------------------------------

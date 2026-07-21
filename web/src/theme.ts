@@ -85,6 +85,9 @@ export const z = {
   overlay: 900,
   modal: 1000,
   toast: 1100,
+  // Portalled hover cards sit above everything: they are transient,
+  // pointer-transparent, and must not be clipped by a scrolling ancestor.
+  tooltip: 1200,
 } as const;
 
 // Semantic status colour keyed by the workflow/version status strings the API

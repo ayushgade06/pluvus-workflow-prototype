@@ -620,6 +620,11 @@ router.get("/:id/execution", async (req: Request, res: Response) => {
       versionId: latestVersion.id,
       version: latestVersion.version,
       totalInstances: instances.length,
+      // PLU-109: lets the enroll picker show an ENROLLED badge and offer
+      // "select only those not yet enrolled". The enroll endpoint already skips
+      // duplicates server-side; this makes the count on the button honest
+      // BEFORE the operator clicks. Free — the instances are already loaded.
+      enrolledCreatorIds: instances.map((i) => i.creatorId),
       stateCounts,
       recentEvents: recentEvents.map((e) => ({
         id: e.id,

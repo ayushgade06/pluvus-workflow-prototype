@@ -1,4 +1,5 @@
 import type { Creator } from "../db/schema.js";
+import { llmSafeCreatorContext } from "../validation/llmSafeCreator.js";
 import {
   MockEmailProvider,
   MockAgentProvider,
@@ -283,11 +284,17 @@ export class AgentProviderAdapter implements IAgentProvider {
       isFinalRound?: boolean;
     },
   ): Promise<EmailDraft | null> {
+    // PLU-109: the CSV import accepts creator-discovery vendor exports carrying
+    // a phone number and adult-platform data. Projecting the creator through an
+    // ALLOWLIST here — the one place a Creator becomes an LLM request — means
+    // widening what reaches a model provider is an explicit, reviewable edit
+    // rather than a side effect of adding a column.
+    const safe = llmSafeCreatorContext(creator);
     const request = {
       purpose,
       creatorName: creator.name,
-      creatorPlatform: creator.platform ?? undefined,
-      creatorNiche: creator.niche ?? undefined,
+      creatorPlatform: safe.platform,
+      creatorNiche: safe.niche,
       senderName: typeof config["senderName"] === "string" ? config["senderName"] : undefined,
       brandDescription: typeof config["brandDescription"] === "string" ? config["brandDescription"] : undefined,
       deliverables: typeof config["deliverables"] === "string" ? config["deliverables"] : undefined,

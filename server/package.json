@@ -11,7 +11,7 @@
     "start:worker": "cross-env PROCESS_ROLE=worker node dist/index.js",
     "start:scheduler": "cross-env PROCESS_ROLE=scheduler node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "cross-env NODE_ENV=test tsx --test \"src/**/*.test.ts\"",
+    "test": "cross-env NODE_ENV=test tsx --test $(find src -name '*.test.ts' | sort)",
     "db:pull": "drizzle-kit pull",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/seed.demo.ts",

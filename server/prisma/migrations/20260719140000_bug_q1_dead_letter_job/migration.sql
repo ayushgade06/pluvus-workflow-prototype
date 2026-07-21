@@ -18,12 +18,18 @@
 -- it expects. instanceId is a plain nullable TEXT (NO foreign key) on purpose: a
 -- DLQ row must persist even if its instance is later deleted, and a dead job is
 -- not always instance-scoped.
+--
+-- Idempotent: enum uses DO/EXCEPTION, table/indexes use IF NOT EXISTS so a
+-- partial prior run does not fail a re-run.
 
--- CreateEnum
-CREATE TYPE "DeadLetterStatus" AS ENUM ('PENDING', 'REDRIVEN', 'DISCARDED');
+-- CreateEnum (idempotent)
+DO $$ BEGIN
+  CREATE TYPE "DeadLetterStatus" AS ENUM ('PENDING', 'REDRIVEN', 'DISCARDED');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateTable
-CREATE TABLE "DeadLetterJob" (
+CREATE TABLE IF NOT EXISTS "DeadLetterJob" (
     "id" TEXT NOT NULL,
     "queue" TEXT NOT NULL,
     "jobId" TEXT,
@@ -42,13 +48,13 @@ CREATE TABLE "DeadLetterJob" (
 
 -- CreateIndex
 -- The re-drive sweep scans by (queue, status) oldest-first.
-CREATE INDEX "DeadLetterJob_queue_status_createdAt_idx" ON "DeadLetterJob" ("queue", "status", "createdAt");
+CREATE INDEX IF NOT EXISTS "DeadLetterJob_queue_status_createdAt_idx" ON "DeadLetterJob" ("queue", "status", "createdAt");
 
 -- CreateIndex
-CREATE INDEX "DeadLetterJob_instanceId_idx" ON "DeadLetterJob" ("instanceId");
+CREATE INDEX IF NOT EXISTS "DeadLetterJob_instanceId_idx" ON "DeadLetterJob" ("instanceId");
 
 -- CreateIndex
 -- Idempotent dead-lettering: a given (queue, jobId) is recorded at most once even
 -- if on("failed") fires more than once. jobId can be null (BullMQ auto-id jobs),
 -- so this is a PARTIAL unique index over the rows that have one.
-CREATE UNIQUE INDEX "DeadLetterJob_queue_jobId_key" ON "DeadLetterJob" ("queue", "jobId") WHERE ("jobId" IS NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS "DeadLetterJob_queue_jobId_key" ON "DeadLetterJob" ("queue", "jobId") WHERE ("jobId" IS NOT NULL);

@@ -41,6 +41,45 @@ try {
          applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
        )`,
     );
+
+    // Bootstrap: when _migrations_applied is empty but _prisma_migrations exists
+    // (e.g. Replit copied dev DB to prod, which tracks via Prisma's own table),
+    // pre-populate our tracking table so we don't re-run already-applied migrations.
+    const countRes = await client.query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM "_migrations_applied"`,
+    );
+    if (countRes.rows[0]?.c === "0") {
+      const prismaTableExists = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables
+           WHERE table_schema = 'public'
+             AND table_name   = '_prisma_migrations'
+         ) AS exists`,
+      );
+      if (prismaTableExists.rows[0]?.exists) {
+        // Pull every successfully-applied migration name from Prisma's table
+        const prismaApplied = await client.query<{ migration_name: string }>(
+          `SELECT migration_name FROM "_prisma_migrations"
+           WHERE finished_at IS NOT NULL
+             AND rolled_back_at IS NULL`,
+        );
+        // Insert only the names that match dirs we know about
+        const dirSet = new Set(dirs);
+        for (const row of prismaApplied.rows) {
+          if (dirSet.has(row.migration_name)) {
+            await client.query(
+              `INSERT INTO "_migrations_applied" (name) VALUES ($1) ON CONFLICT DO NOTHING`,
+              [row.migration_name],
+            );
+          }
+        }
+        if (prismaApplied.rows.length > 0) {
+          console.log(
+            `[bootstrap] Imported ${prismaApplied.rows.length} migration(s) from _prisma_migrations into _migrations_applied.`,
+          );
+        }
+      }
+    }
   }
 
   const appliedRes = dryRun

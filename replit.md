@@ -50,6 +50,23 @@ To enable real LLM calls:
 - Migrations: `cd server && node ../node_modules/.bin/prisma migrate deploy`
 - Seed demo data: `npm run db:seed:demo -w server`
 
+## Creator CSV Import
+
+Bulk-add creators from the **Enroll** tab: *Upload CSV* → review the preview → *Import*.
+Each upload becomes a separate, named list, so today's batch stays distinct from
+yesterday's and you can select "only the new ones" when enrolling.
+
+Only an `email` column is required; the delimiter (tab/comma/semicolon) is auto-detected.
+Creator-discovery vendor exports work as-is — `platform`, `handle`, and `niche` are
+derived from the per-network columns.
+
+**See [docs/csv-creator-import.md](docs/csv-creator-import.md)** for the full column
+reference. Templates: `sample-creators.csv`, `sample-creators-vendor.tsv`.
+
+Abandoned DRAFT imports (uploaded but never confirmed) keep their stored file. There is no
+automatic sweep yet — if they accumulate, delete drafts via
+`DELETE /creators/imports/:id`.
+
 ## Useful Commands
 
 ```bash

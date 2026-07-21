@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -65,4 +65,17 @@ export function resolveStoredFile(reference: string): string {
 /** Read a stored file's bytes by reference. Throws if the file is missing. */
 export async function readStoredFile(reference: string): Promise<Buffer> {
   return readFile(resolveStoredFile(reference));
+}
+
+/**
+ * Delete a stored file by reference. Missing files are NOT an error: discarding
+ * an import draft must succeed even if the file was already swept, and callers
+ * should never have to distinguish "gone" from "never existed".
+ */
+export async function deleteStoredFile(reference: string): Promise<void> {
+  try {
+    await unlink(resolveStoredFile(reference));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
