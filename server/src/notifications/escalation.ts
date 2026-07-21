@@ -26,6 +26,7 @@ import type {
   Creator,
   Event,
   EventInsert,
+  EventType,
   Message,
 } from "../db/schema.js";
 import {
@@ -82,6 +83,10 @@ const REASON_LABELS: Record<string, string> = {
     "the creator asked about a campaign term that isn't defined and needs a human to clarify",
   usage_rights_or_licensing:
     "the creator raised usage rights, exclusivity, or licensing — a commitment only a human can make",
+  // Content submission: the creator replied with the link(s) to their published
+  // content. An objective statement of fact — no judgment implied; a human opens
+  // the links and reviews. (No payout/ledger action is triggered automatically.)
+  content_links_submitted: "the creator submitted content links for review",
 };
 
 function reasonLabel(reason: string): string {
@@ -129,6 +134,12 @@ interface EscalationContext {
   // provider, unconfigured, no outbound message yet, or fetch failure) — the Gmail
   // section is then omitted gracefully.
   gmailRfc822MessageId: string | null;
+  // Content-links escalation: the URLs the creator submitted, read from the latest
+  // CONTENT_LINKS_SUBMITTED event that actually carried links. Empty/absent for every
+  // other escalation reason — the URL section is then omitted from the notification.
+  // Optional so pre-existing callers/fixtures that don't set it still typecheck; the
+  // real loader always populates it (to [] when there are none).
+  submittedUrls?: string[];
 }
 
 // DB seam — injectable so the reserve→send→finalize→audit sequencing (incl. the
@@ -213,6 +224,14 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     );
   }
 
+  // Content-links escalation: read the submitted URLs from the most recent
+  // CONTENT_LINKS_SUBMITTED event that actually carried links (the no-URL nudge
+  // self-loop also emits this type with an empty urls array — skip those). Best-
+  // effort — a failure here must not block the notice, so it degrades to no URLs.
+  const submittedUrls = extractSubmittedUrls(
+    await safeListEvents(instanceId, "CONTENT_LINKS_SUBMITTED"),
+  );
+
   return {
     creator: row.creator,
     campaignName: row.campaignName ?? null,
@@ -224,7 +243,40 @@ async function loadEscalationContext(instanceId: string): Promise<EscalationCont
     // Resolved by notifyBrandOfEscalation (it has the email provider); the DB seam
     // can't fetch a provider header, so it defaults to null here.
     gmailRfc822MessageId: null,
+    submittedUrls,
   };
+}
+
+// Best-effort event read that never throws — a failure to load content-links
+// events must not block the escalation notice.
+async function safeListEvents(instanceId: string, type: EventType): Promise<Event[]> {
+  try {
+    return await listEventsByInstance(instanceId, { type });
+  } catch (err) {
+    console.error(
+      `[escalation] could not load ${type} events for instance ${instanceId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+}
+
+// Pull the URLs from the most recent CONTENT_LINKS_SUBMITTED event that carried a
+// non-empty `urls` array (the no-URL nudge self-loop emits the same type with an
+// empty array). Returns [] when there is no such event.
+export function extractSubmittedUrls(events: Event[]): string[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const payload = events[i]!.payload;
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const raw = (payload as Record<string, unknown>)["urls"];
+      if (Array.isArray(raw)) {
+        const urls = raw.filter((u): u is string => typeof u === "string" && u.length > 0);
+        if (urls.length > 0) return urls;
+      }
+    }
+  }
+  return [];
 }
 
 const defaultDeps: EscalationDeps = {
@@ -344,7 +396,7 @@ export function buildEscalationEmail(
   reason: string,
   threadUrl?: (threadId: string) => string | undefined,
 ): EmailDraft {
-  const { creator, brandName, campaignName, workflowName, transcript, threadId, gmailRfc822MessageId } = ctx;
+  const { creator, brandName, campaignName, workflowName, transcript, threadId, gmailRfc822MessageId, submittedUrls } = ctx;
   const brand = brandName ?? "your brand";
   const creatorLine = creator.handle
     ? `${creator.name} (@${creator.handle})`
@@ -378,6 +430,19 @@ export function buildEscalationEmail(
       ]
     : [];
 
+  // Content-links escalation: list the submitted URLs so each is directly openable.
+  // Compact by design — the conversation link (above) carries the full history; we
+  // deliberately do NOT embed the transcript. Empty for every other escalation reason.
+  const links = submittedUrls ?? [];
+  const submittedUrlsSection =
+    links.length > 0
+      ? [
+          `Submitted content links (${links.length}):`,
+          ...links.map((u) => `  - ${u}`),
+          ``,
+        ]
+      : [];
+
   const lines = [
     `Hi ${brand} team,`,
     ``,
@@ -395,6 +460,10 @@ export function buildEscalationEmail(
     ``,
     `Why it was escalated: ${reasonLabel(reason)}.`,
     ``,
+    // The creator's submitted content links, each on its own line so the operator
+    // can open them directly. Present only for a content-links escalation; the
+    // conversation link above remains the primary entry point to full context.
+    ...submittedUrlsSection,
     // The full both-sides conversation, inline, so the operator can read exactly
     // what was said without leaving their inbox. Empty on a first-turn escalation.
     // TEMPORARILY DISABLED: the Gmail deep-link below now opens the real thread, so
