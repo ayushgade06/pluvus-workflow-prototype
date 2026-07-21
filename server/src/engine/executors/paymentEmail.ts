@@ -43,7 +43,7 @@ export function renderPaymentRequestEmail(input: PaymentRequestInput): EmailDraf
   const body = [
     `Hi ${input.creatorName},`,
     ``,
-    `Thank you for confirming your collaboration with ${input.brandName}.`,
+    `Thanks for confirming — we're excited to be working together on the ${input.brandName} campaign!`,
     ``,
     input.collectShippingAddress
       ? `Before we begin the campaign, we need your payout information and the shipping address for your product.`

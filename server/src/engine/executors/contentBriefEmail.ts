@@ -58,9 +58,9 @@ export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
   const lines: string[] = [
     `Hi ${input.creatorName},`,
     ``,
-    `Welcome aboard! We're excited to officially begin the campaign.`,
+    `Wonderful — now that we've agreed on the details, welcome aboard! We're really glad to have you and can't wait to get started.`,
     ``,
-    `Here are your finalized terms:`,
+    `Just so we're both on the same page, here are the terms we settled on:`,
     ``,
     `• Fixed Fee: ${feeLine}`,
     `• Commission: ${commissionLine}`,
@@ -89,13 +89,13 @@ export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
     // Content-links request: the close of the funnel. Once the creator's content
     // is live, we ask them to reply IN THIS SAME THREAD with the link(s) — no new
     // form or login. The instance parks on CONTENT_LINKS_PENDING to receive it.
-    `Once your content is live, please reply to this email with the link(s) to your posted content so we can review it.`,
+    `Once your content is live, just reply to this email with the link(s) to your posted content so we can take a look.`,
     ``,
-    `If you have any questions, simply reply to this email.`,
+    `And if anything is unclear along the way, simply reply to this email — we're happy to help.`,
     ``,
     `Looking forward to working with you!`,
     ``,
-    `Thanks,`,
+    `Best,`,
     `${input.brandName}`,
   );
 

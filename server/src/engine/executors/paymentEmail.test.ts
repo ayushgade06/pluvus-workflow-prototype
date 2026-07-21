@@ -39,7 +39,7 @@ test("body greets the creator and thanks them for confirming with the brand", ()
     formLink: "http://localhost:3001/payment/tok123",
   });
   assert.match(body, /^Hi Ada,/);
-  assert.match(body, /Thank you for confirming your collaboration with Pluvus\./);
+  assert.match(body, /working together on the Pluvus campaign!/);
 });
 
 test("body includes the payout form link verbatim", () => {

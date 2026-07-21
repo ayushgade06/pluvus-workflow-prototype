@@ -56,7 +56,7 @@ export function renderPartnershipWelcomeEmail(
   const body = [
     `Hi ${input.creatorName},`,
     ``,
-    `Thank you for completing your payout information. Your collaboration with ${input.brandName} is confirmed and we have everything we need to get started.`,
+    `That's everything sorted — thanks for sending over your payout details! Your collaboration with ${input.brandName} is all confirmed, and we're really excited to get started.`,
     ...termsBlock,
     ...trackingBlock,
     ``,
