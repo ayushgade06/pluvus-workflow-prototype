@@ -22,7 +22,11 @@ import type { IEmailProvider, IAgentProvider } from "./providers.js";
 import type { ExecutionContext, NodeSnapshot, NodeResult } from "./types.js";
 import { logTransition, type TransitionSource } from "../observability/logger.js";
 import { runWithLlmAttribution } from "../observability/llmUsage.js";
-import { notifyBrandOfEscalation } from "../notifications/escalation.js";
+import {
+  notifyBrandOfEscalation,
+  notifyOperatorOfDealFinalization,
+  notifyOperatorOfHandoffReply,
+} from "../notifications/escalation.js";
 import {
   executeImportCreatorList,
   executeInitialOutreach,
@@ -36,6 +40,7 @@ import {
   executePaymentReply,
   executeContentBrief,
   executeContentBriefSubmission,
+  executeOperatorHandoff,
   executeEnd,
 } from "./executors/index.js";
 import { markPaymentReceived } from "../db/index.js";
@@ -329,6 +334,19 @@ export class WorkflowRuntime {
       await notifyBrandOfEscalation(this.email, instanceId, escalationReason(result));
     }
 
+    // ── Deal-finalization notification (PLU-70) ───────────────────────────────
+    // A fresh transition into NEEDS_DEAL_FINALIZATION means a creator just
+    // agreed on an operator_handoff execution and the deal is waiting on a
+    // human. Same contract as the escalation notice above: fired AFTER the state
+    // is committed, never throws, and idempotent on (instanceId + reason) — so
+    // retrying delivery can never duplicate the transition or the DealHandoff.
+    if (
+      result.nextState === "NEEDS_DEAL_FINALIZATION" &&
+      instance.currentState !== "NEEDS_DEAL_FINALIZATION"
+    ) {
+      await notifyOperatorOfDealFinalization(this.email, instanceId);
+    }
+
     // Return updated context
     return this.loadContext(instanceId);
   }
@@ -611,6 +629,74 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // recordHandoffReply (PLU-70)
+  // -------------------------------------------------------------------------
+  // A creator replied while the run is parked in NEEDS_DEAL_FINALIZATION —
+  // typically answering the "I'm looping in our campaign manager" note.
+  //
+  // This deliberately does NOT step, transition, or auto-reply. An operator owns
+  // this conversation now; an automated answer would cut across a human who is
+  // mid-negotiation on the final details. So we persist the message (it shows up
+  // in the inspector's thread like any other), record the event, and FORWARD it
+  // to the operator so a creator who hit plain "reply" instead of "reply all"
+  // still reaches them. The instance stays exactly where it is.
+  //
+  // Kept separate from injectReply, whose forced REPLY_RECEIVED transition is
+  // invalid from NEEDS_DEAL_FINALIZATION and would throw — which is precisely
+  // why the inbound worker needs this branch rather than falling through.
+
+  async recordHandoffReply(
+    instanceId: string,
+    opts: {
+      subject: string;
+      body: string;
+      threadId?: string;
+      externalMessageId?: string;
+    },
+  ): Promise<void> {
+    const instance = await findInstanceById(instanceId);
+    if (!instance) {
+      throw new Error(`Instance not found: ${instanceId}`);
+    }
+    if (instance.currentState !== "NEEDS_DEAL_FINALIZATION") {
+      throw new Error(
+        `recordHandoffReply expects NEEDS_DEAL_FINALIZATION state, got ${instance.currentState}`,
+      );
+    }
+
+    const now = new Date();
+    const externalMessageId =
+      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
+
+    // Idempotent on externalMessageId (CRITICAL-6): a retried delivery re-runs
+    // this handler, skips the insert, and re-attempts only the forward — which is
+    // itself keyed on the message id, so the operator is emailed exactly once.
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
+      subject: opts.subject,
+      body: opts.body,
+      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
+      receivedAt: now,
+    });
+
+    await appendEvent({
+      instanceId,
+      type: "DEAL_HANDOFF_REPLY",
+      nodeId: instance.currentNodeId ?? null,
+      payload: { subject: opts.subject, externalMessageId },
+      occurredAt: now,
+    });
+
+    // Best-effort, like every other notification: a forwarding failure is
+    // recorded on the BrandNotification row, never thrown at the worker (which
+    // would retry the whole delivery and re-persist nothing useful).
+    await notifyOperatorOfHandoffReply(this.email, instanceId, {
+      externalMessageId,
+      subject: opts.subject,
+      body: opts.body,
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // handlePaymentSubmission
   // -------------------------------------------------------------------------
   // The creator submitted the hosted payout form while the instance is in
@@ -738,6 +824,13 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // PLU-70: stop at NEEDS_DEAL_FINALIZATION — the operator-handoff branch is
+      // parked on a HUMAN finalizing the deal in main Pluvus. It leaves this
+      // state only via the Manual Queue's complete action, never by stepping.
+      if (state === "NEEDS_DEAL_FINALIZATION") {
+        return state;
+      }
+
       ctx = await this.stepInstance(instanceId);
     }
   }
@@ -787,6 +880,22 @@ export class WorkflowRuntime {
     phase: "submission" | "reply" = "submission",
   ) {
     const { node } = ctx;
+
+    // PLU-70: the operator-handoff branch is keyed on STATE + the execution's
+    // stamped mode, not on a node type — there is no handoff node in any graph.
+    // Checking it before the node-type switch means it works identically for the
+    // merged flow (CONTENT_BRIEF), legacy graphs (REWARD_SETUP), and graphs with
+    // neither, and means no published WorkflowVersion had to change.
+    //
+    // Gated on the instance's OWN postAcceptanceMode, which is stamped once at
+    // enrollment. Every pre-existing instance is local_payment, so this branch is
+    // unreachable for them and their behavior is untouched.
+    if (
+      ctx.instance.currentState === "ACCEPTED" &&
+      ctx.instance.postAcceptanceMode === "operator_handoff"
+    ) {
+      return executeOperatorHandoff(ctx, this.email);
+    }
 
     switch (node.type) {
       case "IMPORT_CREATOR_LIST":

@@ -34,8 +34,25 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // the Content Brief node, which sends the merged offer + payout link + brief
   // email and parks in PAYMENT_PENDING. (Legacy graphs advance into Reward Setup
   // → REWARD_PENDING instead.) MANUAL_REVIEW is reachable (L4) if the email has no
-  // resolvable brand name.
-  ACCEPTED: ["PAYMENT_PENDING", "REWARD_PENDING", "MANUAL_REVIEW"],
+  // resolvable brand name. PLU-70: an execution enrolled with
+  // postAcceptanceMode=operator_handoff branches to NEEDS_DEAL_FINALIZATION
+  // instead — no payout form, no brief, a human finishes the deal.
+  ACCEPTED: [
+    "PAYMENT_PENDING",
+    "REWARD_PENDING",
+    "NEEDS_DEAL_FINALIZATION",
+    "MANUAL_REVIEW",
+  ],
+  // PLU-70 operator handoff. A WAITING state, not a terminal one: it waits on a
+  // human the way PAYMENT_PENDING waits on the payout form. The only forward
+  // edge is the operator marking the handoff done. OPTED_OUT is reachable for
+  // parity with every other waiting state — an "unsubscribe" while the deal is
+  // being finalized must opt the creator out (CAN-SPAM). MANUAL_REVIEW is the
+  // escape hatch if the operator decides it needs the escalation path instead.
+  NEEDS_DEAL_FINALIZATION: ["HANDOFF_COMPLETE", "OPTED_OUT", "MANUAL_REVIEW"],
+  // PLU-70: the operator finalized and onboarded the creator in main Pluvus.
+  // Terminal — the end of the handoff branch.
+  HANDOFF_COMPLETE: [],
   // Reward Setup waiting state. Stays here on a non-confirming reply
   // (REWARD_PENDING → REWARD_PENDING), advances on an agreement reply, and can
   // still be escalated to a human. MED-W1: OPTED_OUT is reachable — an
@@ -78,6 +95,11 @@ const TERMINAL_STATES: InstanceState[] = [
   // anymore — they auto-advance into Reward Setup, Payment Info and Content Brief
   // respectively. CONTENT_BRIEF_SENT is the new success terminal.
   "CONTENT_BRIEF_SENT",
+  // PLU-70: the success terminal of the operator-handoff branch.
+  // NEEDS_DEAL_FINALIZATION is deliberately absent — it is a waiting state, so
+  // the inbound worker still routes a creator reply to it (and the handoff
+  // branch there records + forwards it) rather than dropping it as terminal.
+  "HANDOFF_COMPLETE",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",

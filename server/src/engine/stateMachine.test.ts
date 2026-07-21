@@ -47,11 +47,73 @@ test("an illegal transition still throws (guard intact)", () => {
 });
 
 test("terminal states have no outgoing edges", () => {
-  for (const term of ["CONTENT_BRIEF_SENT", "REJECTED", "OPTED_OUT", "NO_RESPONSE", "MANUAL_REVIEW"] as const) {
+  for (const term of [
+    "CONTENT_BRIEF_SENT",
+    "HANDOFF_COMPLETE",
+    "REJECTED",
+    "OPTED_OUT",
+    "NO_RESPONSE",
+    "MANUAL_REVIEW",
+  ] as const) {
     assert.equal(isTerminal(term), true);
     // Same-state no-op is allowed; any real move out of a terminal must throw.
     assert.throws(() => assertTransition(term, "NEGOTIATING"), InvalidTransitionError);
   }
+});
+
+// ---------------------------------------------------------------------------
+// PLU-70 — the operator-handoff branch
+// ---------------------------------------------------------------------------
+
+console.log("\nstate machine — PLU-70 operator handoff\n");
+
+test("ACCEPTED branches to NEEDS_DEAL_FINALIZATION", () => {
+  assert.doesNotThrow(() => assertTransition("ACCEPTED", "NEEDS_DEAL_FINALIZATION"));
+});
+
+test("ACCEPTED keeps BOTH existing post-acceptance edges (local flow untouched)", () => {
+  // The handoff edge is additive. If either of these regressed, every
+  // local_payment execution would break at the moment a creator accepts.
+  assert.doesNotThrow(() => assertTransition("ACCEPTED", "PAYMENT_PENDING"));
+  assert.doesNotThrow(() => assertTransition("ACCEPTED", "REWARD_PENDING"));
+});
+
+test("NEEDS_DEAL_FINALIZATION is a WAITING state, not terminal", () => {
+  // This is load-bearing: if it were terminal, the inbound worker's isTerminal
+  // guard would DROP a creator reply instead of routing it to the handoff branch
+  // that records and forwards it.
+  assert.equal(isTerminal("NEEDS_DEAL_FINALIZATION"), false);
+});
+
+test("NEEDS_DEAL_FINALIZATION → HANDOFF_COMPLETE is the operator's exit", () => {
+  assert.doesNotThrow(() => assertTransition("NEEDS_DEAL_FINALIZATION", "HANDOFF_COMPLETE"));
+});
+
+test("NEEDS_DEAL_FINALIZATION accepts an opt-out (CAN-SPAM parity)", () => {
+  // An "unsubscribe" arriving while a deal is being finalized must opt the
+  // creator out, exactly as it does from the other waiting states.
+  assert.doesNotThrow(() => assertTransition("NEEDS_DEAL_FINALIZATION", "OPTED_OUT"));
+});
+
+test("NEEDS_DEAL_FINALIZATION cannot rejoin the local payout flow", () => {
+  // The two post-acceptance paths must not cross: a handoff execution has no
+  // payout token and no form, so PAYMENT_PENDING here would strand it forever.
+  assert.throws(
+    () => assertTransition("NEEDS_DEAL_FINALIZATION", "PAYMENT_PENDING"),
+    InvalidTransitionError,
+  );
+  assert.throws(
+    () => assertTransition("NEEDS_DEAL_FINALIZATION", "CONTENT_BRIEF_SENT"),
+    InvalidTransitionError,
+  );
+});
+
+test("HANDOFF_COMPLETE is terminal and cannot be reopened", () => {
+  assert.equal(isTerminal("HANDOFF_COMPLETE"), true);
+  assert.throws(
+    () => assertTransition("HANDOFF_COMPLETE", "NEEDS_DEAL_FINALIZATION"),
+    InvalidTransitionError,
+  );
 });
 
 console.log(`\n${n} passed\n`);

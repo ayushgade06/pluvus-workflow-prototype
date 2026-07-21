@@ -14,7 +14,7 @@ import {
   useBuilderInvalidator,
 } from "../../api/builderClient";
 import { colors, radii, font } from "../../theme";
-import { Button, ConfirmDialog, Input, Modal, StatTile, EmptyState, SkeletonRows } from "../ds";
+import { Button, ConfirmDialog, Input, Modal, Select, StatTile, EmptyState, SkeletonRows } from "../ds";
 import { useToast } from "../ds";
 import { ImportBatchPicker, type SelectScope } from "./ImportBatchPicker";
 import { ImportPreviewPanel } from "./ImportPreviewPanel";
@@ -28,6 +28,7 @@ import {
 } from "./CreatorTable";
 import type {
   EnrollResponse,
+  PostAcceptanceMode,
   WorkflowDetail,
   CreatorDeleteBlock,
   ImportBatch,
@@ -47,6 +48,12 @@ interface Props {
 type PendingDelete =
   | { kind: "creators"; ids: string[]; label: string }
   | { kind: "list"; batch: ImportBatch };
+
+/** PLU-70: short labels for the post-acceptance modes, shown at enrollment. */
+const MODE_LABEL: Record<PostAcceptanceMode, string> = {
+  local_payment: "Local payment flow",
+  operator_handoff: "Operator onboarding",
+};
 
 export function EnrollTab({ workflow, onEnrolled }: Props) {
   const { data: creators, isLoading } = useCreators();
@@ -75,6 +82,10 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   const [renaming, setRenaming] = useState<{ batch: ImportBatch; value: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<EnrollResponse | null>(null);
+  // PLU-70: the campaign's mode is the DEFAULT; the operator confirms or
+  // overrides it here, and the override applies only to the executions created
+  // by this enrollment. null = "use the campaign default" (nothing sent).
+  const [modeOverride, setModeOverride] = useState<PostAcceptanceMode | null>(null);
   const [draft, setDraft] = useState<ImportDraftResponse | null>(null);
   const [importing, setImporting] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -354,7 +365,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
     setSubmitting(true);
     setResult(null);
     try {
-      const r = await enrollCreators(workflow.id, [...selected]);
+      const r = await enrollCreators(workflow.id, [...selected], modeOverride ?? undefined);
       setResult(r);
       setSelected(new Set());
       await invalidateExecution();
@@ -380,6 +391,9 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   }
 
   const listLoading = activeBatchId ? batchLoading : isLoading;
+  // The campaign default unless the operator overrode it for this batch.
+  const effectiveMode: PostAcceptanceMode =
+    modeOverride ?? workflow.campaign?.postAcceptanceMode ?? "local_payment";
 
   return (
     <div
@@ -415,6 +429,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         <Banner color={colors.success}>
           ✓ Enrolled {result.enrolled} creator{result.enrolled !== 1 ? "s" : ""}
           {result.skipped > 0 ? ` · ${result.skipped} skipped (already enrolled)` : ""}
+          {` · post-acceptance: ${MODE_LABEL[result.postAcceptanceMode]}`}
         </Banner>
       )}
 
@@ -655,6 +670,34 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
             ? "Select creators above to enroll them into this workflow."
             : `${selected.size} creator${selected.size !== 1 ? "s" : ""} selected`}
         </span>
+
+        {/*
+          PLU-70: state the post-acceptance behavior these creators will be
+          enrolled under, BEFORE enrollment — it is locked onto each execution at
+          creation and a later campaign edit cannot change it, so this is the
+          last moment it can be chosen.
+        */}
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: font.size.sm,
+            color: colors.textDim,
+            flexShrink: 0,
+          }}
+        >
+          Post-acceptance:
+          <Select
+            value={effectiveMode}
+            onChange={(e) => setModeOverride(e.target.value as PostAcceptanceMode)}
+            aria-label="Post-acceptance behavior for these enrollments"
+            style={{ height: 40, width: 210 }}
+          >
+            <option value="local_payment">{MODE_LABEL.local_payment}</option>
+            <option value="operator_handoff">{MODE_LABEL.operator_handoff}</option>
+          </Select>
+        </label>
         {selected.size > 0 && (
           <Button
             variant="secondary"

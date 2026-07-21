@@ -74,6 +74,10 @@ export class NylasEmailProvider implements IEmailProvider {
         subject: draft.subject,
         body: plainTextToHtmlEmail(draft.body),
         ...(recipient?.replyTo ? { replyTo: [{ email: recipient.replyTo }] } : {}),
+        // PLU-70: CC the operator on the handoff message. Only ever set there, so
+        // for every other send this spread contributes nothing and the request
+        // body is unchanged.
+        ...(recipient?.cc?.length ? { cc: recipient.cc.map((email) => ({ email })) } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       },
     });

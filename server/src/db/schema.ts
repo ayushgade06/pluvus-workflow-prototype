@@ -108,6 +108,10 @@ export const instanceStateEnum = pgEnum("InstanceState", [
   "OPTED_OUT",
   "NO_RESPONSE",
   "MANUAL_REVIEW",
+  // PLU-70. Appended (not inserted in logical order) because ALTER TYPE ... ADD
+  // VALUE appends to the DB type — this array must mirror the DB's member order.
+  "NEEDS_DEAL_FINALIZATION",
+  "HANDOFF_COMPLETE",
 ]);
 
 // DB member order differs from schema.prisma's declaration order for the
@@ -170,6 +174,22 @@ export const eventTypeEnum = pgEnum("EventType", [
   "PAYOUT_CONFIRMED",
   "PAYOUT_DISPUTED",
   "PAYOUT_SETTLED",
+  // PLU-70 operator handoff. Appended to mirror the DB's ALTER TYPE ordering.
+  "DEAL_HANDOFF_REQUESTED",
+  "DEAL_HANDOFF_REPLY",
+  "DEAL_HANDOFF_COMPLETED",
+]);
+
+// PLU-70: what happens after a negotiation is accepted. local_payment is the
+// existing behavior and the default for every pre-existing campaign/execution.
+export const postAcceptanceModeEnum = pgEnum("PostAcceptanceMode", [
+  "local_payment",
+  "operator_handoff",
+]);
+
+export const dealHandoffStatusEnum = pgEnum("DealHandoffStatus", [
+  "AWAITING_FINALIZATION",
+  "COMPLETED",
 ]);
 
 export const workflowStatusEnum = pgEnum("WorkflowStatus", [
@@ -285,6 +305,11 @@ export const campaigns = pgTable("Campaign", {
   attributionWindow: text("attributionWindow"),
   targetUrl: text("targetUrl"),
   hiddenParamKey: text("hiddenParamKey").notNull().default("_from"),
+  // PLU-70: the campaign-level DEFAULT only. Enrollment stamps the effective
+  // mode onto each ExecutionInstance, so editing this cannot reach a running one.
+  postAcceptanceMode: postAcceptanceModeEnum("postAcceptanceMode")
+    .notNull()
+    .default("local_payment"),
   createdAt: tsNow("createdAt"),
   updatedAt: tsUpdatedAt("updatedAt"),
 });
@@ -435,6 +460,12 @@ export const executionInstances = pgTable(
     // alone can't distinguish — can never both commit. The first wins; the second
     // matches the stale version, updates 0 rows, and no-ops.
     version: integer("version").notNull().default(0),
+    // PLU-70: the post-acceptance behavior this execution is LOCKED to. Stamped
+    // once at enrollment and never rewritten — reading it here rather than from
+    // the campaign is what isolates a running execution from a later edit.
+    postAcceptanceMode: postAcceptanceModeEnum("postAcceptanceMode")
+      .notNull()
+      .default("local_payment"),
     dueAt: ts("dueAt"),
     enrolledAt: tsNow("enrolledAt"),
     completedAt: ts("completedAt"),
@@ -605,6 +636,43 @@ export const paymentInfo = pgTable(
     uniqueIndex("PaymentInfo_instanceId_key").on(table.instanceId),
     uniqueIndex("PaymentInfo_token_key").on(table.token),
     index("PaymentInfo_instanceId_idx").on(table.instanceId),
+  ],
+);
+
+// PLU-70: the closed-deal snapshot an operator needs to finalize and onboard the
+// creator manually in main Pluvus, plus their progress on doing so. The UNIQUE
+// instanceId is the idempotency guard — a retried handoff step re-inserts, hits
+// the constraint, and no-ops, so the acceptance record is never duplicated.
+// Holds no payout fields and no transcript by design.
+export const dealHandoffs = pgTable(
+  "DealHandoff",
+  {
+    id: cuidId("id"),
+    instanceId: text("instanceId")
+      .notNull()
+      .references(() => executionInstances.id),
+    creatorName: text("creatorName").notNull(),
+    creatorEmail: text("creatorEmail").notNull(),
+    campaignName: text("campaignName"),
+    // Null for commission-only deals — an absent fee is NOT an escalation here,
+    // because a human is already the reviewer.
+    fixedFee: doublePrecision("fixedFee"),
+    commissionRate: doublePrecision("commissionRate"),
+    deliverables: text("deliverables"),
+    timeline: text("timeline"),
+    paymentTerms: text("paymentTerms"),
+    acceptanceMessage: text("acceptanceMessage"),
+    threadId: text("threadId"),
+    acceptedAt: ts("acceptedAt").notNull(),
+    status: dealHandoffStatusEnum("status").notNull().default("AWAITING_FINALIZATION"),
+    completedAt: ts("completedAt"),
+    completedBy: text("completedBy"),
+    createdAt: tsNow("createdAt"),
+    updatedAt: tsUpdatedAt("updatedAt"),
+  },
+  (table) => [
+    uniqueIndex("DealHandoff_instanceId_key").on(table.instanceId),
+    index("DealHandoff_status_idx").on(table.status),
   ],
 );
 
@@ -843,6 +911,11 @@ export const insertPaymentInfoSchema = createInsertSchema(paymentInfo).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertDealHandoffSchema = createInsertSchema(dealHandoffs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
 export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
   id: true,
   createdAt: true,
@@ -883,6 +956,7 @@ export type OutboxJob = typeof outboxJobs.$inferSelect;
 export type DeadLetterJob = typeof deadLetterJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
+export type DealHandoff = typeof dealHandoffs.$inferSelect;
 export type Partnership = typeof partnerships.$inferSelect;
 export type Click = typeof clicks.$inferSelect;
 export type Conversion = typeof conversions.$inferSelect;
@@ -905,6 +979,7 @@ export type InsertBrandNotification = z.infer<
   typeof insertBrandNotificationSchema
 >;
 export type InsertPaymentInfo = z.infer<typeof insertPaymentInfoSchema>;
+export type InsertDealHandoff = z.infer<typeof insertDealHandoffSchema>;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 export type InsertClick = z.infer<typeof insertClickSchema>;
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
@@ -926,6 +1001,7 @@ export type OutboxJobInsert = typeof outboxJobs.$inferInsert;
 export type DeadLetterJobInsert = typeof deadLetterJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
+export type DealHandoffInsert = typeof dealHandoffs.$inferInsert;
 export type PartnershipInsert = typeof partnerships.$inferInsert;
 export type ClickInsert = typeof clicks.$inferInsert;
 export type ConversionInsert = typeof conversions.$inferInsert;

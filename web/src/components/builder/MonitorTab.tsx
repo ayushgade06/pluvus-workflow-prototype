@@ -24,6 +24,8 @@ const ALL_STATES: InstanceState[] = [
   "PAYMENT_PENDING",
   "PAYMENT_RECEIVED",
   "CONTENT_BRIEF_SENT",
+  "NEEDS_DEAL_FINALIZATION",
+  "HANDOFF_COMPLETE",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -35,6 +37,9 @@ const TERMINAL = new Set<InstanceState>([
   // Payment Info / Content Brief), so they're no longer terminal;
   // CONTENT_BRIEF_SENT is the success terminal.
   "CONTENT_BRIEF_SENT",
+  // PLU-70: NEEDS_DEAL_FINALIZATION is NOT terminal — it is parked on an
+  // operator. HANDOFF_COMPLETE is that branch's success terminal.
+  "HANDOFF_COMPLETE",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",

@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { useManualQueue, notifyBrand, useBuilderInvalidator } from "../../api/builderClient";
+import {
+  useManualQueue,
+  notifyBrand,
+  completeHandoff,
+  useBuilderInvalidator,
+} from "../../api/builderClient";
 import { POLL_INTERVAL_MS } from "../../api/client";
 import { colors, radii, font, formatTimestamp, relativeTime } from "../../theme";
 import { StatTile, EmptyState, SectionHeader, useToast } from "../ds";
@@ -31,6 +36,7 @@ export function ManualQueueTab({ workflow }: Props) {
   const toast = useToast();
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
   const [notifying, setNotifying] = useState<string | null>(null);
+  const [completing, setCompleting] = useState<string | null>(null);
 
   const data = queue.data;
   const hasVersion = !!workflow.latestVersion;
@@ -40,7 +46,7 @@ export function ManualQueueTab({ workflow }: Props) {
       <EmptyState
         icon="🛟"
         title="Manual queue is empty"
-        description="Publish and launch the workflow first. Creators the AI can't handle on its own will appear here for a human to take over."
+        description="Publish and launch the workflow first. Creators the AI can't handle on its own — and deals waiting for operator onboarding — will appear here for a human to pick up."
       />
     );
   }
@@ -49,8 +55,8 @@ export function ManualQueueTab({ workflow }: Props) {
     return (
       <EmptyState
         icon="🛟"
-        title="No creators need review"
-        description={`Nothing has been escalated to the manual queue yet. Auto-refreshes every ${POLL_INTERVAL_MS / 1000}s.`}
+        title="Nothing needs a human"
+        description={`No escalations and no deals awaiting onboarding. Auto-refreshes every ${POLL_INTERVAL_MS / 1000}s.`}
       />
     );
   }
@@ -59,6 +65,9 @@ export function ManualQueueTab({ workflow }: Props) {
   const failedCount = data.items.filter(
     (i) => !i.notification || i.notification.status === "FAILED",
   ).length;
+  // PLU-70: the queue holds two kinds of work now. Counting deals separately
+  // keeps "how many agreements am I sitting on?" answerable at a glance.
+  const handoffCount = data.items.filter((i) => i.kind === "handoff").length;
 
   async function handleNotify(item: ManualQueueItem) {
     setNotifying(item.instanceId);
@@ -80,6 +89,19 @@ export function ManualQueueTab({ workflow }: Props) {
       toast.error(err instanceof Error ? err.message : "Notification failed.");
     } finally {
       setNotifying(null);
+    }
+  }
+
+  async function handleComplete(item: ManualQueueItem) {
+    setCompleting(item.instanceId);
+    try {
+      await completeHandoff(item.instanceId);
+      toast.success(`${item.creatorName} marked as onboarded.`);
+      await inv.invalidateManualQueue();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not complete the handoff.");
+    } finally {
+      setCompleting(null);
     }
   }
 
@@ -121,14 +143,19 @@ export function ManualQueueTab({ workflow }: Props) {
         </div>
 
         <p style={{ fontSize: font.size.md, color: colors.textMuted, margin: 0, lineHeight: 1.6, maxWidth: 640 }}>
-          These creators were escalated out of the automated workflow because the AI could not
-          safely proceed on its own. The brand contact is emailed for each escalation so a human can
-          take over the conversation.
+          Creators waiting on a human. Some were escalated because the AI could not safely proceed;
+          others agreed to a deal on a campaign set to operator onboarding, and are ready for you to
+          finalize and onboard in Pluvus. The campaign contact is emailed either way.
         </p>
 
         {/* Totals */}
         <div style={{ display: "flex", gap: 14 }}>
           <StatTile label="In Queue" value={data.total} color={colors.warning} />
+          <StatTile
+            label="Deals to Onboard"
+            value={handoffCount}
+            color={handoffCount > 0 ? colors.success : colors.textMuted}
+          />
           <StatTile label="Brand Notified" value={notifiedCount} color={colors.success} />
           <StatTile label="Needs Attention" value={failedCount} color={failedCount > 0 ? colors.danger : colors.textMuted} />
         </div>
@@ -136,7 +163,7 @@ export function ManualQueueTab({ workflow }: Props) {
         {/* Queue list */}
         {data.total > 0 && (
           <div>
-            <SectionHeader count={data.total}>Escalated Creators</SectionHeader>
+            <SectionHeader count={data.total}>Needs a Human</SectionHeader>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {data.items.map((item) => (
                 <QueueRow
@@ -146,6 +173,8 @@ export function ManualQueueTab({ workflow }: Props) {
                   notifying={notifying === item.instanceId}
                   onOpen={() => setSelectedInstanceId(item.instanceId)}
                   onNotify={() => void handleNotify(item)}
+                  completing={completing === item.instanceId}
+                  onComplete={() => void handleComplete(item)}
                 />
               ))}
             </div>
@@ -182,15 +211,22 @@ function QueueRow({
   notifying,
   onOpen,
   onNotify,
+  completing,
+  onComplete,
 }: {
   item: ManualQueueItem;
   selected: boolean;
   notifying: boolean;
   onOpen: () => void;
   onNotify: () => void;
+  completing: boolean;
+  onComplete: () => void;
 }) {
   const notify = item.notification;
   const meta = notifyMeta[notify?.status ?? "NONE"];
+  // PLU-70: a handoff row answers "what did we agree, and when?" — an escalation
+  // row answers "why did the AI stop?". Same shell, different middle.
+  const handoff = item.kind === "handoff" ? item.handoff : null;
 
   return (
     <div
@@ -246,29 +282,69 @@ function QueueRow({
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
-          <span
-            style={{
-              fontSize: font.size.xs,
-              fontWeight: font.weight.medium,
-              color: "#e5b454",
-              background: "rgba(229,180,84,0.12)",
-              border: "1px solid rgba(229,180,84,0.3)",
-              borderRadius: radii.pill,
-              padding: "2px 9px",
-              lineHeight: 1.5,
-            }}
-          >
-            ⚠ {item.reasonLabel}
-          </span>
-          <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
-            {item.escalatedAt
-              ? `escalated ${relativeTime(item.escalatedAt)}`
-              : `updated ${relativeTime(item.updatedAt)}`}
-          </span>
-          {item.negotiationRound > 0 && (
-            <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
-              · round {item.negotiationRound}
-            </span>
+          {handoff ? (
+            <>
+              {/* Compensation is the headline: it is what the operator needs to
+                  act on, and it is the one fact a compact row must carry. */}
+              <span
+                style={{
+                  fontSize: font.size.xs,
+                  fontWeight: font.weight.semibold,
+                  color: colors.success,
+                  background: "rgba(62,207,142,0.12)",
+                  border: "1px solid rgba(62,207,142,0.3)",
+                  borderRadius: radii.pill,
+                  padding: "2px 9px",
+                  lineHeight: 1.5,
+                }}
+              >
+                ✓ {handoff.agreedCompensation}
+              </span>
+              {handoff.campaignName && (
+                <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+                  {handoff.campaignName}
+                </span>
+              )}
+              <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+                · accepted {relativeTime(handoff.acceptedAt)}
+              </span>
+              <span
+                style={{
+                  fontSize: font.size.sm,
+                  color:
+                    handoff.status === "COMPLETED" ? colors.success : colors.warning,
+                }}
+              >
+                · {handoff.status === "COMPLETED" ? "Onboarded" : "Awaiting finalization"}
+              </span>
+            </>
+          ) : (
+            <>
+              <span
+                style={{
+                  fontSize: font.size.xs,
+                  fontWeight: font.weight.medium,
+                  color: "#e5b454",
+                  background: "rgba(229,180,84,0.12)",
+                  border: "1px solid rgba(229,180,84,0.3)",
+                  borderRadius: radii.pill,
+                  padding: "2px 9px",
+                  lineHeight: 1.5,
+                }}
+              >
+                ⚠ {item.reasonLabel}
+              </span>
+              <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+                {item.escalatedAt
+                  ? `escalated ${relativeTime(item.escalatedAt)}`
+                  : `updated ${relativeTime(item.updatedAt)}`}
+              </span>
+              {item.negotiationRound > 0 && (
+                <span style={{ fontSize: font.size.sm, color: colors.textDim }}>
+                  · round {item.negotiationRound}
+                </span>
+              )}
+            </>
           )}
         </div>
       </button>
@@ -291,6 +367,31 @@ function QueueRow({
           </span>
         )}
       </div>
+
+      {/* PLU-70: the single operator action. Only on an un-onboarded handoff. */}
+      {handoff && handoff.status !== "COMPLETED" && (
+        <button
+          onClick={onComplete}
+          disabled={completing}
+          className="ds-focusable ds-btn ds-btn-primary"
+          style={{
+            flexShrink: 0,
+            fontSize: font.size.sm,
+            fontWeight: font.weight.semibold,
+            color: "#fff",
+            background: colors.success,
+            border: "1px solid transparent",
+            borderRadius: radii.sm + 1,
+            padding: "0 14px",
+            height: 32,
+            cursor: completing ? "default" : "pointer",
+            whiteSpace: "nowrap",
+          }}
+          title="Mark this handoff complete once you have finalized the deal and onboarded the creator in Pluvus"
+        >
+          {completing ? "Saving…" : "Mark completed"}
+        </button>
+      )}
 
       {/* Notify / resend action */}
       <button

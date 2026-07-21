@@ -50,6 +50,10 @@ const LAYOUT: Record<InstanceState, Placement> = {
   PAYMENT_RECEIVED: { x: COL_MAIN, y: ROW_H * 9 },
   // Content Brief continues down the main column after Payment Info (terminal).
   CONTENT_BRIEF_SENT: { x: COL_MAIN, y: ROW_H * 10 },
+  // PLU-70 operator-handoff branch: peels off ACCEPTED into the branch column so
+  // the local-payment path keeps the main column uninterrupted.
+  NEEDS_DEAL_FINALIZATION: { x: COL_BRANCH, y: ROW_H * 6 },
+  HANDOFF_COMPLETE: { x: COL_BRANCH, y: ROW_H * 7 },
   // Branch / terminal states to the right.
   REJECTED: { x: COL_BRANCH, y: ROW_H * 3 },
   MANUAL_REVIEW: { x: COL_TERMINAL, y: ROW_H * 3.5 },
@@ -82,6 +86,9 @@ const EDGES: Array<[InstanceState, InstanceState, boolean?]> = [
   ["PAYMENT_PENDING", "PAYMENT_RECEIVED"], // legacy: creator submits the payout form
   ["PAYMENT_PENDING", "MANUAL_REVIEW"],
   ["PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT"], // legacy: auto-chain into Content Brief
+  // PLU-70: operator_handoff executions branch here instead of into the payout flow.
+  ["ACCEPTED", "NEEDS_DEAL_FINALIZATION"],
+  ["NEEDS_DEAL_FINALIZATION", "HANDOFF_COMPLETE"], // operator marks it done
 ];
 
 interface Props {

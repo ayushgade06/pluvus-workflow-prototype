@@ -37,6 +37,9 @@ export interface NylasClientLike {
         // Optional Reply-To. Brand-decision emails (CRITICAL-2) set a token-scoped
         // reply-to so a brand's reply is attributable to exactly one decision.
         replyTo?: Array<{ email: string; name?: string }>;
+        // Optional CC (PLU-70). Only the operator-handoff message sets this, to
+        // put the campaign's escalation contact into the creator thread.
+        cc?: Array<{ email: string; name?: string }>;
         // Optional file attachments (Phase 16 — Content Brief). Nylas expects
         // each as base64-encoded `content` plus filename/content_type. Omitted
         // for every send except the Content Brief campaign-brief email.

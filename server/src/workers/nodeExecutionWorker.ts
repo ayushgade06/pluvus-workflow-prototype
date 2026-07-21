@@ -137,7 +137,14 @@ async function handleNodeExecution(
     // to whichever node is present, so the enqueued step dispatches correctly.
     // Legacy workflows with neither node (END-terminated) leave ACCEPTED as the
     // final state — the pre-Reward-Setup behavior.
+    // PLU-70: an operator_handoff execution ALWAYS has a post-acceptance step —
+    // the handoff executor, which is keyed on state + mode rather than on a node
+    // in the graph. So it must chain even on a legacy graph that has neither a
+    // REWARD_SETUP nor a CONTENT_BRIEF node. `updated` is the row we just
+    // re-read, so this costs no extra query.
+    const handoffApplies = updated?.postAcceptanceMode === "operator_handoff";
     if (
+      handoffApplies ||
       (await runtime.rewardSetupApplies(instanceId)) ||
       (await runtime.contentBriefApplies(instanceId))
     ) {

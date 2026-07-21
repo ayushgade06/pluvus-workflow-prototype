@@ -130,6 +130,8 @@ export const stateColor: Record<InstanceState, string> = {
   PAYMENT_PENDING: "#6e7cf5", // active indigo — awaiting payout form submission
   PAYMENT_RECEIVED: "#27a06c", // deep green — payout info received
   CONTENT_BRIEF_SENT: "#34b378", // green — campaign brief sent (terminal success)
+  NEEDS_DEAL_FINALIZATION: "#e5b454", // amber — parked, waiting on an operator
+  HANDOFF_COMPLETE: "#34b378", // green — operator finished onboarding (terminal)
   REJECTED: "#f2555f", // failure
   OPTED_OUT: "#e0784a", // opted out
   NO_RESPONSE: "#6a7080", // timed out
@@ -149,6 +151,8 @@ export const stateLabel: Record<InstanceState, string> = {
   PAYMENT_PENDING: "Awaiting Payout Info",
   PAYMENT_RECEIVED: "Payout Info Received",
   CONTENT_BRIEF_SENT: "Brief Sent",
+  NEEDS_DEAL_FINALIZATION: "Needs Finalization",
+  HANDOFF_COMPLETE: "Handoff Complete",
   REJECTED: "Rejected",
   OPTED_OUT: "Opted Out",
   NO_RESPONSE: "No Response",
@@ -169,6 +173,10 @@ export const stateDescription: Record<InstanceState, string> = {
   PAYMENT_PENDING: "Payout form emailed; waiting on the creator to submit it.",
   PAYMENT_RECEIVED: "Creator submitted payout info — sending the campaign brief.",
   CONTENT_BRIEF_SENT: "Campaign brief emailed to the creator — terminal success state.",
+  NEEDS_DEAL_FINALIZATION:
+    "Creator agreed. Paused for an operator to finalize the deal and onboard them in Pluvus.",
+  HANDOFF_COMPLETE:
+    "An operator finalized the deal and onboarded the creator — terminal success state.",
   REJECTED: "Creator declined — terminal state.",
   OPTED_OUT: "Creator asked to stop being contacted — terminal state.",
   NO_RESPONSE: "All follow-ups exhausted with no reply — terminal state.",

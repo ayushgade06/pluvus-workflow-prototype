@@ -28,6 +28,8 @@ import type {
   TemplateKey,
   ManualQueueResponse,
   NotifyResult,
+  PostAcceptanceMode,
+  CompleteHandoffResult,
 } from "./builderTypes";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ export function createCampaign(data: {
   shipsPhysicalProduct?: boolean;
   targetUrl?: string;
   hiddenParamKey?: string;
+  postAcceptanceMode?: PostAcceptanceMode;
 }) {
   return postJson<{ id: string; name: string }>("/api/campaigns", data);
 }
@@ -119,6 +122,7 @@ export function updateCampaign(
     timeline?: string | null;
     rewardDescription?: string | null;
     shipsPhysicalProduct?: boolean;
+    postAcceptanceMode?: PostAcceptanceMode;
   },
 ) {
   return apiFetch<{ id: string; notifyEmail: string | null }>(`/api/campaigns/${id}`, {
@@ -324,8 +328,17 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
 // Enroll + Launch
 // ---------------------------------------------------------------------------
 
-export function enrollCreators(workflowId: string, creatorIds: string[]) {
-  return postJson<EnrollResponse>(`/api/workflows/${workflowId}/enroll`, { creatorIds });
+export function enrollCreators(
+  workflowId: string,
+  creatorIds: string[],
+  // PLU-70: omitted → the server applies the campaign default. Sent only when the
+  // operator explicitly overrode it for this batch.
+  postAcceptanceMode?: PostAcceptanceMode,
+) {
+  return postJson<EnrollResponse>(`/api/workflows/${workflowId}/enroll`, {
+    creatorIds,
+    ...(postAcceptanceMode ? { postAcceptanceMode } : {}),
+  });
 }
 
 export function launchWorkflow(workflowId: string) {
@@ -349,6 +362,14 @@ export function useManualQueue(workflowId: string | null) {
 
 export function notifyBrand(instanceId: string) {
   return postJson<NotifyResult>(`/api/manual-queue/instances/${instanceId}/notify`, {});
+}
+
+/** PLU-70: mark a deal handoff finalized — the single operator action. */
+export function completeHandoff(instanceId: string) {
+  return postJson<CompleteHandoffResult>(
+    `/api/manual-queue/instances/${instanceId}/handoff/complete`,
+    {},
+  );
 }
 
 // ---------------------------------------------------------------------------

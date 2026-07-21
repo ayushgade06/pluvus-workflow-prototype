@@ -371,9 +371,15 @@ export async function executeNegotiation(
   // legacy graphs let the REWARD_SETUP node send the "Campaign Agreement
   // Confirmation" ("I Agree") email. Legacy workflows with neither node keep
   // sending the onboarding email here as the final touch.
-  const hasPostAcceptEmailNode = nodeGraph.some(
-    (n) => n.type === "REWARD_SETUP" || n.type === "CONTENT_BRIEF",
-  );
+  //
+  // PLU-70: operator handoff owns the post-acceptance email too — it sends the
+  // "looping in our campaign manager" note. Counting it here is what stops a
+  // handoff execution on a graph with NEITHER node from sending an onboarding
+  // email AND the handoff note. (Graphs that have a CONTENT_BRIEF/REWARD_SETUP
+  // node were already covered by the first clause, so nothing changes for them.)
+  const hasPostAcceptEmailNode =
+    nodeGraph.some((n) => n.type === "REWARD_SETUP" || n.type === "CONTENT_BRIEF") ||
+    instance.postAcceptanceMode === "operator_handoff";
 
   const maxRounds = typeof config["maxRounds"] === "number" ? config["maxRounds"] : 5;
 

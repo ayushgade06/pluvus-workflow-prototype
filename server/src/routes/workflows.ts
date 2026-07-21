@@ -193,7 +193,14 @@ router.get("/:id", async (req: Request, res: Response) => {
       status: wf.status,
       campaignId: wf.campaignId,
       campaign: found.campaign
-        ? { id: found.campaign.id, name: found.campaign.name, brand: found.campaign.brand }
+        ? {
+            id: found.campaign.id,
+            name: found.campaign.name,
+            brand: found.campaign.brand,
+            // PLU-70: the enroll tab shows this as the pre-selected default and
+            // lets the operator override it for the batch they're about to enroll.
+            postAcceptanceMode: found.campaign.postAcceptanceMode,
+          }
         : null,
       draftNodes: wf.draftNodes ?? [],
       latestVersion: latestVersion
@@ -451,7 +458,10 @@ router.get("/", async (_req, res) => {
 // ---------------------------------------------------------------------------
 
 router.post("/:id/enroll", async (req: Request, res: Response) => {
-  const { creatorIds } = req.body as { creatorIds?: unknown };
+  const { creatorIds, postAcceptanceMode } = req.body as {
+    creatorIds?: unknown;
+    postAcceptanceMode?: unknown;
+  };
   if (!Array.isArray(creatorIds) || creatorIds.length === 0) {
     res.status(400).json({ error: "creatorIds must be a non-empty array" });
     return;
@@ -459,6 +469,20 @@ router.post("/:id/enroll", async (req: Request, res: Response) => {
   const ids = creatorIds.filter((id): id is string => typeof id === "string" && !!id);
   if (ids.length === 0) {
     res.status(400).json({ error: "creatorIds must contain valid string ids" });
+    return;
+  }
+  // PLU-70: an optional per-enrollment override. Reject an unrecognized value
+  // rather than defaulting it — silently ignoring a typo here would enroll a
+  // batch under the wrong post-acceptance behavior, and the mode is LOCKED once
+  // the instance exists, so there is no cheap way back.
+  if (
+    postAcceptanceMode !== undefined &&
+    postAcceptanceMode !== "local_payment" &&
+    postAcceptanceMode !== "operator_handoff"
+  ) {
+    res.status(400).json({
+      error: "postAcceptanceMode must be one of: local_payment, operator_handoff",
+    });
     return;
   }
 
@@ -477,6 +501,21 @@ router.post("/:id/enroll", async (req: Request, res: Response) => {
       return;
     }
 
+    // Resolve the effective mode ONCE for this batch:
+    //   explicit override → the campaign's default → local_payment.
+    // Stamping it onto each instance is what locks it: editing the campaign
+    // later, or publishing a new version, can never change how these executions
+    // behave after acceptance.
+    let effectiveMode: "local_payment" | "operator_handoff" = "local_payment";
+    if (postAcceptanceMode === "local_payment" || postAcceptanceMode === "operator_handoff") {
+      effectiveMode = postAcceptanceMode;
+    } else if (wf.campaignId) {
+      const campaign = await findCampaignById(wf.campaignId);
+      if (campaign?.postAcceptanceMode === "operator_handoff") {
+        effectiveMode = "operator_handoff";
+      }
+    }
+
     let enrolled = 0;
     let skipped = 0;
 
@@ -485,6 +524,7 @@ router.post("/:id/enroll", async (req: Request, res: Response) => {
         await createInstance({
           creatorId,
           workflowVersionId: latestVersion.id,
+          postAcceptanceMode: effectiveMode,
         });
         enrolled++;
       } catch (err) {
@@ -499,7 +539,14 @@ router.post("/:id/enroll", async (req: Request, res: Response) => {
       }
     }
 
-    res.json({ enrolled, skipped, versionId: latestVersion.id });
+    // Echo the applied mode so the UI can state what these creators were
+    // enrolled under rather than assuming the campaign default held.
+    res.json({
+      enrolled,
+      skipped,
+      versionId: latestVersion.id,
+      postAcceptanceMode: effectiveMode,
+    });
   } catch (err) {
     console.error("[workflows] enroll error:", err);
     res.status(500).json({ error: "internal server error" });

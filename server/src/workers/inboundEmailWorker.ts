@@ -192,6 +192,29 @@ async function handleInboundEmail(
     // is dropped by the isTerminal guard at the top of this handler, so there is
     // no brand-decision reply branch here anymore.)
 
+    // ── Deal-handoff reply branch (PLU-70) ─────────────────────────────────
+    // A reply arriving in NEEDS_DEAL_FINALIZATION is the creator answering the
+    // "I'm looping in our campaign manager" note. An OPERATOR owns this thread
+    // now, so we do NOT classify, negotiate, transition, or auto-reply — an
+    // automated answer would cut across a human mid-conversation. We persist the
+    // message (it shows in the inspector's thread) and forward it to the operator
+    // so a plain "reply" reaches them just as a "reply all" would.
+    //
+    // This branch is load-bearing, not cosmetic: without it the reply falls
+    // through to injectReply, whose forced REPLY_RECEIVED transition is invalid
+    // from NEEDS_DEAL_FINALIZATION — it would throw after persisting the row and
+    // BullMQ would retry-loop on every delivery.
+    if (instance.currentState === "NEEDS_DEAL_FINALIZATION") {
+      await runtime.recordHandoffReply(instanceId, {
+        subject,
+        body,
+        threadId,
+        externalMessageId,
+      });
+      processed = true;
+      return;
+    }
+
     // ── Payment Info reply branch ──────────────────────────────────────────
     // A reply that arrives while the instance is in PAYMENT_PENDING is an email
     // sent while we're waiting on the creator's hosted payout FORM — usually a
