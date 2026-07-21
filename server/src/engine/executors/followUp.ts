@@ -117,6 +117,10 @@ export async function executeFollowUp(
       creator,
       draft,
       `followup:${instance.id}:${followUpRound}`,
+      undefined, // deps — default
+      undefined, // recipient — creator
+      // Gmail Campaign Labels (§6.3): label the thread from the loaded campaign.
+      ctx.campaign?.name,
     );
 
     const newFollowUpCount = instance.followUpCount + 1;

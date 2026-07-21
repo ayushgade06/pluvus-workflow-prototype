@@ -1,0 +1,124 @@
+/**
+ * Unit tests for campaignLabelName() — the pure Gmail-label derivation.
+ * No I/O, no provider. Run with: npx tsx src/providers/nylas/campaignLabel.test.ts
+ * (also picked up by `npm test` via tsx --test).
+ */
+
+import assert from "node:assert/strict";
+import {
+  campaignLabelName,
+  MAX_LABEL_LENGTH,
+  DEFAULT_LABEL_PREFIX,
+} from "./campaignLabel.js";
+
+let n = 0;
+function test(name: string, fn: () => void): void {
+  fn();
+  n++;
+  console.log(`  ✓ ${name}`);
+}
+
+function main(): void {
+  console.log("\ncampaignLabelName\n");
+
+  // --- Core rule: exactly Pluvus/<name>, no id, no hash ever (Refinement #2) ---
+  test("prefixes with Pluvus/ and appends the name verbatim", () => {
+    assert.equal(campaignLabelName("Summer Skincare"), "Pluvus/Summer Skincare");
+  });
+
+  test("no id or hash is EVER appended — output equals Pluvus/<name> exactly", () => {
+    const out = campaignLabelName("Q3 Fitness Push");
+    assert.equal(out, "Pluvus/Q3 Fitness Push");
+    // Belt-and-suspenders: nothing that looks like an id/hash suffix.
+    assert.equal(/[0-9a-f]{6,}$/i.test(out), false);
+  });
+
+  // --- Whitespace handling ---
+  test("trims and collapses internal whitespace runs to one space", () => {
+    assert.equal(
+      campaignLabelName("   Holiday   Gift    Guide  "),
+      "Pluvus/Holiday Gift Guide",
+    );
+  });
+
+  // --- Inner "/" must NOT create a nesting level (Refinement, ADR §6) ---
+  test('inner "/" is flattened to "-" — "A/B Test" is a SINGLE label, not nested', () => {
+    assert.equal(campaignLabelName("A/B Test"), "Pluvus/A-B Test");
+  });
+
+  test('backslash is also flattened to "-"', () => {
+    assert.equal(campaignLabelName("Back\\Slash"), "Pluvus/Back-Slash");
+  });
+
+  test("only ONE nesting level exists (the prefix separator)", () => {
+    // Two inner slashes must not produce two extra nesting levels.
+    const out = campaignLabelName("a/b/c");
+    assert.equal(out, "Pluvus/a-b-c");
+    assert.equal(out.split("/").length, 2, "exactly one '/' — the prefix one");
+  });
+
+  // --- Control characters Gmail rejects are handled ---
+  test("collapses a tab to a space and strips a NUL control char", () => {
+    // Built via char codes so no raw control byte lives in this source file: a
+    // TAB (U+0009) between the words and a trailing NUL (U+0000). The tab collapses
+    // to a single space; the NUL is stripped → "Tab Here".
+    const input = "Tab" + String.fromCharCode(9) + "Here" + String.fromCharCode(0);
+    assert.equal(campaignLabelName(input), "Pluvus/Tab Here");
+  });
+
+  // --- Empty / whitespace name falls back to Untitled (never bare Pluvus/) ---
+  test("empty name falls back to Pluvus/Untitled", () => {
+    assert.equal(campaignLabelName(""), "Pluvus/Untitled");
+  });
+
+  test("whitespace-only name falls back to Pluvus/Untitled", () => {
+    assert.equal(campaignLabelName("   "), "Pluvus/Untitled");
+  });
+
+  test("name that is only slashes falls back to Pluvus/Untitled-style (never bare)", () => {
+    // "/" flattens to "-", so "///" -> "---"; still non-empty, never a bare "Pluvus/".
+    const out = campaignLabelName("///");
+    assert.equal(out, "Pluvus/---");
+    assert.notEqual(out, "Pluvus/");
+  });
+
+  // --- Custom prefix (env override) ---
+  test("honors a custom prefix", () => {
+    assert.equal(campaignLabelName("Summer Skincare", "Acme"), "Acme/Summer Skincare");
+  });
+
+  test("a blank/whitespace prefix falls back to the default prefix", () => {
+    assert.equal(campaignLabelName("X", "   "), `${DEFAULT_LABEL_PREFIX}/X`);
+  });
+
+  test('a prefix containing "/" is flattened (no accidental extra nesting)', () => {
+    assert.equal(campaignLabelName("X", "a/b"), "a-b/X");
+  });
+
+  // --- Length bound ---
+  test("bounds the full label to MAX_LABEL_LENGTH and truncates the NAME, not the prefix", () => {
+    const longName = "N".repeat(500);
+    const out = campaignLabelName(longName);
+    assert.equal(out.length, MAX_LABEL_LENGTH, "capped at the max length");
+    assert.ok(out.startsWith("Pluvus/"), "prefix is never truncated");
+    assert.ok(out.endsWith("…"), "truncation is marked with an ellipsis");
+  });
+
+  test("a name exactly at the bound is NOT truncated (no ellipsis)", () => {
+    const budget = MAX_LABEL_LENGTH - "Pluvus/".length;
+    const name = "N".repeat(budget);
+    const out = campaignLabelName(name);
+    assert.equal(out.length, MAX_LABEL_LENGTH);
+    assert.equal(out.endsWith("…"), false, "at-bound name is emitted whole");
+    assert.equal(out, `Pluvus/${name}`);
+  });
+
+  // --- Determinism ---
+  test("is deterministic — same input yields the same output", () => {
+    assert.equal(campaignLabelName("Repeat Me"), campaignLabelName("Repeat Me"));
+  });
+
+  console.log(`\n✓ campaignLabelName: all ${n} tests passed\n`);
+}
+
+main();

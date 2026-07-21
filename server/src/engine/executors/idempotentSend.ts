@@ -7,6 +7,8 @@ import { isUniqueViolation } from "../../db/errors.js";
 import type { Creator, Message, MessageInsert } from "../../db/schema.js";
 import type { EmailDraft } from "../types.js";
 import type { IEmailProvider, EmailRecipient, EmailSendOptions } from "../providers.js";
+import { isThreadLabeler } from "../providers.js";
+import { campaignLabelName } from "../../providers/nylas/campaignLabel.js";
 import {
   DefaultThreadContextResolver,
   buildReplySubject,
@@ -63,6 +65,41 @@ const defaultDeps: SendOnceDeps = {
 };
 
 /**
+ * Fire-and-forget Gmail thread labeling AFTER a send has completed (Gmail
+ * Campaign Labels — §6.4). Best-effort by contract:
+ *   - returns void immediately; the caller does NOT await it, so it can never
+ *     delay or fail the send,
+ *   - no-op unless a campaign name is known, a threadId exists, AND the active
+ *     provider implements IThreadLabeler (so it's inert under the mock provider
+ *     and for route-driven callers that pass no campaign name),
+ *   - swallows every rejection (applyThreadLabel is best-effort and logs its own
+ *     failures; the .catch here is belt-and-suspenders against an unexpected
+ *     synchronous-in-async throw surfacing as an unhandled rejection).
+ *
+ * Provider isolation (§6.4): this references ONLY the IThreadLabeler capability
+ * and campaignLabelName (a pure string transform) — no Gmail/Nylas concept. All
+ * Gmail specifics live inside NylasEmailProvider.applyThreadLabel.
+ */
+function maybeLabelThreadAsync(
+  email: IEmailProvider,
+  threadId: string,
+  campaignName: string | undefined,
+): void {
+  if (!campaignName || !threadId || !isThreadLabeler(email)) return;
+  const label = campaignLabelName(campaignName);
+  // Detached promise: the send has already returned. Any rejection is swallowed
+  // (applyThreadLabel logs inside); this .catch guarantees no unhandled rejection.
+  void Promise.resolve()
+    .then(() => email.applyThreadLabel(threadId, label))
+    .catch((err) => {
+      console.warn(
+        `[labels] apply failed (non-fatal) threadId=${threadId} label=${label}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+}
+
+/**
  * Send an outbound email at most once for the given idempotency key.
  *
  * On a fresh send: reserves the row, sends, finalizes, returns the provider
@@ -92,6 +129,14 @@ export async function sendOnce(
   // Message row still belongs to the instance so the brand's reply correlates by
   // threadId. An optional Reply-To on the recipient is carried through.
   recipient?: EmailRecipient,
+  // Optional human campaign name for the Gmail thread label (Gmail Campaign
+  // Labels — §6.3). Passed THROUGH from the executor's already-loaded
+  // ctx.campaign.name — sendOnce performs NO campaign lookup of its own. When
+  // undefined (route-driven callers, mock mode, or a workflow without a linked
+  // campaign) no label is applied. Kept last/optional so every existing caller
+  // compiles unchanged (ADR-2 style). Used ONLY post-send by
+  // maybeLabelThreadAsync (fire-and-forget); it never affects the delivery path.
+  campaignName?: string,
 ): Promise<SentResult> {
   // Step 0 — resolve thread context ONCE (E5). One read yields the reply target
   // and the thread's canonical subject; from those we derive a single reply
@@ -143,6 +188,9 @@ export async function sendOnce(
         typeof prior?.externalMessageId === "string" && prior.externalMessageId !== "";
       if (priorSent) {
         // (a) The prior attempt COMPLETED the send — do not send again.
+        // Still (re-)apply the label on this replay: it's cheap, idempotent, and
+        // adds resilience if the original apply failed (§6.4 — self-healing).
+        maybeLabelThreadAsync(email, prior?.threadId ?? "", campaignName);
         return {
           messageId: prior!.externalMessageId!,
           threadId: prior?.threadId ?? "",
@@ -163,6 +211,8 @@ export async function sendOnce(
           options,
         );
         await deps.updateMessageSent(prior.id, { externalMessageId: messageId, threadId });
+        // Label AFTER the send + finalize (§6.4): fire-and-forget, best-effort.
+        maybeLabelThreadAsync(email, threadId, campaignName);
         return { messageId, threadId, alreadySent: false };
       }
       // Defensive: unique violation but no row found on re-read (shouldn't happen).
@@ -182,6 +232,13 @@ export async function sendOnce(
 
   // Step 3 — finalize the reserved row with the provider's identifiers.
   await deps.updateMessageSent(reserved.id, { externalMessageId: messageId, threadId });
+
+  // Step 4 (Gmail Campaign Labels — §6.4) — the email is SENT and the row
+  // finalized; the delivery contract below is unchanged. Apply the campaign
+  // label AFTER, off the delivery path, fire-and-forget: it can never delay the
+  // send, fail delivery, retry the send, touch idempotency, or modify workflow
+  // state. A no-op unless a campaign name was passed and the provider labels.
+  maybeLabelThreadAsync(email, threadId, campaignName);
 
   return { messageId, threadId, alreadySent: false };
 }

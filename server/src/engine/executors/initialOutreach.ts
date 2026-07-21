@@ -74,6 +74,11 @@ export async function executeInitialOutreach(
     creator,
     draft,
     `outreach:${instance.id}`,
+    undefined, // deps — default
+    undefined, // recipient — creator (not a brand-outbound send)
+    // Gmail Campaign Labels (§6.3): pass the already-loaded campaign name so the
+    // thread is labeled Pluvus/<name>. Free field read on ctx.campaign — no query.
+    ctx.campaign?.name,
   );
 
   const nextNode = nodeGraph.find((n) => n.order === node.order + 1) ?? null;

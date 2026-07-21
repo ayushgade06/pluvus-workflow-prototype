@@ -174,6 +174,9 @@ export async function executeContentBrief(
     creator,
     draft,
     `content-brief:${instance.id}`,
+    undefined, // deps — default
+    undefined, // recipient — creator
+    ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
   );
 
   // 8a. Merged flow: enter the PAYMENT_PENDING waiting state and stay on THIS node

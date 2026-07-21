@@ -74,8 +74,65 @@ export interface NylasClientLike {
         id: string;
         threadId?: string;
         headers?: Array<{ name: string; value: string }>;
+        // The folder/label ids this message currently appears in (Gmail Campaign
+        // Labels — read-then-union apply, ADR §3). We read this so applyThreadLabel
+        // can ADD our label to the message's existing folders rather than
+        // overwriting them (Nylas's messages.update.folders is set-semantics).
+        // Optional so existing callers/fakes that only read threadId are unaffected.
+        folders?: string[];
       };
     }>;
+    /**
+     * Update a message (Gmail Campaign Labels — §6.6). We use ONLY the `folders`
+     * field to set the label/folder id set the message appears in. Because Gmail
+     * models labels at the thread level, labeling the just-sent message surfaces
+     * the label on the whole conversation (ADR §3). NOTE: `folders` OVERWRITES the
+     * message's folder set, so callers pass the UNION of existing folders + the
+     * new label id (never just the label alone). Optional on the interface so
+     * existing providers/fakes without label support are unaffected.
+     */
+    update?(params: {
+      identifier: string;
+      messageId: string;
+      requestBody: { folders?: string[] };
+    }): Promise<{ data: { id: string; folders?: string[] } }>;
+  };
+
+  /**
+   * Nylas Folders API (v3). For a Gmail grant, a "folder" IS a Gmail label
+   * (Nylas v3 consolidates Gmail labels + Microsoft folders under Folders — ADR
+   * §1). We list to find `Pluvus/<name>` by exact name and create it when absent.
+   * Optional on the interface so a fake without label support (or a non-labeling
+   * test) need not implement it.
+   */
+  folders?: {
+    list(params: {
+      identifier: string;
+    }): Promise<{ data: Array<{ id: string; name: string }> }>;
+    create(params: {
+      identifier: string;
+      requestBody: { name: string };
+    }): Promise<{ data: { id: string; name: string } }>;
+  };
+
+  /**
+   * Nylas Threads API (v3) — the chosen label-apply mechanism (ADR §3, decision
+   * (c) read-then-union). `find` reads the thread's current folder/label id set;
+   * `update` writes it back. NOTE: `update.folders` OVERWRITES the thread's folder
+   * set, so applyThreadLabel always passes the UNION of the existing folders + the
+   * new label id — never the label alone (which would strip INBOX/SENT/…).
+   * Optional on the interface so a fake without label support is unaffected.
+   */
+  threads?: {
+    find(params: {
+      identifier: string;
+      threadId: string;
+    }): Promise<{ data: { id: string; folders?: string[] } }>;
+    update(params: {
+      identifier: string;
+      threadId: string;
+      requestBody: { folders?: string[] };
+    }): Promise<{ data: { id: string; folders?: string[] } }>;
   };
 }
 
