@@ -104,6 +104,11 @@ export const instanceStateEnum = pgEnum("InstanceState", [
   "PAYMENT_PENDING",
   "PAYMENT_RECEIVED",
   "CONTENT_BRIEF_SENT",
+  // Post-payout waiting state: after the creator submits the payout form, the
+  // merged Content Brief node parks here and asks the creator to reply in the
+  // thread with the link(s) to their published content. Non-terminal so the
+  // inbound worker accepts and routes the reply (see stateMachine.ts).
+  "CONTENT_LINKS_PENDING",
   "REJECTED",
   "OPTED_OUT",
   "NO_RESPONSE",
@@ -159,6 +164,10 @@ export const eventTypeEnum = pgEnum("EventType", [
   "PAYMENT_INFO_SENT",
   "PAYMENT_RECEIVED",
   "CONTENT_BRIEF_SENT",
+  // Appended when a creator replies to the content-brief email with one or more
+  // content URLs. Payload carries the extracted URLs; drives the escalation to
+  // MANUAL_REVIEW for operator review (no payout/ledger side effects).
+  "CONTENT_LINKS_SUBMITTED",
   "PAYMENT_REPLY_UNRESOLVED",
   "PARTNERSHIP_ACTIVATED",
   "CONVERSION_RECORDED",

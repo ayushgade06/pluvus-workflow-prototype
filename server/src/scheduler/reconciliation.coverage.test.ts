@@ -27,8 +27,8 @@ import { reconcileStuckInstances, type ReconciliationDeps } from "./reconciliati
 import type { NodeExecutionJobData } from "../workers/jobs.js";
 
 // The genuinely-WAITING states are deliberately excluded from the sweep (the due
-// poller covers AWAITING_REPLY; REWARD_PENDING/PAYMENT_PENDING are parked on an
-// external reply/form). Re-enqueuing those would spam, not recover.
+// poller covers AWAITING_REPLY; REWARD_PENDING/PAYMENT_PENDING/CONTENT_LINKS_PENDING
+// are parked on an external reply/form). Re-enqueuing those would spam, not recover.
 //
 // W-2: FOLLOWED_UP is NOT in this list anymore — it is transient (committed with
 // dueAt=null and auto-chained back to AWAITING_REPLY), so the due poller cannot
@@ -37,6 +37,10 @@ const WAITING_STATES: InstanceState[] = [
   "AWAITING_REPLY",
   "REWARD_PENDING",
   "PAYMENT_PENDING",
+  // CONTENT_LINKS_PENDING parks on the creator's content-links reply, just like
+  // PAYMENT_PENDING parks on the payout form — a genuine waiting state that must
+  // NOT be swept (re-enqueuing has no reply to process → spam, not recovery).
+  "CONTENT_LINKS_PENDING",
 ];
 
 test("H8: RECONCILE_STATES includes NEGOTIATING and REPLY_RECEIVED (the flagged pair)", () => {

@@ -197,6 +197,54 @@ async function main() {
     assert.match(draft.body, /Replying to THIS notification does nothing/);
   });
 
+  await test("content-links escalation lists the submitted URLs (each openable) + count, no transcript", async () => {
+    const urls = [
+      "https://instagram.com/reel/abc",
+      "https://tiktok.com/@robin/video/123",
+    ];
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [
+          { role: "creator", message: "here are my links" },
+        ],
+        threadId: null,
+        gmailRfc822MessageId: null,
+        submittedUrls: urls,
+      },
+      "content_links_submitted",
+    );
+    // Objective reason label.
+    assert.match(draft.body, /submitted content links for review/);
+    // Count + each URL rendered verbatim (directly openable), on their own lines.
+    assert.match(draft.body, /Submitted content links \(2\):/);
+    for (const u of urls) assert.ok(draft.body.includes(u), `body must contain ${u}`);
+    // The escalation stays compact — the full transcript is never embedded.
+    assert.ok(!/Conversation so far/.test(draft.body));
+  });
+
+  await test("content-links section is omitted when there are no submitted URLs", async () => {
+    const draft = buildEscalationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: null,
+        gmailRfc822MessageId: null,
+        submittedUrls: [],
+      },
+      "low_confidence_reply",
+    );
+    assert.ok(!/Submitted content links/.test(draft.body));
+  });
+
   await test("E6: includes the thread deep-link when a threadId + URL builder are present", async () => {
     const draft = buildEscalationEmail(
       {

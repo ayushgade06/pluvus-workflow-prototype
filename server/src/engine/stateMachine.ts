@@ -53,7 +53,19 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
   // (which then chains into Content Brief). Both edges are kept. Can be escalated.
   // MED-W1: OPTED_OUT is reachable — an "unsubscribe" email while awaiting the
   // payout form must opt the creator out, not get the marketing auto-reply.
-  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "CONTENT_BRIEF_SENT", "OPTED_OUT", "MANUAL_REVIEW"],
+  // Content-links flow: in the merged graph the payout-form submission now parks
+  // on CONTENT_LINKS_PENDING (ask the creator for their content links) instead of
+  // landing directly on the CONTENT_BRIEF_SENT terminal. The CONTENT_BRIEF_SENT
+  // edge is kept for the legacy PAYMENT_RECEIVED chain and backward compatibility.
+  PAYMENT_PENDING: ["PAYMENT_PENDING", "PAYMENT_RECEIVED", "CONTENT_LINKS_PENDING", "CONTENT_BRIEF_SENT", "OPTED_OUT", "MANUAL_REVIEW"],
+  // Post-payout content-links waiting state. The creator was asked to reply with
+  // the link(s) to their published content. A reply that contains URLs appends a
+  // CONTENT_LINKS_SUBMITTED event and escalates to MANUAL_REVIEW (one-way human
+  // handoff); a reply with no URLs stays here (self-loop) after a gentle nudge; an
+  // "unsubscribe" reply routes to OPTED_OUT (CAN-SPAM parity with the other
+  // waiting states). Intentionally NON-terminal so the inbound worker accepts and
+  // routes the creator's reply instead of dropping it.
+  CONTENT_LINKS_PENDING: ["CONTENT_LINKS_PENDING", "MANUAL_REVIEW", "OPTED_OUT"],
   // Payment Info success. No longer terminal: the payout submission auto-advances
   // into the Content Brief node. Content Brief has NO waiting state — it sends the
   // brief email and completes in a single step — so PAYMENT_RECEIVED transitions
@@ -76,7 +88,11 @@ const TRANSITIONS: Record<InstanceState, InstanceState[]> = {
 const TERMINAL_STATES: InstanceState[] = [
   // ACCEPTED, REWARD_CONFIRMED and PAYMENT_RECEIVED are intentionally NOT terminal
   // anymore — they auto-advance into Reward Setup, Payment Info and Content Brief
-  // respectively. CONTENT_BRIEF_SENT is the new success terminal.
+  // respectively. CONTENT_LINKS_PENDING is also intentionally NON-terminal (it
+  // holds the conversation open for the creator's content-links reply — a terminal
+  // parking state would make the inbound worker drop that reply). CONTENT_BRIEF_SENT
+  // remains a success terminal (legacy chain); MANUAL_REVIEW is the terminal endpoint
+  // of the content-links automated path.
   "CONTENT_BRIEF_SENT",
   "REJECTED",
   "OPTED_OUT",

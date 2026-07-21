@@ -8,4 +8,5 @@ export { executeRewardReply } from "./rewardReply.js";
 export { executePaymentInfo, executePaymentSubmission } from "./paymentInfo.js";
 export { executePaymentReply } from "./paymentReply.js";
 export { executeContentBrief, executeContentBriefSubmission } from "./contentBrief.js";
+export { executeContentLinksReply } from "./contentLinksReply.js";
 export { executeEnd } from "./end.js";

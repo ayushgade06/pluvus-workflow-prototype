@@ -197,6 +197,7 @@ function QueueRow({
       style={{
         display: "flex",
         alignItems: "center",
+        flexWrap: "wrap",
         gap: 16,
         padding: "14px 18px",
         background: selected ? "#16171e" : colors.panel,
@@ -272,6 +273,51 @@ function QueueRow({
           )}
         </div>
       </button>
+
+      {/* Content-links escalation: the URLs the creator submitted, each an
+          openable anchor. Notify-only — the queue is a launch point, not a control
+          panel: there is NO approve/reject action. Rendered on its own row
+          (flexBasis 100%) so it wraps below the creator/reason line. Outside the
+          button (anchors can't nest in a button); order:-1 places it below via the
+          row's wrap. Omitted entirely when there are no submitted links. */}
+      {item.linkCount > 0 && (
+        <div
+          style={{
+            flexBasis: "100%",
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+            marginTop: 4,
+            paddingLeft: 2,
+          }}
+        >
+          <span style={{ fontSize: font.size.xs, color: colors.textDim }}>
+            🔗 {item.linkCount} content link{item.linkCount === 1 ? "" : "s"} submitted
+          </span>
+          {item.submittedUrls.map((url) => (
+            <a
+              key={url}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="ds-focusable"
+              title={url}
+              style={{
+                fontSize: font.size.sm,
+                color: colors.accent,
+                textDecoration: "none",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: "100%",
+              }}
+            >
+              {url}
+            </a>
+          ))}
+        </div>
+      )}
 
       {/* E6: one-click deep-link to the email thread holding the full
           conversation. Rendered only when the provider supplied a URL — omitted

@@ -86,6 +86,11 @@ export function renderContentBriefEmail(input: ContentBriefInput): EmailDraft {
     ``,
     `Please review the attached document carefully before creating your content.`,
     ``,
+    // Content-links request: the close of the funnel. Once the creator's content
+    // is live, we ask them to reply IN THIS SAME THREAD with the link(s) — no new
+    // form or login. The instance parks on CONTENT_LINKS_PENDING to receive it.
+    `Once your content is live, please reply to this email with the link(s) to your posted content so we can review it.`,
+    ``,
     `If you have any questions, simply reply to this email.`,
     ``,
     `Looking forward to working with you!`,

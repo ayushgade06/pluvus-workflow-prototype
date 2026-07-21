@@ -128,6 +128,66 @@ def test_non_knowledge_backed_question_still_escalates(text):
     assert answered is None
 
 
+# ---------------------------------------------------------------------------
+# Same-rate commission agreement — quoting the CONFIGURED % is not a pricing
+# exception (the creator is accepting the fixed term, not asking to change it).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Sounds good, I'm happy with the 10% commission.",
+        "$200 plus the 10% commission works for me. Let's do it!",
+        "Great — 10% commission is fine, let's move forward.",
+    ],
+)
+def test_same_rate_commission_agreement_not_escalated(text):
+    # With the configured rate threaded in, a reply that merely quotes the SAME %
+    # (agreement / restatement) is NOT a pricing exception — it flows to the model
+    # so the deal can close.
+    topic, answered = detect_escalation_topic_ex(text, commission_rate=10)
+    assert topic is None, f"same-rate commission agreement must not escalate: {text!r}"
+    assert answered == "pricing_exception"  # detected but intentionally suppressed
+
+
+def test_different_rate_commission_still_escalates():
+    # A DIFFERENT % is a structural change to a fixed term → still escalate, even
+    # phrased softly (no explicit change verb needed — the number itself differs).
+    topic, _answered = detect_escalation_topic_ex(
+        "I'd be happy with a 25% commission on this one.", commission_rate=10
+    )
+    assert topic == "pricing_exception"
+
+
+def test_same_rate_but_change_demand_still_escalates():
+    # Quoting the same % but DEMANDING a change ("bump the 10% commission to...") is
+    # still a structural rewrite → escalate.
+    topic, _answered = detect_escalation_topic_ex(
+        "The 10% commission is too low — bump the commission to 20%.", commission_rate=10
+    )
+    assert topic == "pricing_exception"
+
+
+def test_commission_quote_without_configured_rate_still_escalates():
+    # No configured rate to compare against → keep the original always-escalate
+    # behavior for a quoted commission percentage (conservative default).
+    topic, _answered = detect_escalation_topic_ex(
+        "Happy with the 10% commission, let's go.", commission_rate=None
+    )
+    assert topic == "pricing_exception"
+
+
+def test_same_rate_agreement_bundled_with_equity_still_escalates():
+    # The same-rate suppression must NOT rescue a reply that ALSO raises a genuine
+    # pricing exception (equity / revenue share / guarantee).
+    topic, _answered = detect_escalation_topic_ex(
+        "10% commission is fine, but I also want equity in the company.",
+        commission_rate=10,
+    )
+    assert topic == "pricing_exception"
+
+
 def test_classify_topic_intent_biases_to_demand_on_ambiguity():
     # A bare statement (neither a clear question nor a demand) is treated as a
     # demand so it still escalates — we never widen the answerable path on doubt.

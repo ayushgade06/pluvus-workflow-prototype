@@ -36,6 +36,7 @@ import {
   executePaymentReply,
   executeContentBrief,
   executeContentBriefSubmission,
+  executeContentLinksReply,
   executeEnd,
 } from "./executors/index.js";
 import { markPaymentReceived } from "../db/index.js";
@@ -611,6 +612,74 @@ export class WorkflowRuntime {
   }
 
   // -------------------------------------------------------------------------
+  // handleContentLinksReply
+  // -------------------------------------------------------------------------
+  // An inbound EMAIL reply arrived while the instance is in CONTENT_LINKS_PENDING
+  // (the merged Content Brief node parked after the payout form, having asked the
+  // creator to reply in the thread with their content links). This persists the
+  // inbound message and steps the Content Brief node in the "reply" phase, which
+  // dispatch routes to executeContentLinksReply: opt-out → OPTED_OUT; URLs present
+  // → append CONTENT_LINKS_SUBMITTED + escalate to MANUAL_REVIEW; no URLs → nudge
+  // and stay in CONTENT_LINKS_PENDING.
+  //
+  // Kept separate from handlePaymentReply (a PAYMENT_PENDING reply) and from
+  // injectReply (which forces REPLY_RECEIVED, invalid from CONTENT_LINKS_PENDING).
+
+  async handleContentLinksReply(
+    instanceId: string,
+    opts: {
+      subject: string;
+      body: string;
+      threadId?: string;
+      externalMessageId?: string;
+      source?: TransitionSource;
+      worker?: string | undefined;
+      queueJobId?: string | undefined;
+    },
+  ): Promise<ExecutionContext> {
+    const instance = await findInstanceById(instanceId);
+    if (!instance) {
+      throw new Error(`Instance not found: ${instanceId}`);
+    }
+    if (instance.currentState !== "CONTENT_LINKS_PENDING") {
+      throw new Error(
+        `handleContentLinksReply expects CONTENT_LINKS_PENDING state, got ${instance.currentState}`,
+      );
+    }
+
+    const now = new Date();
+    const externalMessageId =
+      opts.externalMessageId ?? `mock-inbound-${instanceId}-${Date.now()}`;
+
+    // Persist the inbound reply so executeContentLinksReply can read it (same
+    // contract as handlePaymentReply → executePaymentReply). Idempotent on
+    // externalMessageId (CRITICAL-6).
+    await this.persistInboundMessageOnce(instanceId, externalMessageId, {
+      subject: opts.subject,
+      body: opts.body,
+      threadId: opts.threadId ?? `mock-thread-${instance.creatorId}`,
+      receivedAt: now,
+    });
+
+    await appendEvent({
+      instanceId,
+      type: "INBOUND_REPLY_RECEIVED",
+      nodeId: instance.currentNodeId ?? null,
+      payload: { subject: opts.subject, externalMessageId, contentLinksReply: true },
+      occurredAt: now,
+    });
+
+    // Step the node in the "reply" phase — dispatch runs executeContentLinksReply,
+    // reusing the standard OCC + event-writing path in stepInstance.
+    return this.stepInstance(instanceId, {
+      source: opts.source ?? "inbound-email",
+      worker: opts.worker,
+      queueJobId: opts.queueJobId,
+      phase: "reply",
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // handlePaymentSubmission
   // -------------------------------------------------------------------------
   // The creator submitted the hosted payout form while the instance is in
@@ -738,6 +807,15 @@ export class WorkflowRuntime {
         return state;
       }
 
+      // Stop at CONTENT_LINKS_PENDING — after the payout form is submitted, the
+      // merged Content Brief node parks here waiting for the creator's content-links
+      // reply (delivered via handleContentLinksReply), same as the other waiting
+      // states. Without this stop the loop would re-step the CONTENT_BRIEF node with
+      // no reply to process.
+      if (state === "CONTENT_LINKS_PENDING") {
+        return state;
+      }
+
       ctx = await this.stepInstance(instanceId);
     }
   }
@@ -831,15 +909,22 @@ export class WorkflowRuntime {
         //   ACCEPTED                     → send the merged email (finalized offer +
         //                                  payout link + brief PDF), enter waiting
         //   PAYMENT_PENDING + submission → the creator submitted the payout form;
-        //                                  finalize to the CONTENT_BRIEF_SENT terminal
+        //                                  mint the ledger and park on
+        //                                  CONTENT_LINKS_PENDING (await content links)
         //   PAYMENT_PENDING + reply      → an inbound EMAIL arrived (often a
         //                                  re-negotiation attempt); send the "rate
         //                                  is fixed" auto-reply and stay waiting
+        //   CONTENT_LINKS_PENDING        → an inbound content-links reply arrived;
+        //                                  extract URLs → escalate, or nudge and wait
         //   PAYMENT_RECEIVED             → legacy path: Payment Info already
         //                                  collected payout; send the brief-only
         //                                  email and complete.
         // The submission phase is driven via handlePaymentSubmission (the hosted
-        // payment route); the reply phase via handlePaymentReply (inbound worker).
+        // payment route); the PAYMENT_PENDING reply phase via handlePaymentReply and
+        // the CONTENT_LINKS_PENDING reply via handleContentLinksReply (inbound worker).
+        if (ctx.instance.currentState === "CONTENT_LINKS_PENDING") {
+          return executeContentLinksReply(ctx, this.email, this.agent);
+        }
         if (ctx.instance.currentState === "PAYMENT_PENDING") {
           return phase === "reply"
             ? executePaymentReply(ctx, this.email, this.agent)

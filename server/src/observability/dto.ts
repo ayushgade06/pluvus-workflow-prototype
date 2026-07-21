@@ -33,6 +33,7 @@ export const WORKFLOW_STATE_ORDER: InstanceState[] = [
   "REWARD_CONFIRMED",
   "PAYMENT_PENDING",
   "PAYMENT_RECEIVED",
+  "CONTENT_LINKS_PENDING",
   "CONTENT_BRIEF_SENT",
   "REJECTED",
   "OPTED_OUT",
@@ -54,11 +55,14 @@ export const TERMINAL_STATES: InstanceState[] = [
 // States the scheduler can act on — used to flag "stuck" instances whose dueAt
 // has long passed (waiting buckets). REWARD_PENDING and PAYMENT_PENDING wait on a
 // creator action (reply / form submission) so they surface as waiting buckets.
+// CONTENT_LINKS_PENDING likewise waits on a creator action (the content-links
+// reply), so it is a waiting bucket too.
 export const WAITING_STATES: InstanceState[] = [
   "AWAITING_REPLY",
   "FOLLOWED_UP",
   "REWARD_PENDING",
   "PAYMENT_PENDING",
+  "CONTENT_LINKS_PENDING",
 ];
 
 // ---------------------------------------------------------------------------

@@ -2095,7 +2095,14 @@ def _langgraph_negotiate(req: NegotiateRequest) -> NegotiateResponse:
     #     clause(s) into creatorQuestions so the human still sees the sensitive ask.
     #   * escalation_topic=None → nothing sensitive; normal flow.
     _norm_reply = normalize_untrusted_text(req.creatorReply)
-    _gate = detect_escalation_per_clause(_norm_reply)
+    # F-23 refinement: thread the brand's configured commission % so a reply that
+    # merely AGREES to / restates the same rate ("happy with the 10% commission")
+    # is NOT force-escalated as a pricing exception — only a DIFFERENT rate or a
+    # change-demand is. Without this a creator's acceptance that quotes the fixed
+    # commission collapsed the close to MANUAL_REVIEW.
+    _gate = detect_escalation_per_clause(
+        _norm_reply, commission_rate=_coerce_rate(req.campaignConstraints.commissionRate)
+    )
     # Clauses we recognized as escalate-topic but are NOT escalating on (they ride
     # along in creatorQuestions when the turn flows to the model). Empty on the
     # escalate-now and no-topic paths. Threaded to the response merge below.

@@ -348,6 +348,11 @@ export interface ManualQueueItem {
    *  the provider can't build one (mock / unconfigured) or the instance hasn't
    *  threaded yet. The UI shows a link only when present. */
   threadUrl: string | null;
+  /** Content-links escalation: the URLs the creator submitted (empty for every
+   *  other escalation reason). Rendered as an openable list in the queue row. */
+  submittedUrls: string[];
+  /** Convenience count of submittedUrls (0 for non-content-links escalations). */
+  linkCount: number;
   notification: ManualQueueNotification | null;
 }
 

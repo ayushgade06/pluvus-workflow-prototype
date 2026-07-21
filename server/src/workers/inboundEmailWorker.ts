@@ -223,6 +223,37 @@ async function handleInboundEmail(
       return;
     }
 
+    // ── Content-links reply branch ─────────────────────────────────────────
+    // A reply that arrives while the instance is in CONTENT_LINKS_PENDING is the
+    // creator sharing the link(s) to their published content (or a question / "not
+    // live yet"). Route it to the content-links reply handler, which extracts URLs
+    // and escalates to MANUAL_REVIEW when present, or nudges and stays waiting when
+    // absent. This bypasses injectReply's forced REPLY_RECEIVED transition, which
+    // is invalid from CONTENT_LINKS_PENDING.
+    if (instance.currentState === "CONTENT_LINKS_PENDING") {
+      try {
+        await runtime.handleContentLinksReply(instanceId, {
+          subject,
+          body,
+          threadId,
+          externalMessageId,
+          worker: "inbound-email",
+          queueJobId: job.id,
+        });
+      } catch (err) {
+        if (err instanceof StaleInstanceError) {
+          console.log(
+            `[inbound-email] OCC conflict on handleContentLinksReply — ${err.message} (job ${job.id})`,
+          );
+          processed = true; // handled by the winning worker — don't retry-loop
+          return;
+        }
+        throw err;
+      }
+      processed = true;
+      return;
+    }
+
     try {
       await runtime.injectReply(instanceId, { subject, body, threadId, externalMessageId });
     } catch (err) {

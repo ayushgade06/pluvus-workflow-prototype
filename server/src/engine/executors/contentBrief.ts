@@ -31,8 +31,9 @@ import { resolveBrandName } from "../campaignContext.js";
 //
 //   SUBMISSION phase (state PAYMENT_PENDING, handled by executeContentBriefSubmission):
 //     After the creator submits the hosted payout form (routes/payment.ts →
-//     runtime.handlePaymentSubmission persists it), transition PAYMENT_PENDING →
-//     CONTENT_BRIEF_SENT (the success terminal).
+//     runtime.handlePaymentSubmission persists it), mint the money ledger and
+//     transition PAYMENT_PENDING → CONTENT_LINKS_PENDING (non-terminal), where the
+//     instance waits for the creator's in-thread content-links reply.
 //
 // Legacy graphs (Reward Setup → Payment Info → Content Brief) still drive this
 // node from PAYMENT_RECEIVED with a brief-only email (no offer block / payout
@@ -209,9 +210,11 @@ export async function executeContentBrief(
 // Content Brief node is parked in PAYMENT_PENDING. The submission itself
 // (validating + persisting the payout fields) is done by the payment route before
 // this executor runs; by the time this runs the PaymentInfo row is already
-// PAYMENT_RECEIVED. This is the FINAL step: it lands the instance directly on the
-// CONTENT_BRIEF_SENT terminal (there is no separate PAYMENT_RECEIVED hop in the
-// merged flow, since Content Brief already sent the brief up-front).
+// PAYMENT_RECEIVED. It mints the money ledger (Partnership + fee Obligation) and
+// then parks the instance on the non-terminal CONTENT_LINKS_PENDING waiting state
+// (there is no separate PAYMENT_RECEIVED hop in the merged flow, since Content
+// Brief already sent the brief up-front). The instance then waits for the creator
+// to reply in-thread with their content links (handled by executeContentLinksReply).
 
 export async function executeContentBriefSubmission(
   ctx: ExecutionContext,
@@ -264,11 +267,16 @@ export async function executeContentBriefSubmission(
     return blockedByAttributionMint(node.type);
   }
 
-  // Content Brief is the terminal node — the payout submission completes the run.
+  // The payout submission no longer completes the run. Instead of landing on the
+  // CONTENT_BRIEF_SENT terminal, park on the non-terminal CONTENT_LINKS_PENDING
+  // waiting state (staying on THIS node) so the creator can reply in-thread with
+  // their content links, which the content-links reply handler then processes.
+  // The ledger mint above (Partnership + fee Obligation) is unchanged — the money
+  // behavior is identical; only the post-mint parking target moved. No completedAt
+  // (this is a waiting state, not the end of the run).
   return {
-    nextState: "CONTENT_BRIEF_SENT",
-    nextNodeId: null,
-    completedAt: new Date(),
+    nextState: "CONTENT_LINKS_PENDING",
+    nextNodeId: node.id,
     eventType: "CONTENT_BRIEF_SENT",
     eventPayload: {
       briefFileName,
