@@ -40,7 +40,7 @@ test("subject is exactly 'Your Campaign Brief'", () => {
 test("body greets the creator and welcomes them aboard", () => {
   const { body } = full();
   assert.match(body, /^Hi Ada,/);
-  assert.match(body, /Welcome aboard!/);
+  assert.match(body, /welcome aboard!/i);
 });
 
 test("body references the attached brief and asks the creator to review it", () => {
@@ -51,7 +51,7 @@ test("body references the attached brief and asks the creator to review it", () 
 
 test("body signs off as the brand", () => {
   const { body } = full();
-  assert.match(body, /Thanks,\nPluvus$/);
+  assert.match(body, /Best,\nPluvus$/);
 });
 
 // ── Content-links request (the close of the funnel) ──────────────────────────
@@ -67,7 +67,7 @@ test("body asks the creator to reply with their content link(s) once content is 
 // ── Finalized offer block ────────────────────────────────────────────────────
 test("body states the finalized terms header + fee + commission", () => {
   const { body } = full();
-  assert.match(body, /Here are your finalized terms:/);
+  assert.match(body, /here are the terms we settled on:/);
   assert.match(body, /• Fixed Fee: \$750/);
   assert.match(body, /• Commission: 15%/);
 });

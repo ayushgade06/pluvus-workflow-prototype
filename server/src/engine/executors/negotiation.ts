@@ -235,11 +235,13 @@ async function sendCloseEmail(
   const template = [
     `Hi {{creatorName}},`,
     ``,
-    `Thank you so much for taking the time to talk with us about partnering with ${brandName}.`,
+    `Thank you so much for taking the time to talk through a partnership with ${brandName} — we genuinely enjoyed the conversation.`,
     ``,
-    `Unfortunately we weren't able to align on terms for this particular campaign, so we're going to close things out for now. We really appreciate your interest, and we'd love to keep you in mind for future opportunities that might be a better fit.`,
+    `We weren't quite able to land on terms that worked for both of us on this particular campaign, so we'll close this one out for now. That's entirely okay — these things come down to fit and timing, and we'd love to stay in touch for future campaigns where the numbers line up better. If something changes on your end, our door is always open too.`,
     ``,
-    `Wishing you all the best,`,
+    `Wishing you all the best, and hopefully we'll work together down the line.`,
+    ``,
+    `Warmly,`,
     `${senderName}`,
   ].join("\n");
 

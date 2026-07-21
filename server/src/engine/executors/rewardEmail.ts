@@ -54,11 +54,9 @@ export function renderRewardConfirmationEmail(input: RewardConfirmationInput): E
   const body = [
     `Hi ${input.creatorName},`,
     ``,
-    `Thank you for working with ${input.brandName}.`,
+    `Thanks so much for the chat — we're thrilled to be partnering with you and ${input.brandName}.`,
     ``,
-    `We have successfully finalized the collaboration.`,
-    ``,
-    `Here is the agreed partnership:`,
+    `Here's a quick recap of everything we agreed on:`,
     ``,
     `• Fixed Fee: ${feeLine}`,
     `• Commission: ${commissionLine}`,
