@@ -1,6 +1,6 @@
 import { Queue } from "bullmq";
 import { redisConnection } from "./redis.js";
-import type { NodeExecutionJobData, InboundEmailJobData } from "./jobs.js";
+import type { NodeExecutionJobData, InboundEmailJobData, DelayedSendJobData } from "./jobs.js";
 
 // ---------------------------------------------------------------------------
 // Queue names — single source of truth
@@ -8,6 +8,8 @@ import type { NodeExecutionJobData, InboundEmailJobData } from "./jobs.js";
 
 export const QUEUE_NODE_EXECUTION = "node-execution";
 export const QUEUE_INBOUND_EMAIL = "inbound-email";
+// Randomized Send Delay (§4.2): delayed flush of reserved OUTBOUND AI replies.
+export const QUEUE_DELAYED_SEND = "delayed-send";
 
 // ---------------------------------------------------------------------------
 // Worker concurrency (HARD-S1)
@@ -75,6 +77,8 @@ const DEFAULT_JOB_OPTIONS = {
 let _nodeExecutionQueue: Queue<any> | undefined;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _inboundEmailQueue: Queue<any> | undefined;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _delayedSendQueue: Queue<any> | undefined;
 
 export function getNodeExecutionQueue(): Queue<NodeExecutionJobData> {
   if (!_nodeExecutionQueue) {
@@ -94,6 +98,16 @@ export function getInboundEmailQueue(): Queue<InboundEmailJobData> {
     });
   }
   return _inboundEmailQueue as Queue<InboundEmailJobData>;
+}
+
+export function getDelayedSendQueue(): Queue<DelayedSendJobData> {
+  if (!_delayedSendQueue) {
+    _delayedSendQueue = new Queue(QUEUE_DELAYED_SEND, {
+      connection: redisConnection(),
+      defaultJobOptions: DEFAULT_JOB_OPTIONS,
+    });
+  }
+  return _delayedSendQueue as Queue<DelayedSendJobData>;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +144,33 @@ export async function enqueueInboundEmail(
   await queue.add("reply", data, { jobId });
 }
 
+/**
+ * Enqueue a delayed flush of a reserved OUTBOUND row (Randomized Send Delay
+ * §4.2). `delayMs` is BullMQ-native: the job is invisible to workers until
+ * `now + delayMs`, then becomes waiting. Redis persists it across restarts.
+ *
+ * jobId (BullMQ v5 disallows : — use |):
+ *   - FIRST enqueue: `send|<messageId>` (default). A pure function of the stable
+ *     reserved id, so a producer (node-execution) retry re-adds the identical id
+ *     and BullMQ dedupes → exactly one delayed job (§4.6).
+ *   - SWEEP re-drive: the caller passes `send|<messageId>|redrive-<n>` (§4.4). A
+ *     DISTINCT id is REQUIRED because BullMQ v5 `add()` with an existing custom
+ *     jobId is a no-op returning the existing job — it will NOT promote/replace a
+ *     delayed-or-failed job. Exactly-once is still preserved by the per-send lock
+ *     + post-lock NULL re-check in flushOutbound, not by the jobId.
+ *
+ * `delayMs` defaults to 0 (disabled-mode / degenerate window → flush ASAP, still
+ * via the queue+worker — NOT a synchronous bypass, §4.5).
+ */
+export async function enqueueDelayedSend(
+  data: DelayedSendJobData,
+  delayMs = 0,
+  jobId = `send|${data.messageId}`,
+): Promise<void> {
+  const queue = getDelayedSendQueue();
+  await queue.add("flush", data, { jobId, delay: Math.max(0, Math.floor(delayMs)) });
+}
+
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
@@ -138,5 +179,6 @@ export async function closeQueues(): Promise<void> {
   await Promise.all([
     _nodeExecutionQueue?.close(),
     _inboundEmailQueue?.close(),
+    _delayedSendQueue?.close(),
   ]);
 }
