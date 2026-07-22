@@ -2,17 +2,23 @@
  * Per-executor threading regression guard (Email Threading — E8).
  * Run with:  npx tsx src/engine/executors/threadingCoverage.test.ts
  *
- * Threading is centralised at ONE seam — sendOnce() (ADR-1). Every executor that
- * emails a creator therefore inherits threading FOR FREE by routing its send
- * through sendOnce; the integration test proves sendOnce itself threads. The one
- * way threading can silently regress is a NEW (or edited) executor that emails
- * WITHOUT going through sendOnce — bypassing the seam.
+ * Threading is centralised at ONE seam — the idempotentSend module (ADR-1). Every
+ * executor that emails a creator therefore inherits threading FOR FREE by routing
+ * its send through that seam; the integration test proves the seam itself threads.
+ * The one way threading can silently regress is a NEW (or edited) executor that
+ * emails WITHOUT going through the seam.
+ *
+ * Randomized Send Delay note: the seam has TWO entry points now — sendOnce() (the
+ * synchronous reserve→flush wrapper, used by outreach/follow-up/transactional
+ * sends) and reserveOutbound() (the reserve half, used by the negotiation executor
+ * which defers the flush). Both resolve the SAME thread context and derive the
+ * SAME reply subject, so an executor that routes through EITHER inherits threading.
  *
  * This test is that structural guard: it asserts (a) every executor known to send
- * calls sendOnce, and (b) no executor calls a raw email transport
- * (email.send / provider.send / client.messages.send) directly, which would skip
- * threading. If someone adds a send site that bypasses sendOnce, this fails and
- * points them back at the seam.
+ * routes through the seam (sendOnce OR reserveOutbound), and (b) no executor calls
+ * a raw email transport (email.send / provider.send / client.messages.send)
+ * directly, which would skip threading. If someone adds a send site that bypasses
+ * the seam, this fails and points them back at it.
  *
  * Source-level (not runtime) on purpose: spinning up all ~10 executors against a
  * live DB would duplicate each executor's own suite and depend on DB availability;
@@ -67,14 +73,19 @@ const RAW_TRANSPORT = /\b(?:email|provider)\.send\s*\(|\.messages\.send\s*\(/;
 async function main() {
   console.log("\nexecutor threading coverage (E8)\n");
 
+  // The seam has two entry points (see header): the synchronous sendOnce wrapper
+  // and the reserveOutbound reserve-half (negotiation defers its flush). Either
+  // routes through the same thread-context resolve + reply-subject derivation.
+  const SEAM_ENTRY = /\b(?:sendOnce|reserveOutbound|reserveAiReply)\s*\(/;
+
   for (const file of SENDING_EXECUTORS) {
-    test(`${file} routes its send through sendOnce()`, () => {
+    test(`${file} routes its send through the idempotentSend seam`, () => {
       const src = read(file);
       assert.match(
         src,
-        /sendOnce\s*\(/,
-        `${file} must send via sendOnce() so it inherits threading (ADR-1). ` +
-          `If it now sends a different way, wire it through sendOnce.`,
+        SEAM_ENTRY,
+        `${file} must send via sendOnce() or reserveOutbound() so it inherits ` +
+          `threading (ADR-1). If it now sends a different way, wire it through the seam.`,
       );
     });
 

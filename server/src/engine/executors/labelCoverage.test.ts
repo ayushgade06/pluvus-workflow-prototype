@@ -2,18 +2,24 @@
  * Per-executor Gmail-label wiring guard (Gmail Campaign Labels — §6.3).
  * Run with:  npx tsx src/engine/executors/labelCoverage.test.ts
  *
- * Labeling is centralised at ONE seam — sendOnce() fires maybeLabelThreadAsync()
- * AFTER the send (idempotentSend.ts). An executor opts its threads into a campaign
- * label by passing ctx.campaign?.name through to sendOnce as the campaignName
- * argument. The one way this silently regresses is an executor that sends but
- * forgets to pass the campaign name — its threads then go unlabeled.
+ * Labeling is centralised at ONE seam — the idempotentSend module fires
+ * maybeLabelThreadAsync() AFTER the send. There are TWO ways an executor's threads
+ * get their campaign label:
+ *   1. SYNCHRONOUS sends (outreach/follow-up/content-brief/etc.) pass
+ *      ctx.campaign?.name through to sendOnce as the campaignName argument.
+ *   2. DEFERRED sends (Randomized Send Delay — the negotiation executor reserves
+ *      and defers the flush) can't pass campaignName at reserve time because the
+ *      flush runs later in a separate worker with only the messageId. Instead
+ *      flushOutbound RELOADS the campaign name from the instance
+ *      (resolveCampaignName) and labels at flush — so negotiation threads are still
+ *      labeled, just via the reload rather than a call-site pass-through.
  *
- * This test is that structural guard: it asserts every WORKFLOW-DRIVEN sending
- * executor in the spec's §6.3 list passes `ctx.campaign?.name` into sendOnce, and
- * that sendOnce actually fires the labeler after finalize. Source-level (not
- * runtime) on purpose — same rationale as threadingCoverage.test.ts (E8): the
- * invariant is a property of the source and is checked here deterministically and
- * hermetically, without a live DB or all ~10 executors spun up.
+ * This test is that structural guard: it asserts every SYNCHRONOUS workflow-driven
+ * sending executor passes `ctx.campaign?.name` into sendOnce, that the deferred
+ * negotiation path reloads the campaign name at flush, and that the seam fires the
+ * labeler after finalize. Source-level (not runtime) on purpose — same rationale as
+ * threadingCoverage.test.ts (E8): the invariant is a property of the source and is
+ * checked here deterministically and hermetically, without a live DB.
  */
 
 import assert from "node:assert/strict";
@@ -40,10 +46,13 @@ function read(file: string): string {
 // sends (payouts.ts / payoutConfirm.ts) deliberately DON'T label in v1 (§6.3) and
 // are intentionally absent from this list; partnership/paymentReply/rewardReply
 // are likewise out of the §6.3 scope.
+// SYNCHRONOUS labeling executors: they send via sendOnce and pass the campaign
+// name at the call site. NOTE: negotiation.ts is DELIBERATELY absent — it defers
+// its send (Randomized Send Delay), so it labels via the flush-time reload
+// asserted separately below, not a call-site pass-through.
 const LABELING_EXECUTORS = [
   "initialOutreach.ts",
   "followUp.ts",
-  "negotiation.ts", // accept / counter / present-offer / close
   "contentBrief.ts",
   "rewardSetup.ts",
   "paymentInfo.ts",
@@ -75,20 +84,35 @@ async function main() {
     });
   }
 
-  // The seam itself: sendOnce must fire the (fire-and-forget) labeler AFTER the
-  // send is finalized. Guards against a refactor that drops the label hook or the
+  // The DEFERRED path (Randomized Send Delay): negotiation.ts reserves and defers,
+  // so it can't pass campaignName at the call site. Its threads are labeled by
+  // flushOutbound reloading the campaign name from the instance. Assert that reload
+  // exists in the seam, so a refactor dropping it (which would leave every delayed
+  // negotiation thread unlabeled) fails here.
+  test("idempotentSend.ts reloads the campaign name at flush for deferred sends (§4.1a)", () => {
+    const src = stripComments(read("idempotentSend.ts"));
+    assert.match(
+      src,
+      /resolveCampaignName\s*\(/,
+      "flushOutbound must reload the campaign name so DEFERRED negotiation sends " +
+        "(which pass no campaignName at reserve time) still get labeled (§4.1a/§6.3).",
+    );
+  });
+
+  // The seam itself: it must fire the (fire-and-forget) labeler AFTER the send is
+  // finalized. Guards against a refactor that drops the label hook or the
   // campaignName parameter.
   test("idempotentSend.ts fires maybeLabelThreadAsync after finalize", () => {
     const src = stripComments(read("idempotentSend.ts"));
     assert.match(
       src,
       /maybeLabelThreadAsync\s*\(/,
-      "sendOnce must fire maybeLabelThreadAsync so labeling happens post-send",
+      "the send seam must fire maybeLabelThreadAsync so labeling happens post-send",
     );
     assert.match(
       src,
       /campaignName\??\s*:/,
-      "sendOnce must accept the optional campaignName pass-through param",
+      "the send seam must accept the optional campaignName pass-through param",
     );
   });
 

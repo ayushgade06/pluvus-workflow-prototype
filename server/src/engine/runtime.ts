@@ -46,6 +46,7 @@ import {
 } from "./executors/index.js";
 import { markPaymentReceived } from "../db/index.js";
 import type { PayoutMethod } from "../db/schema.js";
+import { enqueueDelayedSend } from "../workers/queues.js";
 
 // ---------------------------------------------------------------------------
 // StaleInstanceError — thrown when OCC detects a concurrent state change
@@ -66,6 +67,11 @@ export class WorkflowRuntime {
   constructor(
     private readonly email: IEmailProvider,
     private readonly agent: IAgentProvider,
+    // Randomized Send Delay (§4.3a): the post-commit deferred-send enqueue.
+    // Injectable so a DB-backed test can assert it fires ONLY on a committed turn
+    // (not on a StaleInstanceError rollback) without a live Redis. Defaults to the
+    // real BullMQ enqueue.
+    private readonly enqueueDelayedSendFn: typeof enqueueDelayedSend = enqueueDelayedSend,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -309,6 +315,30 @@ export class WorkflowRuntime {
     if (!updated) {
       // Another worker already advanced this instance — treat as a no-op.
       throw new StaleInstanceError(instanceId, instance.currentState);
+    }
+
+    // ── Randomized Send Delay — enqueue the deferred flush (§4.3a option A) ────
+    // The executor RESERVED an AI reply row but did NOT send it; the delayed
+    // flush is enqueued HERE, strictly AFTER the OCC transaction committed. On a
+    // StaleInstanceError above we never reach this line, so a rolled-back turn
+    // leaves its reserved row orphaned (reclaimed/GC'd by the poller sweep) and
+    // NEVER sends a phantom email. Redis writes stay downstream of the durable
+    // state commit. enqueueDelayedSend is best-effort here: a Redis blip must not
+    // roll back a committed transition — the poller safety-net sweep (§4.4) will
+    // reclaim a reservation whose enqueue was lost.
+    if (result.deferredSend) {
+      try {
+        await this.enqueueDelayedSendFn(
+          { messageId: result.deferredSend.messageId },
+          result.deferredSend.delayMs,
+        );
+      } catch (err) {
+        console.error(
+          `[runtime] enqueueDelayedSend failed for message ${result.deferredSend.messageId} ` +
+            `(instance ${instanceId}); the poller sweep will reclaim it. ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     // Stdout trace is a side effect, not part of the atomic unit — emit it only

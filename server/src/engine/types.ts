@@ -42,6 +42,24 @@ export interface NodeResult {
   completedAt?: Date | null;
   eventType: EventType;
   eventPayload?: Record<string, unknown>;
+  /**
+   * Randomized Send Delay (§4.3a option A): a reserved-but-unsent OUTBOUND row
+   * whose delayed flush must be enqueued by the runtime AFTER the OCC transaction
+   * commits — never before. An executor that reserved an AI reply sets this; the
+   * runtime enqueues `enqueueDelayedSend({ messageId }, delayMs)` only when
+   * `updated` is non-null. On a StaleInstanceError (rolled-back turn) the runtime
+   * enqueues nothing, so a phantom send is impossible; the reserved row is an
+   * orphan for the poller sweep/GC to reclaim.
+   *
+   * Absent when nothing was reserved (escalate/reject/guard-block paths) or when
+   * reserveOutbound found the send already delivered (P2002 case a → no re-enqueue).
+   */
+  deferredSend?: {
+    /** The reserved Message DB row id to flush. */
+    messageId: string;
+    /** The drawn delay in ms (0 when the feature is disabled). */
+    delayMs: number;
+  };
 }
 
 // EmailAttachment — an out-of-body file to send alongside an email (Phase 16).
