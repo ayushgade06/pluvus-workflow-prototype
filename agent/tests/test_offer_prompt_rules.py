@@ -79,19 +79,24 @@ def test_cta_asks_to_confirm_not_schedule():
 
 
 def test_commission_percentage_not_repeated_as_content():
-    """The commission % must appear as email CONTENT in exactly one place — the
-    dedicated bullet. The old prompt injected it three ways (a numbered
-    'Commission' point, the bullet hint, AND the full deal-structure sentence),
-    which made the model write the commission twice. We assert it isn't over-
-    injected: the numbered 'Commission' point is gone, the deal-structure line
-    carries the deal LABEL only (no percentage), and the bullet says it once.
+    """The commission % must appear as email CONTENT in exactly one place. The old
+    prompt injected it three ways (a numbered 'Commission' point, the bullet hint,
+    AND the full deal-structure sentence), which made the model write the commission
+    twice. We assert it isn't over-injected: the numbered 'Commission' point is
+    gone, the deal-structure line carries the deal LABEL only (no percentage), and
+    the commission is stated once.
+
+    drafting-humanization: the commission is no longer forced onto its OWN BULLET —
+    it may be a clause or a line (prose-default) — but the state-it-ONCE de-dup
+    guarantee is unchanged, so this test now asserts the single-shot wording rather
+    than the retired "separate bullet" phrasing.
     """
     p = _prompt()
     # No standalone numbered "Commission" instruction any more.
     assert "Commission —" not in p and "Commission -" not in p
-    # The commission bullet exists and is explicitly single-shot.
+    # The commission is stated, and explicitly single-shot / de-duplicated.
     assert "10% commission" in p
-    assert "state the percentage here and only here" in p
+    assert "stated once" in p and "never on the deal-structure line" in p
     # The deal-structure point must NOT carry the percentage (it's the duplicate
     # source): the "10%" must not sit on the "Deal structure" line.
     deal_line = next(ln for ln in p.splitlines() if "Deal structure" in ln)
