@@ -161,12 +161,13 @@ export async function executeOperatorHandoff(
     creator,
     draft,
     `deal-handoff:${instance.id}`,
-    undefined,
+    undefined, // deps — default
     {
       email: creator.email,
       name: creator.name,
       ...(ccOperator ? { cc: [ccOperator] } : {}),
     },
+    ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
   );
 
   // 5. Park. NOT terminal and NOT completed — the run is waiting on a human, and

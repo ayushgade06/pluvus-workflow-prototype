@@ -56,6 +56,11 @@ const LABELING_EXECUTORS = [
   "contentBrief.ts",
   "rewardSetup.ts",
   "paymentInfo.ts",
+  // PLU-70 operator-handoff path: the creator-facing "looping in our campaign
+  // manager" email must carry the Pluvus/<Campaign> label like every other
+  // creator-facing send (§6.3), so the handoff thread is labeled even when no
+  // prior negotiation email labeled it (labels flipped on mid-conversation, etc.).
+  "operatorHandoff.ts",
 ];
 
 // Strip comments so a doc-comment mentioning campaign?.name isn't a false positive.
