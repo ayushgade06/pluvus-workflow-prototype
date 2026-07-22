@@ -286,6 +286,11 @@ export interface IAgentProvider {
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
+      // drafting-humanization (§Conversation State): style hints so the offer copy
+      // states deltas (not full state) and warms up across the thread. Both purely
+      // stylistic; absent = today's behavior.
+      changedFields?: string[];
+      relationshipWarmth?: string;
     },
   ): Promise<EmailDraft | null>;
 }

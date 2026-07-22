@@ -3,6 +3,14 @@ import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../ty
 import type { DraftHistoryEntry } from "../../adapters/negotiation/types.js";
 import { extractReplyText } from "./replyText.js";
 
+// drafting-humanization (§Conversation State): the closed vocabulary a term may
+// be flagged with in `changedFields`. Mirrors the agent-side vocabulary. Only the
+// fee is negotiated per-turn in this system (commission/perk/deliverables/timeline
+// are FIXED campaign config), so `computeChangedFields` only ever emits "fee" —
+// but the vocabulary is kept complete for parity with the agent and forward use.
+export type ChangedField = "fee" | "commission" | "deliverables" | "timeline" | "perk";
+export type RelationshipWarmth = "new" | "warming" | "established";
+
 // ---------------------------------------------------------------------------
 // Negotiation history assembly (FIX-1 history threading + FIX-2 current offer)
 // ---------------------------------------------------------------------------
@@ -178,4 +186,69 @@ export function computeOpenQuestions(
     }
   }
   return open;
+}
+
+// ---------------------------------------------------------------------------
+// drafting-humanization (§Conversation State): the two STYLE hints for /draft
+// ---------------------------------------------------------------------------
+// Both are purely stylistic — the money decision never reads them — and both
+// default so an unset value reproduces today's copy exactly. Pure functions over
+// already-fetched context so they're unit-testable without a DB.
+
+/**
+ * Which offer terms actually CHANGED this turn, so the offer copy can state the
+ * delta instead of restating the full state (§Repetition Reduction).
+ *
+ * Only the fixed FEE is negotiated per-turn here (commission / perk / deliverables
+ * / timeline are fixed campaign config, never re-proposed), so this diffs the rate
+ * we're putting on the table this turn against the last rate we offered
+ * (`priorContext.currentOffer`, tracked by buildPriorContextFromEvents). Returns
+ * ["fee"] when the fee is being presented for the FIRST time (no prior offer) or
+ * differs from our last offer; [] when it's unchanged or absent — in which case
+ * the agent omits the delta hint and falls back to "restate only what was asked",
+ * i.e. today's behavior.
+ */
+export function computeChangedFields(
+  priorContext: PriorNegotiationContext,
+  proposedRate: number | undefined,
+): ChangedField[] {
+  if (proposedRate === undefined || !Number.isFinite(proposedRate)) return [];
+  const lastOffer = priorContext.currentOffer;
+  // First offer (no prior rate on the table) → the fee is news. A changed rate
+  // vs our last offer → news. Same rate as last time → not news (don't restate).
+  if (lastOffer === undefined || lastOffer !== proposedRate) return ["fee"];
+  return [];
+}
+
+/**
+ * Coarse relationship-warmth for the offer email's tone (§Progressive Conversation
+ * Behaviour). Derived from round count + a cheap cooperativeness read, never from
+ * anything confidential:
+ *   "new"         — round <= 1 (first offer; today's round-1 tone).
+ *   "warming"     — mid-thread and engaged (default once past round 1).
+ *   "established" — a cooperative back-and-forth that's deep in the thread: the
+ *                   creator has engaged over multiple rounds AND either moved
+ *                   toward our number or we're near the round ceiling (closing out).
+ *
+ * `creatorMovedToward` is the caller's optional read of "did the creator concede
+ * toward us" (e.g. their ask dropped). Absent/false is safe — warmth then steps up
+ * to "established" only via thread depth, never below the round-derived rung. The
+ * agent takes the WARMER of this hint and what `round` implies, so this can only
+ * add warmth, never cool the email.
+ */
+export function computeRelationshipWarmth(args: {
+  round: number;
+  maxRounds: number;
+  priorTurnCount: number;
+  creatorMovedToward?: boolean;
+}): RelationshipWarmth {
+  const { round, maxRounds, priorTurnCount, creatorMovedToward } = args;
+  if (round <= 1) return "new";
+  // Engaged = we've actually exchanged prior turns (not a one-shot). Deep = we're
+  // at least a third of the way through the round budget (maxRounds <= 0 means
+  // unlimited, so depth alone can't trigger "established" there — cooperation can).
+  const engaged = priorTurnCount >= 1;
+  const deep = maxRounds > 0 && round >= Math.max(2, Math.ceil(maxRounds / 3));
+  if (engaged && (creatorMovedToward === true || deep)) return "established";
+  return "warming";
 }

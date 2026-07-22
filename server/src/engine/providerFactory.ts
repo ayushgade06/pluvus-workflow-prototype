@@ -282,6 +282,11 @@ export class AgentProviderAdapter implements IAgentProvider {
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
+      // drafting-humanization (§Conversation State): style hints so the offer copy
+      // states deltas (not full state) and warms up across the thread. Both purely
+      // stylistic; absent = today's behavior.
+      changedFields?: string[];
+      relationshipWarmth?: string;
     },
   ): Promise<EmailDraft | null> {
     // PLU-109: the CSV import accepts creator-discovery vendor exports carrying
@@ -319,6 +324,11 @@ export class AgentProviderAdapter implements IAgentProvider {
       // Q3 (founder, autonomous launch): forward the final-round flag so the
       // Python offer prompt renders the "this is our final rate" copy.
       isFinalRound: extra?.isFinalRound,
+      // drafting-humanization (§Conversation State): forward the style hints so the
+      // Python offer prompt renders the say-only-what-changed hint + warmth rung.
+      // Both default safely agent-side when absent (empty delta / "new" warmth).
+      changedFields: extra?.changedFields,
+      relationshipWarmth: extra?.relationshipWarmth,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

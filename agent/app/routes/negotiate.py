@@ -452,6 +452,26 @@ class DraftRequest(BaseModel):
     # the creator is not left expecting another round. Default False (all non-final
     # turns and every non-offer purpose render exactly as before).
     isFinalRound: bool = False
+    # drafting-humanization (§Conversation State): two optional, defaulted STYLE
+    # hints so the offer copy can state deltas (not full state) and warm up across
+    # a thread. Both are purely stylistic — the decision layer never reads them —
+    # and both default to reproduce today's behavior byte-for-byte, so an old
+    # caller that threads neither renders exactly as before. No output-schema change.
+    #   changedFields — which offer terms actually changed THIS turn, from the closed
+    #     vocabulary "fee"|"commission"|"deliverables"|"timeline"|"perk" (already the
+    #     code's vocabulary elsewhere). Drives §Repetition Reduction via _delta_hint:
+    #     the copy restates only what changed. Default [] = "nothing changed this
+    #     turn" → hint omitted, prompt falls back to "restate only what was asked".
+    #     Kept a loose list[str] (NOT a Literal) so a stray value can't 422 a draft;
+    #     _delta_hint filters to the vocabulary and ignores anything else.
+    #   relationshipWarmth — coarse warmth signal for tone progression, one of
+    #     "new"|"warming"|"established", derived server-side from round count +
+    #     whether the creator has been cooperative. Selects the _warmth_rung ladder
+    #     (§Progressive Conversation Behaviour); it AUGMENTS `round` and never
+    #     overrides final_offer_rule. Default "new" = identical to today's round-1
+    #     tone. Kept a loose str for the same 422-safety reason (unknown → "new").
+    changedFields: list[str] = []
+    relationshipWarmth: str = "new"
 
 
 class DraftResponse(BaseModel):
