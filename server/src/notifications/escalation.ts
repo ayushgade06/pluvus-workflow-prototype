@@ -203,11 +203,13 @@ async function loadEscalationContext(
   if (!row) return null;
 
   // Assemble the both-sides transcript from the SAME source the negotiator/
-  // copywriter use (buildDraftHistory): NEGOTIATION_TURN events (our sent turns)
-  // interleaved with the creator's INBOUND messages, chronologically. Best-effort
-  // — a transcript failure must never block the escalation notice, so a throw here
-  // degrades to an empty transcript (the email still sends who/why + dashboard
-  // pointer). brandReplyMsgIds is derived exactly as loadCreatorInbounds does.
+  // copywriter use (buildDraftHistory): the instance's `Message` rows — our SENT
+  // outbound rows interleaved with the creator's INBOUND messages, chronologically
+  // (PLU-85). The NEGOTIATION_TURN events are passed only to enrich our outbound
+  // entries with round/action/rate. Best-effort — a transcript failure must never
+  // block the escalation notice, so a throw here degrades to an empty transcript
+  // (the email still sends who/why + dashboard pointer). brandReplyMsgIds is
+  // derived exactly as loadCreatorInbounds does.
   let transcript: DraftHistoryEntry[] = [];
   if (opts?.withTranscript === false) {
     // Concise notices (PLU-70 operator handoff) skip the transcript AND the E6
@@ -239,7 +241,7 @@ async function loadEscalationContext(
         .map((e) => (e.payload as Record<string, unknown> | null)?.["externalMessageId"])
         .filter((id): id is string => typeof id === "string"),
     );
-    transcript = buildDraftHistory(events, messages as Message[], brandReplyMsgIds);
+    transcript = buildDraftHistory(messages as Message[], brandReplyMsgIds, events);
   } catch (err) {
     console.error(
       `[escalation] could not assemble transcript for instance ${instanceId}: ${
