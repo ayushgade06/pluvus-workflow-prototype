@@ -1,14 +1,23 @@
 import {
   createMessage as createMessageDb,
   findMessageByIdempotencyKey as findByKeyDb,
+  findMessageById as findByIdDb,
   updateMessageSent as updateMessageSentDb,
+  findInstanceById as findInstanceByIdDb,
+  findCreatorById as findCreatorByIdDb,
 } from "../../db/index.js";
+import { findCampaignById } from "../../db/campaigns.js";
+import { findWorkflowById, findVersionById } from "../../db/workflows.js";
 import { isUniqueViolation } from "../../db/errors.js";
 import type { Creator, Message, MessageInsert } from "../../db/schema.js";
 import type { EmailDraft } from "../types.js";
 import type { IEmailProvider, EmailRecipient, EmailSendOptions } from "../providers.js";
 import { isThreadLabeler } from "../providers.js";
 import { campaignLabelName } from "../../providers/nylas/campaignLabel.js";
+import {
+  acquireSendLock as acquireSendLockDefault,
+  releaseSendLock as releaseSendLockDefault,
+} from "../../scheduler/lock.js";
 import {
   DefaultThreadContextResolver,
   buildReplySubject,
@@ -17,22 +26,29 @@ import {
 } from "../threadContext.js";
 
 // ---------------------------------------------------------------------------
-// Idempotent outbound send (FIX-11, generalized)
+// Idempotent outbound send (FIX-11, generalized) — reserve/flush split
 // ---------------------------------------------------------------------------
 // Reserve-before-send: insert the OUTBOUND message row with a deterministic
 // idempotencyKey BEFORE calling email.send(), using the row's unique constraint
 // as the lock. The window being closed: a crash between email.send() and the
 // row write would, on BullMQ retry, re-run the executor and send a SECOND email.
 //
-//   1. Reserve — createMessage with idempotencyKey (no provider id yet).
-//      A unique-violation (P2002) means a prior attempt already reserved/sent
-//      this exact send → skip the send and return the prior identifiers so the
-//      caller's event payload is identical on the retry.
-//   2. Send.
-//   3. Finalize the reserved row with the provider's messageId/threadId.
+// Randomized Send Delay (§4.1): the reserve→send→finalize sequence is SPLIT so a
+// randomized delay can sit between the decision (reserve) and delivery (flush):
 //
-// This is the same pattern the negotiation executor used inline for ACCEPT /
-// COUNTER; lifted here so initial-outreach and follow-up share it.
+//   reserveOutbound(...)  — resolve thread context, write the OUTBOUND row with
+//                           idempotencyKey/subject/body. NEVER sends (not even on
+//                           the P2002 reserved-but-unsent branch — that send
+//                           moves to flush). Returns a STABLE messageId (§4.1b).
+//   flushOutbound(id)     — reload the send context from the row (§4.1a), then
+//                           provider.send + finalize + label, under a per-send
+//                           lock with a post-lock NULL re-check (§4.2a).
+//
+//   sendOnce(...)         — the thin reserve→flush wrapper. Every EXISTING caller
+//                           (outreach, follow-up, transactional) uses it and stays
+//                           synchronous with identical behavior. Only the
+//                           negotiation executor opts into the split (reserve now,
+//                           enqueue a delayed flush after the OCC commit).
 
 export interface SentResult {
   messageId: string;
@@ -57,11 +73,58 @@ export interface SendOnceDeps {
   threadContext: ThreadContextResolver;
 }
 
+// Extra seams the DELAYED flush needs on top of SendOnceDeps: it receives only a
+// messageId and must reload the full send context (§4.1a) — the row, the
+// instance→creator (recipient), and the campaign name (label). Plus the per-send
+// lock (§4.2a). All injectable so flushOutbound is unit-testable without Redis or
+// a live DB; every field defaults to the real implementation.
+export interface FlushDeps extends SendOnceDeps {
+  findMessageById(id: string): Promise<Message | null>;
+  findInstanceById(id: string): Promise<{ id: string; creatorId: string; workflowVersionId: string } | null>;
+  findCreatorById(id: string): Promise<Creator | null>;
+  /** Resolve the human campaign name for the Gmail label from an instance id,
+   *  or undefined when there is no linked campaign. */
+  resolveCampaignName(instanceId: string): Promise<string | undefined>;
+  acquireSendLock(messageId: string): Promise<string | null>;
+  releaseSendLock(messageId: string, token: string): Promise<void>;
+}
+
+const defaultThreadContext = new DefaultThreadContextResolver();
+
 const defaultDeps: SendOnceDeps = {
   createMessage: createMessageDb,
   findMessageByIdempotencyKey: findByKeyDb,
   updateMessageSent: updateMessageSentDb,
-  threadContext: new DefaultThreadContextResolver(),
+  threadContext: defaultThreadContext,
+};
+
+// Default campaign-name resolution for the flush (§4.1a step 4): instance →
+// workflowVersion → workflow → campaign.name. Best-effort — any missing link or
+// lookup failure degrades to "no label" (undefined), exactly like the runtime's
+// own campaign fallback. Never throws.
+async function defaultResolveCampaignName(instanceId: string): Promise<string | undefined> {
+  try {
+    const instance = await findInstanceByIdDb(instanceId);
+    if (!instance) return undefined;
+    const version = await findVersionById(instance.workflowVersionId);
+    if (!version) return undefined;
+    const workflow = await findWorkflowById(version.workflowId);
+    if (!workflow?.campaignId) return undefined;
+    const campaign = await findCampaignById(workflow.campaignId);
+    return campaign?.name ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const defaultFlushDeps: FlushDeps = {
+  ...defaultDeps,
+  findMessageById: findByIdDb,
+  findInstanceById: findInstanceByIdDb,
+  findCreatorById: findCreatorByIdDb,
+  resolveCampaignName: defaultResolveCampaignName,
+  acquireSendLock: acquireSendLockDefault,
+  releaseSendLock: releaseSendLockDefault,
 };
 
 /**
@@ -99,23 +162,296 @@ function maybeLabelThreadAsync(
     });
 }
 
+// Resolve the thread context ONCE (E5), degrading to empty context on a resolver
+// throw (E7) so a threading/DB failure never blocks a contract-forming email.
+// Shared by reserve and by flush's context reload.
+async function resolveThreadContextSafely(
+  threadContext: ThreadContextResolver,
+  instanceId: string,
+): Promise<ThreadContext> {
+  try {
+    return await threadContext.resolve(instanceId);
+  } catch (err) {
+    console.warn(
+      `[sendOnce] thread context resolve failed for instance ${instanceId}; ` +
+        `sending as a new thread. ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {};
+  }
+}
+
+// Derive the wire subject + EmailSendOptions from a resolved ThreadContext.
+// Conditional spread (exactOptionalPropertyTypes): omit replyToExternalId
+// entirely when there's no reply target, so options is {} — never
+// { replyToExternalId: undefined }. The provider treats an absent key as "open a
+// new thread".
+function deriveSubjectAndOptions(
+  ctx: ThreadContext,
+  draftSubject: string,
+): { subject: string; options: EmailSendOptions } {
+  const subject = buildReplySubject(ctx.canonicalSubject, draftSubject);
+  const options: EmailSendOptions = {
+    ...(ctx.replyToExternalId ? { replyToExternalId: ctx.replyToExternalId } : {}),
+  };
+  return { subject, options };
+}
+
+// ---------------------------------------------------------------------------
+// reserveOutbound — steps 0–1, NEVER sends (§4.1b)
+// ---------------------------------------------------------------------------
+
+export interface ReserveResult {
+  /** The reserved Message DB row id — STABLE across producer retries (§4.1b), so
+   *  the delayed jobId `send|<messageId>` dedupes. */
+  messageId: string;
+  /** True when a prior attempt already COMPLETED this exact send (P2002 branch a).
+   *  The caller MUST skip enqueueing a delayed flush in that case. */
+  alreadySent: boolean;
+  /** The resolved thread context, carried so the synchronous sendOnce wrapper can
+   *  pass it straight into flush and avoid a second resolve. Absent on the P2002
+   *  branches (the prior row is already reserved with its subject). */
+  threadContext?: ThreadContext;
+  /** The threaded subject stored on the reserved row (fresh-reserve only). */
+  subject?: string;
+  /** On the alreadySent (P2002 case a) branch, the prior row's provider
+   *  identifiers, so the synchronous wrapper can surface them without a reload. */
+  priorExternalMessageId?: string;
+  priorThreadId?: string;
+}
+
+/**
+ * Reserve an OUTBOUND message row for a later send. Does steps 0–1 of the old
+ * sendOnce (resolve thread context, compute the threaded subject, write the row
+ * with the idempotencyKey) but NEVER calls email.send() — not even on the P2002
+ * reserved-but-unsent branch (that send moves to flushOutbound).
+ *
+ * P2002 (idempotency-key replay) contract (§4.1b):
+ *   (a) prior row has externalMessageId  → { messageId: prior.id, alreadySent: true }
+ *       (caller skips enqueue — already delivered)
+ *   (b) prior row exists, id NULL         → { messageId: prior.id, alreadySent: false }
+ *       (reserved not flushed — caller re-enqueues the SAME jobId → BullMQ dedupes)
+ *   (c) unique violation, no row on re-read → safe no-op { messageId:"", alreadySent:true }
+ */
+export async function reserveOutbound(
+  instanceId: string,
+  draft: EmailDraft,
+  idempotencyKey: string,
+  deps: SendOnceDeps = defaultDeps,
+): Promise<ReserveResult> {
+  // Step 0 — resolve thread context ONCE (E5), degrade to empty on throw (E7).
+  const ctx = await resolveThreadContextSafely(deps.threadContext, instanceId);
+  const { subject } = deriveSubjectAndOptions(ctx, draft.subject);
+
+  // Step 1 — reserve (with the threaded subject, so the row matches the wire).
+  try {
+    const reserved = await deps.createMessage({
+      instanceId,
+      direction: "OUTBOUND",
+      subject,
+      body: draft.body,
+      idempotencyKey,
+    });
+    return { messageId: reserved.id, alreadySent: false, threadContext: ctx, subject };
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    // A prior attempt already reserved this key. Distinguish (a)/(b)/(c). Unlike
+    // the old sendOnce, we NEVER send here — case (b) is delivered by flush.
+    const prior = await deps.findMessageByIdempotencyKey(idempotencyKey);
+    const priorSent =
+      typeof prior?.externalMessageId === "string" && prior.externalMessageId !== "";
+    if (prior && priorSent) {
+      // (a) already delivered — caller must not enqueue a delayed flush. Carry
+      // the prior identifiers so the synchronous wrapper needs no extra reload.
+      return {
+        messageId: prior.id,
+        alreadySent: true,
+        priorExternalMessageId: prior.externalMessageId ?? "",
+        priorThreadId: prior.threadId ?? "",
+      };
+    }
+    if (prior) {
+      // (b) reserved, never flushed — caller re-enqueues the identical delayed
+      // jobId (send|<prior.id>); BullMQ dedupes → exactly one delayed job.
+      return { messageId: prior.id, alreadySent: false };
+    }
+    // (c) unique violation but no row on re-read (shouldn't happen) — safe no-op.
+    return { messageId: "", alreadySent: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// flushOutbound — steps 2–4, under a per-send lock (§4.1a, §4.2a)
+// ---------------------------------------------------------------------------
+
+export interface FlushResult {
+  messageId: string; // provider external id ("" when skipped)
+  threadId: string;
+  /** True when this call did NOT send (row already finalized, or another actor
+   *  holds the send lock). The delivery either already happened or is another
+   *  actor's job. */
+  skipped: boolean;
+}
+
+/**
+ * Flush a reserved OUTBOUND row: provider.send + finalize + label. Receives only
+ * the reserved Message.id and rebuilds the full send context (§4.1a).
+ *
+ * Serialized on a per-send lock (§4.2a): a flush RETRY and the poller safety-net
+ * sweep can both target one reserved row, and the unique externalMessageId only
+ * dedupes AFTER finalize — so the send→finalize gap is closed by the lock + a
+ * post-lock NULL re-check, not by the unique index alone.
+ *
+ * `preResolved` lets the synchronous sendOnce wrapper hand flush the context
+ * reserve already resolved (recipient/campaignName/ctx), avoiding a second thread
+ * resolve. The DELAYED path passes nothing → flush reloads everything from the id.
+ */
+export async function flushOutbound(
+  email: IEmailProvider,
+  messageId: string,
+  deps: FlushDeps = defaultFlushDeps,
+  preResolved?: {
+    recipient?: EmailRecipient;
+    campaignName?: string;
+    threadContext?: ThreadContext;
+    /** The synchronous sendOnce wrapper's caller-supplied creator, so flush
+     *  needn't reload it. Absent on the delayed path → flush loads from the
+     *  instance. */
+    syncCreator?: Creator;
+  },
+): Promise<FlushResult> {
+  if (!messageId) return { messageId: "", threadId: "", skipped: true };
+
+  // ── 1. Load the reserved row; short-circuit if already sent ────────────────
+  const row = await deps.findMessageById(messageId);
+  if (!row) {
+    console.warn(`[flushOutbound] message ${messageId} not found — nothing to flush`);
+    return { messageId: "", threadId: "", skipped: true };
+  }
+  if (row.externalMessageId) {
+    // Already finalized by a prior flush/sweep. Re-apply the label (cheap,
+    // idempotent, self-healing) but do NOT resend.
+    maybeLabelThreadAsync(email, row.threadId ?? "", preResolved?.campaignName);
+    return { messageId: row.externalMessageId, threadId: row.threadId ?? "", skipped: true };
+  }
+
+  const instanceId = row.instanceId;
+
+  // ── 2. Rebuild the send context (§4.1a) ────────────────────────────────────
+  // recipient: all in-scope negotiation sends are creator-bound → undefined (the
+  // provider addresses the creator). A future brand-outbound delayed send would
+  // need the recipient persisted on the row; that's out of scope, flagged here.
+  const recipient = preResolved?.recipient;
+
+  // The provider's send() takes a `creator` param even when a recipient overrides
+  // addressing. Resolve it in priority order:
+  //   1. the synchronous wrapper's caller-supplied creator (no reload), else
+  //   2. a minimal object from the explicit recipient (recipient wins addressing), else
+  //   3. reload instance → creator from the id (the delayed path).
+  // A missing instance/creator on the delayed path means the reservation is
+  // orphaned → skip (never send).
+  let creator: Creator | null = preResolved?.syncCreator ?? null;
+  if (!creator && recipient) {
+    creator = { id: "", name: recipient.name, email: recipient.email } as unknown as Creator;
+  }
+  if (!creator) {
+    const instance = await deps.findInstanceById(instanceId);
+    if (!instance) {
+      console.warn(
+        `[flushOutbound] instance ${instanceId} for message ${messageId} not found — skip`,
+      );
+      return { messageId: "", threadId: "", skipped: true };
+    }
+    creator = await deps.findCreatorById(instance.creatorId);
+    if (!creator) {
+      console.warn(
+        `[flushOutbound] creator ${instance.creatorId} for message ${messageId} not found — skip`,
+      );
+      return { messageId: "", threadId: "", skipped: true };
+    }
+  }
+
+  // reply target: re-resolve unless the wrapper already did (§4.1a step 3). The
+  // subject stored on the row was already threaded at reserve time; we only need
+  // the reply target here. Degrade to {} on throw (E7 — new-thread send).
+  const ctx =
+    preResolved?.threadContext ??
+    (await resolveThreadContextSafely(deps.threadContext, instanceId));
+  const options: EmailSendOptions = {
+    ...(ctx.replyToExternalId ? { replyToExternalId: ctx.replyToExternalId } : {}),
+  };
+
+  // The wire draft uses the subject STORED on the row (already threaded), so a
+  // config/thread change between reserve and flush can't re-thread the subject.
+  const wireDraft: EmailDraft = { subject: row.subject ?? draftSubjectFallback(row), body: row.body };
+
+  // campaign name for the label: reload unless pre-resolved (§4.1a step 4).
+  const campaignName =
+    preResolved?.campaignName ?? (await deps.resolveCampaignName(instanceId));
+
+  // ── 3. Serialize the send→finalize under the per-send lock (§4.2a) ─────────
+  const token = await deps.acquireSendLock(messageId);
+  if (!token) {
+    // Another flush/sweep is mid-send for this row. Skip and let the job retry —
+    // NEVER send without the lock.
+    console.log(`[flushOutbound] send lock busy — skip ${messageId}`);
+    return { messageId: "", threadId: "", skipped: true };
+  }
+  try {
+    // Post-lock NULL re-check: the winner may have finalized between our step-1
+    // read and acquiring the lock. Re-read and bail if it's now sent.
+    const fresh = await deps.findMessageById(messageId);
+    if (!fresh) return { messageId: "", threadId: "", skipped: true };
+    if (fresh.externalMessageId) {
+      maybeLabelThreadAsync(email, fresh.threadId ?? "", campaignName);
+      return { messageId: fresh.externalMessageId, threadId: fresh.threadId ?? "", skipped: true };
+    }
+
+    // Step 2 — send (guarded by the committed reservation + the lock).
+    const { messageId: externalMessageId, threadId } = await email.send(
+      wireDraft,
+      creator,
+      recipient,
+      options,
+    );
+
+    // Step 3 — finalize the reserved row with the provider's identifiers.
+    await deps.updateMessageSent(messageId, { externalMessageId, threadId });
+
+    // Step 4 — label AFTER send + finalize (§6.4): fire-and-forget, best-effort.
+    maybeLabelThreadAsync(email, threadId, campaignName);
+
+    return { messageId: externalMessageId, threadId, skipped: false };
+  } finally {
+    await deps.releaseSendLock(messageId, token);
+  }
+}
+
+// Defensive: a reserved OUTBOUND row always has a subject (reserve writes the
+// threaded subject). This fallback only fires for a malformed row; use an empty
+// subject rather than throw so a stuck reservation can still flush.
+function draftSubjectFallback(row: Message): string {
+  return row.subject ?? "";
+}
+
+// ---------------------------------------------------------------------------
+// sendOnce — the synchronous reserve→flush wrapper (unchanged behavior)
+// ---------------------------------------------------------------------------
+
 /**
  * Send an outbound email at most once for the given idempotency key.
  *
- * On a fresh send: reserves the row, sends, finalizes, returns the provider
- * identifiers with alreadySent=false.
+ * This is the SYNCHRONOUS path used by every non-delayed caller (outreach,
+ * follow-up, transactional). It composes reserveOutbound (steps 0–1, no send)
+ * with flushOutbound (steps 2–4), reproducing the exact behavior of the old
+ * inline sendOnce:
+ *   - fresh send: reserve → flush → alreadySent:false
+ *   - retry after a completed send: reserve returns alreadySent:true → skip flush
+ *     → return the prior identifiers → alreadySent:true, no resend
+ *   - BUG-E3 (reserved-but-unsent): reserve returns alreadySent:false with the
+ *     prior id → flush re-attempts the send and finalizes the existing row
  *
- * On a retry after a prior COMPLETED send: the reservation insert hits P2002; we
- * read the already-reserved row, see it carries a provider externalMessageId, and
- * return its identifiers with alreadySent=true WITHOUT sending again.
- *
- * BUG-E3: if the prior attempt crashed AFTER reserving but BEFORE sending, the
- * reserved row has NO externalMessageId — the email was never actually sent. The
- * old behavior returned alreadySent=true here, permanently DROPPING a
- * contract-forming email (Content Brief / payout-request / welcome), leaving the
- * instance to advance and then wait forever on a link the creator never received.
- * We now RE-ATTEMPT the send in that case and finalize the existing reserved row,
- * so a reserve-then-crash is recovered on the BullMQ retry instead of lost.
+ * The reserve-resolved thread context is threaded into flush so there is exactly
+ * ONE thread resolve per send (no regression from the split).
  */
 export async function sendOnce(
   email: IEmailProvider,
@@ -124,121 +460,61 @@ export async function sendOnce(
   draft: EmailDraft,
   idempotencyKey: string,
   deps: SendOnceDeps = defaultDeps,
-  // Optional explicit recipient (brand outbound — CRITICAL-2). When set, the
-  // email is addressed to the brand rather than the creator; the reserved
-  // Message row still belongs to the instance so the brand's reply correlates by
-  // threadId. An optional Reply-To on the recipient is carried through.
   recipient?: EmailRecipient,
-  // Optional human campaign name for the Gmail thread label (Gmail Campaign
-  // Labels — §6.3). Passed THROUGH from the executor's already-loaded
-  // ctx.campaign.name — sendOnce performs NO campaign lookup of its own. When
-  // undefined (route-driven callers, mock mode, or a workflow without a linked
-  // campaign) no label is applied. Kept last/optional so every existing caller
-  // compiles unchanged (ADR-2 style). Used ONLY post-send by
-  // maybeLabelThreadAsync (fire-and-forget); it never affects the delivery path.
   campaignName?: string,
 ): Promise<SentResult> {
-  // Step 0 — resolve thread context ONCE (E5). One read yields the reply target
-  // and the thread's canonical subject; from those we derive a single reply
-  // subject and one EmailSendOptions, reused by the reserved row AND every
-  // email.send() below so the persisted row and the wire always agree.
-  //
-  // First outbound: no canonical (→ subject === draft.subject) and no reply
-  // target (→ replyToExternalId undefined) → behaviour identical to today.
-  //
-  // E7 (resolver DB read fails): threading is a best-effort enhancement — a
-  // resolver/DB failure must NEVER block a contract-forming email. Any throw
-  // degrades to empty context (log a warning, then send as a NEW thread) rather
-  // than propagating and stranding the send. Continuity is sacrificed for that
-  // one send; delivery is not.
-  let ctx: ThreadContext;
-  try {
-    ctx = await deps.threadContext.resolve(instanceId);
-  } catch (err) {
-    console.warn(
-      `[sendOnce] thread context resolve failed for instance ${instanceId}; ` +
-        `sending as a new thread. ${err instanceof Error ? err.message : String(err)}`,
-    );
-    ctx = {};
+  const flushDeps = toFlushDeps(deps);
+  const reserved = await reserveOutbound(instanceId, draft, idempotencyKey, flushDeps);
+
+  if (reserved.alreadySent) {
+    // P2002 case (a) or (c): a prior attempt already completed the send. Surface
+    // the prior identifiers (carried on the reserve result) and re-apply the
+    // label (self-healing) without sending again — identical to the old sendOnce
+    // alreadySent branch.
+    maybeLabelThreadAsync(email, reserved.priorThreadId ?? "", campaignName);
+    return {
+      messageId: reserved.priorExternalMessageId ?? "",
+      threadId: reserved.priorThreadId ?? "",
+      alreadySent: true,
+    };
   }
-  const subject = buildReplySubject(ctx.canonicalSubject, draft.subject);
-  const threadedDraft: EmailDraft = { ...draft, subject };
-  // Conditional spread (exactOptionalPropertyTypes): omit the key entirely when
-  // there is no reply target, so options is {} — never { replyToExternalId:
-  // undefined }. The provider treats an absent key as "open a new thread".
-  const options: EmailSendOptions = {
-    ...(ctx.replyToExternalId ? { replyToExternalId: ctx.replyToExternalId } : {}),
+
+  // Fresh reserve OR reserved-but-unsent (BUG-E3): flush now. Pass the context
+  // reserve already resolved so threading is resolved exactly once, and the
+  // recipient/campaignName straight through — behavior identical to the old
+  // single-call path (recipient overrides addressing; the creator param is only
+  // used when recipient is absent, matching the old signature).
+  const flush = await flushOutbound(email, reserved.messageId, flushDeps, {
+    ...(recipient !== undefined ? { recipient } : {}),
+    ...(campaignName !== undefined ? { campaignName } : {}),
+    ...(reserved.threadContext !== undefined ? { threadContext: reserved.threadContext } : {}),
+    // Address the caller-supplied creator on the synchronous path (the delayed
+    // path reloads it from the instance). Carried so flush needn't reload.
+    syncCreator: creator,
+  });
+
+  return {
+    messageId: flush.messageId,
+    threadId: flush.threadId,
+    // A skipped flush here means the row was already finalized by a concurrent
+    // sender — surface it as alreadySent (no resend happened on this call).
+    alreadySent: flush.skipped,
   };
+}
 
-  // Step 1 — reserve (with the threaded subject, so the row matches the wire).
-  let reserved;
-  try {
-    reserved = await deps.createMessage({
-      instanceId,
-      direction: "OUTBOUND",
-      subject,
-      body: threadedDraft.body,
-      idempotencyKey,
-    });
-  } catch (err) {
-    if (isUniqueViolation(err)) {
-      // A prior attempt already reserved this key. Distinguish two cases:
-      const prior = await deps.findMessageByIdempotencyKey(idempotencyKey);
-      const priorSent =
-        typeof prior?.externalMessageId === "string" && prior.externalMessageId !== "";
-      if (priorSent) {
-        // (a) The prior attempt COMPLETED the send — do not send again.
-        // Still (re-)apply the label on this replay: it's cheap, idempotent, and
-        // adds resilience if the original apply failed (§6.4 — self-healing).
-        maybeLabelThreadAsync(email, prior?.threadId ?? "", campaignName);
-        return {
-          messageId: prior!.externalMessageId!,
-          threadId: prior?.threadId ?? "",
-          alreadySent: true,
-        };
-      }
-      if (prior) {
-        // (b) BUG-E3: reserved but NEVER sent (prior attempt crashed between
-        // reserve and send). Re-attempt the send now and finalize the existing
-        // reserved row, rather than dropping the email. This is safe: the row's
-        // unique idempotencyKey still prevents a duplicate row, and a genuinely
-        // sent message would have taken branch (a) above. Pass the same threaded
-        // draft + options as the normal path so recovery threads too (E5 step 4).
-        const { messageId, threadId } = await email.send(
-          threadedDraft,
-          creator,
-          recipient,
-          options,
-        );
-        await deps.updateMessageSent(prior.id, { externalMessageId: messageId, threadId });
-        // Label AFTER the send + finalize (§6.4): fire-and-forget, best-effort.
-        maybeLabelThreadAsync(email, threadId, campaignName);
-        return { messageId, threadId, alreadySent: false };
-      }
-      // Defensive: unique violation but no row found on re-read (shouldn't happen).
-      // Surface a safe "already sent" rather than risk a duplicate.
-      return { messageId: "", threadId: "", alreadySent: true };
-    }
-    throw err;
-  }
+// Fill the flush-only seams (findMessageById, instance/creator loads, campaign
+// resolve, send lock) from the defaults when a caller injects a plain
+// SendOnceDeps, so flushOutbound always has a complete FlushDeps. A caller that
+// injects a full FlushDeps (e.g. a test exercising the split against in-memory
+// rows) is used as-is. Real callers pass defaultDeps → defaultFlushDeps.
+function toFlushDeps(deps: SendOnceDeps): FlushDeps {
+  if (isFlushDeps(deps)) return deps;
+  return { ...defaultFlushDeps, ...deps };
+}
 
-  // Step 2 — send (guarded by the committed reservation).
-  const { messageId, threadId } = await email.send(
-    threadedDraft,
-    creator,
-    recipient,
-    options,
+function isFlushDeps(deps: SendOnceDeps): deps is FlushDeps {
+  return (
+    typeof (deps as Partial<FlushDeps>).findMessageById === "function" &&
+    typeof (deps as Partial<FlushDeps>).acquireSendLock === "function"
   );
-
-  // Step 3 — finalize the reserved row with the provider's identifiers.
-  await deps.updateMessageSent(reserved.id, { externalMessageId: messageId, threadId });
-
-  // Step 4 (Gmail Campaign Labels — §6.4) — the email is SENT and the row
-  // finalized; the delivery contract below is unchanged. Apply the campaign
-  // label AFTER, off the delivery path, fire-and-forget: it can never delay the
-  // send, fail delivery, retry the send, touch idempotency, or modify workflow
-  // state. A no-op unless a campaign name was passed and the provider labels.
-  maybeLabelThreadAsync(email, threadId, campaignName);
-
-  return { messageId, threadId, alreadySent: false };
 }
