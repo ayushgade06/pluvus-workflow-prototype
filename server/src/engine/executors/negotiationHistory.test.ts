@@ -239,13 +239,15 @@ test("acceptance 5: a sent outbound with a negotiation key but NO matching event
   const messages = [
     outbound({ body: "sent copy", idempotencyKey: "negotiation:counter_offer:i1:1" }, 10),
   ];
-  // Events for a DIFFERENT round → no rate to enrich; action/round come from key.
-  const events = [ev("NEGOTIATION_TURN", { outcome: "counter", round: 2, rate: 400 }, 5)];
+  // The only event is a DIFFERENT action (REJECT, no rate) → neither the exact-
+  // round match (A) nor the same-action fallback (B) can recover a rate; action/
+  // round still come from the key, and the row is still included.
+  const events = [ev("NEGOTIATION_TURN", { outcome: "reject", round: 2 }, 5)];
   const hist = buildDraftHistory(messages, new Set(), events);
   assert.equal(hist.length, 1);
   assert.equal(hist[0]!.round, 1);
   assert.equal(hist[0]!.action, "COUNTER");
-  assert.equal(hist[0]!.rate, undefined); // no round-1 event → rate not recovered
+  assert.equal(hist[0]!.rate, undefined); // no COUNTER event anywhere → rate not recovered
 });
 
 test("model integrity: transcript uses the SENT body, not the event's draft copy", () => {
@@ -341,6 +343,31 @@ test("present key with trailing inboundId parses round correctly", () => {
   assert.equal(hist[0]!.round, 1);
   assert.equal(hist[0]!.action, "PRESENT_OFFER");
   assert.equal(hist[0]!.rate, 300);
+});
+
+test("enrich-join strategy B: off-by-one round recovers rate from nearest same-action event", () => {
+  // The reserve key and the event's persisted round can differ by one on the
+  // present-past-cap / max-rounds-close paths. The key says round 1 but the only
+  // present event is at round 2 → the nearest-round fallback recovers its rate.
+  const messages = [
+    outbound({ body: "here's our rate", idempotencyKey: "negotiation:present:i1:1" }, 10),
+  ];
+  const events = [ev("NEGOTIATION_TURN", { outcome: "present_offer", round: 2, rate: 320 }, 8)];
+  const hist = buildDraftHistory(messages, new Set(), events);
+  assert.equal(hist[0]!.action, "PRESENT_OFFER");
+  assert.equal(hist[0]!.round, 1); // round stays from the key (canonical)
+  assert.equal(hist[0]!.rate, 320); // rate recovered from the nearest same-action event
+});
+
+test("enrich-join strategy B does NOT cross action types", () => {
+  // A REJECT (close) key must not borrow a COUNTER's rate via the fallback.
+  const messages = [
+    outbound({ body: "close note", idempotencyKey: "negotiation:close:i1:3" }, 10),
+  ];
+  const events = [ev("NEGOTIATION_TURN", { outcome: "counter", round: 2, rate: 400 }, 8)];
+  const hist = buildDraftHistory(messages, new Set(), events);
+  assert.equal(hist[0]!.action, "REJECT");
+  assert.equal(hist[0]!.rate, undefined); // no REJECT rate anywhere → stays absent
 });
 
 console.log("\nnegotiationHistory.computeOpenQuestions (HARD-N2)\n");

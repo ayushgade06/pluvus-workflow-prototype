@@ -182,10 +182,18 @@ function indexEventsByRound(events: Event[]): Map<number, { action: NegotiationH
 }
 
 /** Recover round/action/rate for a sent outbound row (§4.3, the enrich-join).
- *  Strategy A: parse the idempotencyKey for round+action, then pull `rate` from
- *  the matching NEGOTIATION_TURN event (same round, matching or unknown action).
- *  Graceful degradation: an eventless / unkeyed send returns an empty
- *  enrichment and is still rendered (text-only). */
+ *  Strategy A (primary): parse the idempotencyKey for round+action — these are
+ *  exact and canonical. Then pull `rate` from the NEGOTIATION_TURN event at the
+ *  same round whose action agrees with the key.
+ *  Strategy B (fallback): the reserve key and its event's persisted `round` can
+ *  differ by one on two paths (a max-rounds `close` keyed on the current round vs
+ *  the event's `maxRounds`; a `present` past the free-present cap keyed on the
+ *  current round vs the event's advanced round). When the exact round misses,
+ *  recover `rate` from the NEAREST-round event with the same action, so those
+ *  turns still enrich. Both are ACCEPT/COUNTER-free (REJECT carries no rate; a
+ *  present rate is often absent), so this only ever fills an otherwise-blank rate.
+ *  Graceful degradation: an eventless / unkeyed send returns an empty enrichment
+ *  and is still rendered (text-only). */
 function enrichOutbound(
   row: Message,
   eventsByRound: Map<number, { action: NegotiationHistoryEntryLite["action"] | null; rate?: number }[]>,
@@ -193,12 +201,25 @@ function enrichOutbound(
   const parsed = parseNegotiationKey(row.idempotencyKey);
   if (!parsed) return {};
   const { action, round } = parsed;
-  // Match the owning turn by round; prefer the event whose action agrees with
-  // the key, else the first turn at that round (a `close` send maps to REJECT but
-  // its event outcome is `escalate`/max_rounds, so don't require action equality).
+  // Strategy A: the event at this exact round whose action agrees with the key,
+  // else the first turn at that round (don't hard-require action equality — the
+  // key's action is authoritative and already returned).
   const turns = eventsByRound.get(round) ?? [];
-  const match = turns.find((t) => t.action === action) ?? turns[0];
-  const rate = match?.rate;
+  let rate = (turns.find((t) => t.action === action) ?? turns[0])?.rate;
+  // Strategy B: no rate at the exact round → nearest-round event with the same
+  // action (the ±1 keying-drift paths above). Never overrides an exact hit.
+  if (rate === undefined) {
+    let bestDelta = Infinity;
+    for (const [r, list] of eventsByRound) {
+      const hit = list.find((t) => t.action === action && t.rate !== undefined);
+      if (!hit) continue;
+      const delta = Math.abs(r - round);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        rate = hit.rate;
+      }
+    }
+  }
   return { round, action, ...(rate !== undefined ? { rate } : {}) };
 }
 
