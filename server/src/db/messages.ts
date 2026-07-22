@@ -1,10 +1,18 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull, gt, lt, sql } from "drizzle-orm";
 import { db } from "./drizzle.js";
 import { messages, type Message, type MessageInsert } from "./schema.js";
 
 export async function createMessage(data: MessageInsert): Promise<Message> {
   const rows = await db.insert(messages).values(data).returning();
   return rows[0]!;
+}
+
+/** Load a single message by its DB row id. Used by the delayed-send flush
+ *  (Randomized Send Delay §4.1a), which receives only the reserved Message.id
+ *  and must reload subject/body/instance to reconstruct the send context. */
+export async function findMessageById(id: string): Promise<Message | null> {
+  const rows = await db.select().from(messages).where(eq(messages.id, id)).limit(1);
+  return rows[0] ?? null;
 }
 
 export async function findMessageByExternalId(
@@ -85,4 +93,71 @@ export async function listMessagesByInstance(instanceId: string): Promise<Messag
     .from(messages)
     .where(eq(messages.instanceId, instanceId))
     .orderBy(asc(messages.createdAt));
+}
+
+// ---------------------------------------------------------------------------
+// Randomized Send Delay — safety-net sweep support (§4.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserved-but-unsent OUTBOUND rows that the poller safety-net sweep should
+ * reclaim: a delayed-send job was lost from Redis (flush, eviction, or it
+ * dead-lettered) but the reserved row is still `externalMessageId IS NULL`.
+ *
+ * Bounded on BOTH sides (§4.4):
+ *   - createdAt <= now − lowerBoundMs  (MAX window + grace): don't race a legit
+ *     delayed job that is still pending.
+ *   - createdAt >  now − maxAgeMs      (poison upper bound): a row older than
+ *     this is a permanent-failure poison message, left for manual inspection.
+ *   - redriveCount < maxRedrives       (poison-loop bound): a row swept a few
+ *     times without success is abandoned.
+ *
+ * NOTE: this does NOT enforce the §4.3a orphan guard (owning turn committed).
+ * Under enqueue-after-commit (§4.3a option A) a rolled-back turn never gets a
+ * delayed job, so its reserved row would also match here — the CALLER applies
+ * the commit guard per candidate (it needs the event log, not a Message-table
+ * predicate). Kept out of SQL so the DB layer stays a plain query.
+ *
+ * `now` is passed in so the caller controls the clock (testable without
+ * monkeypatching Date). Rows are ordered oldest-first so the most-stranded are
+ * reclaimed first.
+ */
+export async function listStrandedOutboundReservations(args: {
+  now: Date;
+  lowerBoundMs: number;
+  maxAgeMs: number;
+  maxRedrives: number;
+  limit?: number;
+}): Promise<Message[]> {
+  const lowerBound = new Date(args.now.getTime() - args.lowerBoundMs);
+  const upperBound = new Date(args.now.getTime() - args.maxAgeMs);
+  const q = db
+    .select()
+    .from(messages)
+    .where(
+      and(
+        eq(messages.direction, "OUTBOUND"),
+        isNull(messages.externalMessageId),
+        lt(messages.createdAt, lowerBound),
+        gt(messages.createdAt, upperBound),
+        lt(messages.redriveCount, args.maxRedrives),
+      ),
+    )
+    .orderBy(asc(messages.createdAt));
+  return args.limit ? q.limit(args.limit) : q;
+}
+
+/**
+ * Atomically bump a reservation's redriveCount and return the new value. Called
+ * by the sweep just before (or as it) re-enqueues, so the poison-loop bound
+ * advances even across overlapping polls. Uses `redriveCount + 1` in SQL so two
+ * concurrent bumps can't both read-then-write the same value.
+ */
+export async function incrementRedriveCount(id: string): Promise<number> {
+  const rows = await db
+    .update(messages)
+    .set({ redriveCount: sql`${messages.redriveCount} + 1` })
+    .where(eq(messages.id, id))
+    .returning({ redriveCount: messages.redriveCount });
+  return rows[0]?.redriveCount ?? 0;
 }
