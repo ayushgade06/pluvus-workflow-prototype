@@ -35,6 +35,7 @@ import { MockNylasClient, buildSignedWebhook } from "../providers/nylas/mockNyla
 import webhooksRouter from "../routes/webhooks.js";
 import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
+import { createDelayedSendWorker } from "../workers/delayedSendWorker.js";
 import { getNodeExecutionQueue, getInboundEmailQueue } from "../workers/queues.js";
 import { forceReleaseLock, closeLockClient } from "../scheduler/lock.js";
 import {
@@ -365,6 +366,7 @@ async function main(): Promise<void> {
   const workers: Worker[] = [
     createNodeExecutionWorker(),
     createInboundEmailWorker(),
+    createDelayedSendWorker(),
   ];
   log("workers started");
 

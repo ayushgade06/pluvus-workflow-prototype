@@ -3,7 +3,7 @@ import {
   listEventsByInstance,
 } from "../../db/index.js";
 import type { Message } from "../../db/schema.js";
-import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite, PriorNegotiationContext } from "../types.js";
+import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite, PriorNegotiationContext, EmailDraft } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import {
   buildPriorContextFromEvents,
@@ -12,7 +12,8 @@ import {
 } from "./negotiationHistory.js";
 import { resolveBriefKnowledge } from "./briefKnowledge.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
-import { sendOnce } from "./idempotentSend.js";
+import { reserveOutbound } from "./idempotentSend.js";
+import { randomSendDelayMs } from "../sendDelay.js";
 import { describeDeal } from "../dealDescription.js";
 import { extractReplyText } from "./replyText.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
@@ -23,10 +24,35 @@ import { resolveBand } from "../band.js";
 // each carried a byte-identical copy — a drift hazard on a safety path.
 import { blockedByGuard } from "./guardEscalation.js";
 
-// FIX-11: outbound AI sends use the shared reserve-before-send helper
-// (idempotentSend.sendOnce), keyed on negotiation:<purpose>:<instance>:<round>,
+// FIX-11 + Randomized Send Delay (§4.1, §4.3a): outbound AI replies use the
+// reserve-before-send helper, keyed on negotiation:<purpose>:<instance>:<round>,
 // so a crash between email.send() and the row write cannot double-send a turn on
-// a BullMQ retry.
+// a BullMQ retry. Under the send-delay split the negotiation executor RESERVES the
+// row (reserveOutbound — no send) and returns a `deferredSend` on the NodeResult;
+// runtime.ts enqueues the delayed flush ONLY after the OCC transaction commits, so
+// a rolled-back turn (StaleInstanceError) never sends a phantom email.
+
+// Reserve an AI reply and produce the NodeResult.deferredSend for it (§4.3a).
+// Returns { deferredSend, sendScheduledInMs } on a fresh reserve, or undefined
+// deferredSend when reserveOutbound found the send already delivered (P2002 case
+// a) — in which case the caller must NOT enqueue a flush (it would resend). The
+// draw happens here (once, at reserve time); flush reads no timing config (§4.5).
+async function reserveAiReply(
+  instanceId: string,
+  draft: EmailDraft,
+  idempotencyKey: string,
+): Promise<{ deferredSend?: { messageId: string; delayMs: number }; sendScheduledInMs: number }> {
+  const reserved = await reserveOutbound(instanceId, draft, idempotencyKey);
+  if (reserved.alreadySent) {
+    // Already delivered on a prior attempt — no re-enqueue, no re-draw.
+    return { sendScheduledInMs: 0 };
+  }
+  const delayMs = randomSendDelayMs();
+  return {
+    deferredSend: { messageId: reserved.messageId, delayMs },
+    sendScheduledInMs: delayMs,
+  };
+}
 
 // Build the MANUAL_REVIEW NodeResult emitted when AI copy generation for an
 // OFFER turn (present_offer / accept / counter) fails after retries. These turns
@@ -174,10 +200,11 @@ function countTrailingPresentOffers(history: NegotiationHistoryEntryLite[]): num
 //   2. the counter path's secondary guard (a counter that WOULD push the round to
 //      maxRounds — that round can't be sent, so this IS the max-rounds moment).
 //
-// Q2 (locked): send a courteous close email BEFORE rejecting. The send is
-// best-effort — a provider failure must NOT block the transition, so the run
-// still reaches REJECTED. It's idempotent (sendOnce, keyed on the round) so a
-// BullMQ retry of this step can't double-email the creator.
+// Q2 (locked): reserve a courteous close email BEFORE rejecting (the delayed
+// flush is enqueued by the runtime post-commit — §4.3a). Best-effort: a reserve
+// failure must NOT block the transition, so the run still reaches REJECTED. It's
+// idempotent (keyed on the round via reserveOutbound) so a BullMQ retry of this
+// step can't double-email the creator.
 // Exported for the T1 escalation-trap tests (routing assertions). Visibility
 // only — behavior unchanged. See readme_docs/testing/.
 export async function maxRoundsReject(
@@ -196,19 +223,26 @@ export async function maxRoundsReject(
 ): Promise<NodeResult> {
   const { maxRounds, round, creatorRate } = args;
 
-  await sendCloseEmail(ctx, email, config);
+  // Reserve the courteous close email (§4.1). Best-effort: a reserve failure must
+  // NOT block the REJECTED transition, so it's swallowed and the run still
+  // terminates cleanly (Q2). The actual send is a deferred flush enqueued by the
+  // runtime after this turn's OCC commit (§4.3a) — so a rolled-back auto-close
+  // never emails the creator.
+  const reserve = await reserveCloseEmail(ctx, email, config);
 
   return {
     nextState: "REJECTED",
     nextNodeId: null,
     completedAt: new Date(),
     eventType: "NEGOTIATION_TURN",
+    ...(reserve?.deferredSend ? { deferredSend: reserve.deferredSend } : {}),
     eventPayload: {
       outcome: "REJECT",
       reason: "max_rounds_no_agreement",
       round,
       maxRounds,
       ...(creatorRate !== undefined ? { creatorRate } : {}),
+      ...(reserve ? { sendScheduledInMs: reserve.sendScheduledInMs } : {}),
     },
   };
 }
@@ -217,13 +251,18 @@ export async function maxRoundsReject(
 // Rendered from a plain template through the provider's own draft() seam, so it
 // works with both the mock and a real provider WITHOUT an LLM call (an offer/
 // counter draft could fail-and-escalate; a fixed close note must not, and must
-// not gate the REJECTED transition). Idempotent + best-effort: a send failure is
-// swallowed so the run still reaches REJECTED.
-async function sendCloseEmail(
+// not gate the REJECTED transition). Idempotent + best-effort: a reserve failure
+// is swallowed so the run still reaches REJECTED.
+//
+// Randomized Send Delay (§4.1): RESERVES the close email (no inline send) and
+// returns its deferredSend so maxRoundsReject can put it on the NodeResult; the
+// runtime enqueues the delayed flush after the OCC commit. Returns undefined when
+// reserve fails (swallowed) or the send was already delivered on a prior attempt.
+async function reserveCloseEmail(
   ctx: ExecutionContext,
   email: IEmailProvider,
   config: Record<string, unknown>,
-): Promise<void> {
+): Promise<{ deferredSend?: { messageId: string; delayMs: number }; sendScheduledInMs: number } | undefined> {
   const { instance, creator } = ctx;
   const senderName =
     typeof config["senderName"] === "string" ? config["senderName"] : "Pluvus Partnerships";
@@ -247,23 +286,22 @@ async function sendCloseEmail(
 
   try {
     const draft = await email.draft(creator, template, config);
-    await sendOnce(
-      email,
+    // Reserve the row (no send). The delayed flush is enqueued by the runtime
+    // post-commit; the campaign label is applied at flush time (flushOutbound
+    // reloads the campaign name from the instance).
+    return await reserveAiReply(
       instance.id,
-      creator,
       draft,
       `negotiation:close:${instance.id}:${instance.negotiationRound}`,
-      undefined, // deps — default
-      undefined, // recipient — creator
-      ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
     );
   } catch (err) {
-    // Best-effort (#15, Q2): never let a close-email failure block the REJECTED
-    // transition — the run must still terminate cleanly.
+    // Best-effort (#15, Q2): never let a close-email reserve failure block the
+    // REJECTED transition — the run must still terminate cleanly.
     const message = err instanceof Error ? err.message : String(err);
     console.error(
-      `[negotiation] close email failed for instance ${instance.id} (auto-reject): ${message}`,
+      `[negotiation] close email reserve failed for instance ${instance.id} (auto-reject): ${message}`,
     );
+    return undefined;
   }
 }
 
@@ -554,16 +592,9 @@ export async function executeNegotiation(
       const presentKey = latestInbound
         ? `negotiation:present:${instance.id}:${instance.negotiationRound}:${latestInbound.id}`
         : `negotiation:present:${instance.id}:${instance.negotiationRound}`;
-      await sendOnce(
-        email,
-        instance.id,
-        creator,
-        draft,
-        presentKey,
-        undefined, // deps — default
-        undefined, // recipient — creator
-        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
-      );
+      // Reserve now, defer the send (§4.1, §4.3a): the runtime enqueues the
+      // delayed flush after this turn's OCC commit.
+      const present = await reserveAiReply(instance.id, draft, presentKey);
 
       // Back to AWAITING_REPLY at the SAME node. The round is unchanged on a
       // "free" present turn; past the MED-W3 cap it advances so the loop is
@@ -572,12 +603,16 @@ export async function executeNegotiation(
         nextState: "AWAITING_REPLY",
         nextNodeId: node.id,
         ...(presentConsumesRound ? { negotiationRound: presentRound } : {}),
+        ...(present.deferredSend ? { deferredSend: present.deferredSend } : {}),
         eventType: "NEGOTIATION_TURN",
         eventPayload: {
           outcome: "present_offer",
           round: presentRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          // Randomized Send Delay (§9): the drawn delay, labeled *scheduled* not
+          // *sent* — delivery proof is Message.externalMessageId/sentAt.
+          sendScheduledInMs: present.sendScheduledInMs,
           // HARD-N2: persist this turn's creator questions so a future turn's
           // answered-questions ledger can tell what was asked earlier.
           ...(creatorQuestions?.length ? { creatorQuestions } : {}),
@@ -661,16 +696,12 @@ export async function executeNegotiation(
         return blockedByGuard(instance.negotiationRound, guard.hits);
       }
 
-      // FIX-11: idempotent send keyed on (instance, acceptance, round).
-      await sendOnce(
-        email,
+      // FIX-11 + §4.1: reserve the acceptance/onboarding email keyed on
+      // (instance, acceptance, round); the runtime defers the send post-commit.
+      const accept = await reserveAiReply(
         instance.id,
-        creator,
         draft,
         `negotiation:acceptance:${instance.id}:${instance.negotiationRound}`,
-        undefined, // deps — default
-        undefined, // recipient — creator
-        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
       );
 
       return {
@@ -678,6 +709,7 @@ export async function executeNegotiation(
         nextNodeId: null,
         completedAt: new Date(),
         eventType: "NEGOTIATION_TURN",
+        ...(accept.deferredSend ? { deferredSend: accept.deferredSend } : {}),
         // Persist the agreed rate (FIX-2) so it is recoverable for audit and
         // for threading as currentOffer on any subsequent turn.
         eventPayload: {
@@ -685,6 +717,8 @@ export async function executeNegotiation(
           round: instance.negotiationRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          // §9: drawn delay, *scheduled* not *sent*.
+          sendScheduledInMs: accept.sendScheduledInMs,
         },
       };
     }
@@ -790,22 +824,19 @@ export async function executeNegotiation(
         return blockedByGuard(newRound, guard.hits);
       }
 
-      // FIX-11: idempotent send keyed on (instance, counter_offer, newRound).
-      await sendOnce(
-        email,
+      // FIX-11 + §4.1: reserve the counter email keyed on (instance,
+      // counter_offer, newRound); the runtime defers the send post-commit.
+      const counter = await reserveAiReply(
         instance.id,
-        creator,
         draft,
         `negotiation:counter_offer:${instance.id}:${newRound}`,
-        undefined, // deps — default
-        undefined, // recipient — creator
-        ctx.campaign?.name, // Gmail Campaign Labels (§6.3)
       );
 
       return {
         nextState: "AWAITING_REPLY",
         nextNodeId: node.id,
         negotiationRound: newRound,
+        ...(counter.deferredSend ? { deferredSend: counter.deferredSend } : {}),
         eventType: "NEGOTIATION_TURN",
         // Persist the rate we just countered with (FIX-2) so the next turn knows
         // its own last offer instead of falling back to the floor.
@@ -814,6 +845,8 @@ export async function executeNegotiation(
           round: newRound,
           message: body,
           ...(proposedRate !== undefined ? { rate: proposedRate } : {}),
+          // §9: drawn delay, *scheduled* not *sent*.
+          sendScheduledInMs: counter.sendScheduledInMs,
           // HARD-N2: persist this turn's creator questions for the answered-
           // questions ledger on any subsequent turn.
           ...(creatorQuestions?.length ? { creatorQuestions } : {}),

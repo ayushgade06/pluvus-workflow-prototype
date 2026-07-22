@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import type { Creator } from "../../db/schema.js";
-import { sendOnce, type SendOnceDeps } from "./idempotentSend.js";
+import { sendOnce, type FlushDeps } from "./idempotentSend.js";
 import type { IEmailProvider, EmailSendOptions } from "../providers.js";
 import type { ThreadContext } from "../threadContext.js";
 import type { EmailDraft } from "../types.js";
@@ -32,7 +32,11 @@ function makeDeps(ctx: ThreadContext = {}, opts?: { throwOnResolve?: boolean }) 
   const rows = new Map<string, any>();
   let seq = 0;
   let resolves = 0;
-  const deps: SendOnceDeps = {
+  // The split flush reloads the row by id and takes a per-send lock, so the fake
+  // is now a full FlushDeps: findMessageById scans the same in-memory rows the
+  // fake createMessage wrote, instance/creator loads return stubs, campaign
+  // resolves to none, and the send lock is always acquirable (no real Redis).
+  const deps: FlushDeps = {
     async createMessage(data: any) {
       const key = data.idempotencyKey as string;
       if (rows.has(key)) {
@@ -42,6 +46,7 @@ function makeDeps(ctx: ThreadContext = {}, opts?: { throwOnResolve?: boolean }) 
       }
       const row = {
         id: `m${++seq}`,
+        instanceId: data.instanceId ?? "i1",
         idempotencyKey: key,
         subject: data.subject,
         body: data.body,
@@ -54,11 +59,30 @@ function makeDeps(ctx: ThreadContext = {}, opts?: { throwOnResolve?: boolean }) 
     async findMessageByIdempotencyKey(key: string) {
       return (rows.get(key) ?? null) as any;
     },
+    async findMessageById(id: string) {
+      return ([...rows.values()].find((r) => r.id === id) ?? null) as any;
+    },
     async updateMessageSent(id: string, d: { externalMessageId: string; threadId: string }) {
       const row = [...rows.values()].find((r) => r.id === id);
       row.externalMessageId = d.externalMessageId;
       row.threadId = d.threadId;
       return row as any;
+    },
+    async findInstanceById(id: string) {
+      return { id, creatorId: "c1", workflowVersionId: "wfv1" };
+    },
+    async findCreatorById(id: string) {
+      return { id, name: "Robin", email: "robin@example.com" } as any;
+    },
+    async resolveCampaignName() {
+      return undefined;
+    },
+    // Always-acquirable send lock (no real Redis in unit tests).
+    async acquireSendLock() {
+      return "tok";
+    },
+    async releaseSendLock() {
+      /* no-op */
     },
     threadContext: {
       async resolve() {

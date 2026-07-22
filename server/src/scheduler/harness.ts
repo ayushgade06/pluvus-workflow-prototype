@@ -38,6 +38,7 @@ import {
 } from "../workers/queues.js";
 import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
+import { createDelayedSendWorker } from "../workers/delayedSendWorker.js";
 import { startPoller, stopPoller } from "./poller.js";
 import { closeLockClient, forceReleaseLock } from "./lock.js";
 import type { InstanceState } from "../db/schema.js";
@@ -372,6 +373,7 @@ async function main(): Promise<void> {
   const workers: Worker[] = [
     createNodeExecutionWorker(),
     createInboundEmailWorker(),
+    createDelayedSendWorker(),
   ];
   log("workers started");
 

@@ -42,6 +42,15 @@ function lockKey(instanceId: string): string {
   return `instance:${instanceId}`;
 }
 
+// Randomized Send Delay (§4.2a): the delayed-send flush serializes on a FINER
+// key than the instance lock — `send:<messageId>` — so it can run inside the
+// synchronous sendOnce wrapper (which already holds the instance lock in the
+// node-execution worker) without a self-conflict, while still guaranteeing at
+// most one flush per reserved row across a flush-retry racing the poller sweep.
+function sendLockKey(messageId: string): string {
+  return `send:${messageId}`;
+}
+
 // Compare-and-delete: only DEL the key if its value equals the caller's fencing
 // token (i.e. the caller still owns the lock). Atomic under Redis single-threaded
 // execution, so there is no check-then-delete race.
@@ -126,6 +135,43 @@ export async function releaseLock(instanceId: string, token: string): Promise<vo
 export async function forceReleaseLock(instanceId: string): Promise<void> {
   const client = await connectIfNeeded();
   await client.del(lockKey(instanceId));
+}
+
+// ---------------------------------------------------------------------------
+// Send lock (Randomized Send Delay — §4.2a)
+// ---------------------------------------------------------------------------
+// Same fencing-token mechanism as the instance lock, but keyed on the reserved
+// Message.id, so the delayed-send flush (workers/delayedSendWorker.ts →
+// idempotentSend.flushOutbound) is serialized against its OWN retries and the
+// poller safety-net sweep without touching the instance lock. This is the
+// at-most-once boundary for the split send (§4.2a): the unique externalMessageId
+// only dedupes AFTER finalize, so the send→finalize gap is closed by this lock
+// plus the post-lock NULL re-check, not by the unique index alone.
+
+/**
+ * Acquire the send lock for a reserved `messageId`. Returns a fencing token, or
+ * null when another flusher/sweep holds it (caller skips the send and lets the
+ * job retry). Mirrors acquireLock's contract.
+ */
+export async function acquireSendLock(messageId: string): Promise<string | null> {
+  const client = await connectIfNeeded();
+  const token = randomUUID();
+  const result = await client.set(sendLockKey(messageId), token, {
+    NX: true,
+    PX: LOCK_TTL_MS,
+  });
+  return result === "OK" ? token : null;
+}
+
+/** Release the send lock IFF the caller still owns it (token match). No-op
+ *  otherwise. Mirrors releaseLock. */
+export async function releaseSendLock(messageId: string, token: string): Promise<void> {
+  if (!token) return;
+  const client = await connectIfNeeded();
+  await client.eval(RELEASE_SCRIPT, {
+    keys: [sendLockKey(messageId)],
+    arguments: [token],
+  });
 }
 
 // ---------------------------------------------------------------------------

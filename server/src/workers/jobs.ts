@@ -31,6 +31,24 @@ export interface NodeExecutionJobData {
  * The worker checks whether a Message row with this externalMessageId already
  * exists before creating one, so a re-delivered job is a safe no-op.
  */
+/**
+ * Flush a reserved OUTBOUND message after a randomized delay (Randomized Send
+ * Delay — §4.2). The reserved Message row is the durable outbox; this job carries
+ * ONLY its id. The send context (recipient, reply target, campaign name) is
+ * RELOADED at flush time (§4.1a), not carried on the job, so the job stays a thin
+ * handle and a config change can't retro-alter an already-enqueued send.
+ *
+ * idempotency: the first-enqueue jobId is `send|<messageId>` (a pure function of
+ * the stable reserved id → producer retries dedupe). The poller safety-net sweep
+ * re-drives with a DISTINCT jobId `send|<messageId>|redrive-<n>` (§4.4). Neither
+ * jobId is the exactly-once guarantee — that is the per-send lock + post-lock NULL
+ * re-check in flushOutbound (§4.2a).
+ */
+export interface DelayedSendJobData {
+  /** The reserved Message DB row id to flush. */
+  messageId: string;
+}
+
 export interface InboundEmailJobData {
   instanceId: string;
   /** The Nylas (or mock) message id — globally unique per inbound email. */

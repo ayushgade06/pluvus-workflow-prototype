@@ -510,6 +510,12 @@ export const messages = pgTable(
     idempotencyKey: text("idempotencyKey"),
     replyIntent: replyIntentEnum("replyIntent"),
     classifyConfidence: doublePrecision("classifyConfidence"),
+    // Randomized Send Delay — §4.4 poison-loop bound. How many times the poller
+    // safety-net sweep has re-driven this reserved-but-unsent OUTBOUND row. The
+    // sweep only claims a row while redriveCount < SEND_DELAY_MAX_REDRIVES; past
+    // that (or past SEND_DELAY_MAX_SWEEP_AGE_MS) it is left for manual inspection
+    // rather than re-enqueued forever. 0 for every non-swept / inbound row.
+    redriveCount: integer("redriveCount").notNull().default(0),
     sentAt: ts("sentAt"),
     receivedAt: ts("receivedAt"),
     processedAt: ts("processedAt"),

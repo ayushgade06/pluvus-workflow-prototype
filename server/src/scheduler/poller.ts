@@ -4,6 +4,7 @@ import { logTrace } from "../observability/logger.js";
 import { reconcileStuckInstances } from "./reconciliation.js";
 import { redriveInboundDeadLetters } from "./inboundRedrive.js";
 import { sweepAutoSettlePayouts } from "./payoutSweep.js";
+import { sweepStrandedSends } from "./sendDelaySweep.js";
 import { logWorkerMetrics } from "../workers/workerMetrics.js";
 import { acquireOrRenewLeadership } from "./lock.js";
 
@@ -56,6 +57,16 @@ async function poll(): Promise<void> {
     await sweepAutoSettlePayouts();
   } catch (err) {
     console.error("[scheduler/poller] payout auto-settle sweep failed:", err instanceof Error ? err.message : err);
+  }
+
+  // Randomized Send Delay (§4.4): safety-net sweep for reserved-but-unsent AI
+  // replies whose delayed BullMQ job was lost from Redis. Bounded + orphan-guarded
+  // + distinct-jobId; runs under the leader lease. Wrapped so a sweep DB/Redis blip
+  // can never disturb the due-instance path.
+  try {
+    await sweepStrandedSends();
+  } catch (err) {
+    console.error("[scheduler/poller] send-delay sweep failed:", err instanceof Error ? err.message : err);
   }
 
   // HARD-S1: emit worker-fleet metrics (queue depth + stuck-state counts) on the

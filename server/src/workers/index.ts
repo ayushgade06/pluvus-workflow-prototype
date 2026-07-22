@@ -1,10 +1,18 @@
 import type { Worker } from "bullmq";
 import { createNodeExecutionWorker } from "./nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "./inboundEmailWorker.js";
+import { createDelayedSendWorker } from "./delayedSendWorker.js";
 import { closeQueues } from "./queues.js";
 
-export { enqueueNodeExecution, enqueueInboundEmail, getNodeExecutionQueue, getInboundEmailQueue } from "./queues.js";
-export type { NodeExecutionJobData, InboundEmailJobData } from "./jobs.js";
+export {
+  enqueueNodeExecution,
+  enqueueInboundEmail,
+  enqueueDelayedSend,
+  getNodeExecutionQueue,
+  getInboundEmailQueue,
+  getDelayedSendQueue,
+} from "./queues.js";
+export type { NodeExecutionJobData, InboundEmailJobData, DelayedSendJobData } from "./jobs.js";
 
 // ---------------------------------------------------------------------------
 // Worker registry
@@ -21,10 +29,15 @@ export function startWorkers(): void {
 
   const nodeExec = createNodeExecutionWorker();
   const inboundEmail = createInboundEmailWorker();
-  _workers = [nodeExec, inboundEmail];
+  // Randomized Send Delay (§4.5, §6.6): the delayed-send worker is required even
+  // when SEND_DELAY_ENABLED=false — disabled is delay-0, still routed through the
+  // queue+worker, not a synchronous bypass. Omitting it strands every AI reply.
+  const delayedSend = createDelayedSendWorker();
+  _workers = [nodeExec, inboundEmail, delayedSend];
 
   console.log("[workers] node-execution worker started");
   console.log("[workers] inbound-email worker started");
+  console.log("[workers] delayed-send worker started");
 }
 
 /**

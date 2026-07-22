@@ -44,6 +44,7 @@ import {
 } from "../workers/queues.js";
 import { createNodeExecutionWorker } from "../workers/nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "../workers/inboundEmailWorker.js";
+import { createDelayedSendWorker } from "../workers/delayedSendWorker.js";
 import { closeLockClient } from "../scheduler/lock.js";
 import {
   getWorkflowSummary,
@@ -359,7 +360,11 @@ async function main(): Promise<void> {
   const target = instances[instances.length - 1]!;
   log(`using instance ${target.id} (creator ${target.creatorId})`);
 
-  const workers: Worker[] = [createNodeExecutionWorker(), createInboundEmailWorker()];
+  const workers: Worker[] = [
+    createNodeExecutionWorker(),
+    createInboundEmailWorker(),
+    createDelayedSendWorker(),
+  ];
   log("workers started (inline)");
 
   try {

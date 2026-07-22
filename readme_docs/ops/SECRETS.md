@@ -45,8 +45,8 @@ file).
 
 Non-secret config (ports, provider selectors, model slugs, timeouts, TTLs,
 concurrency, `PAYMENT_BASE_URL`, `LOG_FILE/DIR`, `GMAIL_LABELS_ENABLED`,
-`GMAIL_LABEL_PREFIX`, …) is documented in `.env.example` and carries no rotation
-concern.
+`GMAIL_LABEL_PREFIX`, the `SEND_DELAY_*` randomized-send-delay window/sweep knobs,
+…) is documented in `.env.example` and carries no rotation concern.
 
 ### Gmail Campaign Labels — grant scope prerequisite (feature: gmail-campaign-labels)
 

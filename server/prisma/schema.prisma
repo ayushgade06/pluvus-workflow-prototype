@@ -534,6 +534,12 @@ model Message {
   idempotencyKey     String?          @unique
   replyIntent        ReplyIntent?
   classifyConfidence Float?
+  /// Randomized Send Delay (§4.4 poison-loop bound). Number of times the poller
+  /// safety-net sweep has re-driven this reserved-but-unsent OUTBOUND row. The
+  /// sweep only claims a row while redriveCount < SEND_DELAY_MAX_REDRIVES; past
+  /// that (or SEND_DELAY_MAX_SWEEP_AGE_MS) it is abandoned for manual inspection
+  /// instead of re-enqueued forever. 0 for every non-swept / inbound row.
+  redriveCount       Int              @default(0)
   sentAt             DateTime?
   receivedAt         DateTime?
   /// When an INBOUND reply finished PROCESSING (CRITICAL-6). Set only after the

@@ -288,8 +288,11 @@ test("H1: a fully-capped campaign (floor AND ceiling) does NOT trip the no-ceili
     () => executeNegotiation(ctx, fakeEmail, spyAgent),
     (err: Error) =>
       // It reached the agent sentinel (capped campaign proceeded), OR it failed at
-      // the DB load (no test DB) — both prove the no-ceiling guard did NOT short it.
-      err.message.includes(SENTINEL) || /database|connect|ECONNREFUSED|relation|DATABASE_URL/i.test(err.message),
+      // the DB load (no test DB / a not-yet-applied column) — all prove the
+      // no-ceiling guard did NOT short-circuit it. `column ... does not exist`
+      // covers a fresh schema column (redriveCount) pending its migration.
+      err.message.includes(SENTINEL) ||
+      /database|connect|ECONNREFUSED|relation|DATABASE_URL|column .* does not exist/i.test(err.message),
     "a capped campaign proceeds past the no-ceiling guard",
   );
 });

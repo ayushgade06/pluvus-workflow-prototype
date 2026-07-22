@@ -30,6 +30,7 @@ import {
 } from "./queues.js";
 import { createNodeExecutionWorker } from "./nodeExecutionWorker.js";
 import { createInboundEmailWorker } from "./inboundEmailWorker.js";
+import { createDelayedSendWorker } from "./delayedSendWorker.js";
 import type { InstanceState } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -330,10 +331,13 @@ async function main(): Promise<void> {
 
   console.log("\nPluvus Workflow — Phase 4 Queue Harness\n");
 
-  // Start workers inline (no separate process needed for the harness)
+  // Start workers inline (no separate process needed for the harness). The
+  // delayed-send worker is included so AI-reply sends flush even in the harness
+  // (§4.5, §6.6) — required even when SEND_DELAY_ENABLED=false.
   const workers: Worker[] = [
     createNodeExecutionWorker(),
     createInboundEmailWorker(),
+    createDelayedSendWorker(),
   ];
   log("workers started");
 
