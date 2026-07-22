@@ -471,13 +471,20 @@ export async function executeNegotiation(
   const priorEvents = await listEventsByInstance(instance.id, { type: "NEGOTIATION_TURN" });
   const priorContext = buildPriorContextFromEvents(priorEvents);
 
-  // HARD-N2: the full conversation transcript (both sides) + the answered-
-  // questions ledger, threaded into /draft so the SENT email stays consistent
-  // with prior emails, doesn't repeat wording, and re-surfaces any earlier
-  // unanswered question. `draftHistory` interleaves our sent turns and the
-  // creator's inbound messages chronologically. Empty on the first negotiation
-  // turn, so first-contact copy is unchanged.
-  const draftHistory = buildDraftHistory(priorEvents, allInboundSource, brandReplyMsgIds);
+  // HARD-N2 / PLU-85: the full conversation transcript (both sides) + the
+  // answered-questions ledger, threaded into /draft so the SENT email stays
+  // consistent with prior emails, doesn't repeat wording, and re-surfaces any
+  // earlier unanswered question. `draftHistory` interleaves our SENT outbound
+  // messages and the creator's inbound messages chronologically.
+  //
+  // PLU-85: the transcript is now sourced from `Message` rows (what was actually
+  // communicated), not from `NEGOTIATION_TURN` event payloads (the AI's decision-
+  // step drafts). `allInboundSource` already holds BOTH directions (it's the full
+  // message list for the instance), so no new query is needed. `priorEvents` is
+  // passed only to ENRICH each sent outbound entry with round/action/rate — the
+  // events themselves remain the separate decision history (priorContext above).
+  // Empty on the first negotiation turn, so first-contact copy is unchanged.
+  const draftHistory = buildDraftHistory(allInboundSource, brandReplyMsgIds, priorEvents);
 
   // F-H1: thread that SAME full both-sides transcript into the money-decision
   // model (not just the copywriter). The negotiator previously saw only our-side

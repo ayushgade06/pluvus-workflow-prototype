@@ -182,6 +182,10 @@ export interface DraftHistoryEntry {
   action?: NegotiationAction | undefined;
   rate?: number | undefined;
   message?: string | undefined;
+  /** PLU-85: the source `Message.id` this transcript entry was built from, for
+   *  auditability — lets a reviewer trace any line back to the exact row that
+   *  sourced it. Additive/optional; downstream renderers ignore it. */
+  messageId?: string | undefined;
 }
 
 export interface DraftResponse {
