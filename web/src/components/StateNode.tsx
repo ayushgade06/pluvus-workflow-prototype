@@ -27,14 +27,14 @@ export function StateNode({ data }: NodeProps<StateNodeData>) {
       style={{
         width: 196,
         background: selected ? colors.panelAlt : colors.panel,
-        border: `1px solid ${selected ? accent : colors.borderStrong}`,
-        borderLeft: `3px solid ${accent}`,
-        borderRadius: 10,
+        border: `2px solid ${selected ? accent : colors.cardBorder}`,
+        borderLeft: `5px solid ${accent}`,
+        borderRadius: 12,
         padding: "11px 13px",
         opacity: empty ? 0.55 : 1,
         boxShadow: selected
-          ? `0 0 0 3px ${accent}26, 0 8px 24px rgba(0,0,0,0.35)`
-          : "0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.2)",
+          ? `0 0 0 3px ${accent}30, 4px 4px 0 var(--shadowInk)`
+          : "3px 3px 0 var(--shadowInk)",
         cursor: "pointer",
         transition: "border-color 140ms, box-shadow 140ms, background 140ms",
       }}
@@ -87,7 +87,7 @@ export function StateNode({ data }: NodeProps<StateNodeData>) {
         {!summary.terminal && summary.active > 0 && (
           <Chip label={`${summary.active} active`} color={colors.accent} />
         )}
-        {summary.waiting > 0 && <Chip label={`${summary.waiting} waiting`} color="#8b96f8" />}
+        {summary.waiting > 0 && <Chip label={`${summary.waiting} waiting`} color={stateColor.AWAITING_REPLY} />}
         {hasStuck && <Chip label={`⚠ ${summary.stuck} stuck`} color={colors.warning} solid />}
       </div>
 

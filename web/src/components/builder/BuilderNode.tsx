@@ -1,10 +1,10 @@
 import { memo } from "react";
 import { Handle, Position } from "reactflow";
-import { colors, radii, font } from "../../theme";
+import { colors, radii, font, shadow } from "../../theme";
 import type { DraftNode } from "../../api/builderTypes";
 import {
   nodeLabel,
-  nodeIcon,
+  nodeIconComponent,
   nodeColor,
   configSummary,
   configChips,
@@ -36,7 +36,7 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
 }) {
   const { node, selected, executionCount, published, issues } = data;
   const typeColor = nodeColor(node.type);
-  const icon = nodeIcon(node.type);
+  const Icon = nodeIconComponent(node.type);
   const label = nodeLabel(node.type);
   const summary = configSummary(node);
   const chips = configChips(node);
@@ -52,9 +52,10 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
   const liveCount = stateName && executionCount ? executionCount[stateName] ?? 0 : null;
   const hasLive = liveCount !== null && liveCount > 0;
 
-  // Border/ring priority: selected > invalid > default.
-  const borderColor = selected ? colors.accent : invalid ? issueColor : colors.borderStrong;
-  const baseShadow = "0 1px 2px rgba(0,0,0,0.4), 0 8px 24px rgba(0,0,0,0.25)";
+  // Sticker node: heavy ink border + hard offset shadow. Selection/invalidity
+  // recolour the border + add a soft ring on top of the hard drop-shadow.
+  const borderColor = selected ? colors.accent : invalid ? issueColor : colors.cardBorder;
+  const baseShadow = shadow.md;
   const ring = selected
     ? `0 0 0 3px ${colors.accent}30, ${baseShadow}`
     : invalid
@@ -66,8 +67,8 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
       className="ds-card-interactive"
       style={{
         width: NODE_WIDTH,
-        background: selected ? "#16171e" : colors.panel,
-        border: `1px solid ${borderColor}`,
+        background: colors.panel,
+        border: `2px solid ${borderColor}`,
         borderRadius: radii.lg,
         overflow: "hidden",
         boxShadow: ring,
@@ -117,19 +118,19 @@ export const BuilderNodeComponent = memo(function BuilderNodeComponent({
           <span
             aria-hidden
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: `${typeColor}1c`,
-              border: `1px solid ${typeColor}26`,
+              width: 30,
+              height: 30,
+              borderRadius: 9,
+              background: `${typeColor}2e`,
+              border: `1.5px solid ${colors.cardBorder}`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 14,
+              color: colors.text,
               flexShrink: 0,
             }}
           >
-            {icon}
+            <Icon size={16} strokeWidth={2.25} />
           </span>
           <span
             style={{

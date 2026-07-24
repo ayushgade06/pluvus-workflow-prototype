@@ -1,36 +1,105 @@
 // ---------------------------------------------------------------------------
-// Design tokens (Phase 9, Part 12)
+// Design tokens — Tano-inspired editorial / neo-brutalist theme
 // ---------------------------------------------------------------------------
-// Operational visibility over marketing polish. A restrained near-black
-// neutral palette with a single indigo accent, generous whitespace, and
-// monospace for ids. Think: Linear/Vercel-grade runtime inspector, not a
-// landing page.
+// Warm cream canvas, near-black ink, a bold serif for display type, and
+// candy-bright accent blocks (coral / butter / mint / pink / lavender). The
+// signature move is *sticker* surfaces: a thick black border + a hard, un-
+// blurred offset shadow, so cards read like paper cut-outs pinned to the page.
+// This replaces the prior dark Linear-style inspector palette.
 
 import type { InstanceState } from "./api/types";
 
-// Subtly-warm neutral base. Same near-black Linear/Vercel feel, but every gray
-// carries a hair of warmth (a touch more red than blue) so the surface reads as
-// "chosen" rather than clinical default-black. The indigo accent is unchanged.
+// ---------------------------------------------------------------------------
+// Dual-theme via CSS custom properties.
+// ---------------------------------------------------------------------------
+// Every screen reads `colors.bg`, `colors.text`, … as inline styles, so a
+// runtime light/dark swap can't work by mutating this object. Instead each
+// token resolves to a CSS variable (`var(--bg, <dark fallback>)`); the actual
+// values live in index.css under `[data-theme="dark"]` / `[data-theme="light"]`
+// and `<ThemeProvider>` flips `data-theme` on <html>. The fallback is the dark
+// value so first paint (before the attribute is set) is already correct.
+//
+// PALETTES (source of truth — mirrored into index.css):
+//   dark  — warm near-black canvas, cream ink, candy accents, ink-black borders
+//   light — warm cream canvas, near-black ink, same candy accents
+export const palettes = {
+  dark: {
+    bg: "#17140f", // warm near-black canvas
+    panel: "#201c16", // card / panel surface
+    panelAlt: "#2a251d", // grouped sub-region / subtle fill
+    border: "#0a0805", // ink — heavy card outline (near-black, reads on dark too via shadow)
+    borderStrong: "#3a342a",
+    hairline: "#302a21", // faint divider inside a surface
+    text: "#f6f0e2", // warm cream ink
+    textMuted: "#b0a48c", // muted sand
+    textDim: "#7c7159", // faint metadata
+    accent: "#f0603c", // coral signature
+    accentDim: "#d94e2c",
+    accentWash: "rgba(240, 96, 60, 0.16)",
+    warning: "#e8b23e",
+    danger: "#f0603c",
+    success: "#3ecf8e",
+    shadowInk: "#000000", // the hard offset shadow colour
+    cardBorder: "#0a0805", // heavy outline drawn on cards
+  },
+  light: {
+    bg: "#f4efe3", // warm cream canvas
+    panel: "#fbf8f0", // card / panel surface (lighter than the page)
+    panelAlt: "#efe8d8", // grouped sub-region / subtle fill
+    border: "#141210", // near-black ink — heavy card outline
+    borderStrong: "#141210",
+    hairline: "#e2d9c6", // faint warm divider inside a surface
+    text: "#141210", // near-black ink
+    textMuted: "#6b6152", // warm muted brown-grey
+    textDim: "#9a8f7c", // faint metadata
+    accent: "#f0603c", // coral signature
+    accentDim: "#d94e2c",
+    accentWash: "rgba(240, 96, 60, 0.12)",
+    warning: "#c98a1e",
+    danger: "#d0402c",
+    success: "#2f9e6b",
+    shadowInk: "#141210",
+    cardBorder: "#141210",
+  },
+} as const;
+
+// Token → CSS variable, with the dark value inlined as the fallback.
+const v = (name: keyof typeof palettes.dark) => `var(--${name}, ${palettes.dark[name]})`;
+
 export const colors = {
-  bg: "#0e0d10",
-  panel: "#16151a",
-  panelAlt: "#1e1c24",
-  border: "#282630",
-  borderStrong: "#38353f",
-  // A near-invisible hairline for dividers *inside* a surface — softer than
-  // `border`, used to separate sections without drawing a full box.
-  hairline: "#1f1d24",
-  text: "#f3f2f5",
-  textMuted: "#a1a0ab",
-  textDim: "#6a6672",
-  accent: "#6e7cf5",
-  accentDim: "#5a68e8",
-  // Faint accent wash for selected/active surfaces (tinted, not bordered).
-  accentWash: "rgba(110, 124, 245, 0.10)",
-  warning: "#d9a03f",
-  danger: "#f2555f",
-  success: "#3ecf8e",
+  bg: v("bg"),
+  panel: v("panel"),
+  panelAlt: v("panelAlt"),
+  border: v("border"),
+  borderStrong: v("borderStrong"),
+  hairline: v("hairline"),
+  text: v("text"),
+  textMuted: v("textMuted"),
+  textDim: v("textDim"),
+  accent: v("accent"),
+  accentDim: v("accentDim"),
+  accentWash: v("accentWash"),
+  warning: v("warning"),
+  danger: v("danger"),
+  success: v("success"),
+  // The heavy ink outline colour drawn on sticker cards / bordered chips.
+  cardBorder: v("cardBorder"),
 };
+
+// The candy accent blocks used as large solid card fills (à la Tano's sticky
+// notes). Same hues in both themes — they sit on their own fill, so they read
+// on either canvas; text/border on them is always the ink.
+export const accents = {
+  coral: "#f0603c",
+  butter: "#f6cf4c",
+  mint: "#a6e6c1",
+  pink: "#f4b8c6",
+  lavender: "#c9c2f2",
+  sky: "#a9d8ef",
+} as const;
+
+// Back-compat alias — some call sites read `borderSoft`.
+export const borderSoft = colors.hairline;
 
 // ---------------------------------------------------------------------------
 // Design-system scales (Phase A — additive, presentational only)
@@ -53,23 +122,38 @@ export const space = {
   12: 48,
 } as const;
 
+// Rounder corners than the old inspector — the sticker cards want a soft
+// radius against their hard border.
 export const radii = {
-  sm: 6,
-  md: 10,
-  lg: 14,
+  sm: 8,
+  md: 14,
+  lg: 20,
   pill: 999,
 } as const;
 
-// Layered, soft elevation — depth comes from shadow + surface tint, not from
-// heavier borders.
+// Hard, un-blurred *offset* shadows — the defining Tano trait. Depth comes from
+// a solid ink drop-shadow, not a soft blur, so surfaces read like cut paper.
+// The ink colour is theme-aware (`--shadowInk`); `sm`/`md`/`lg` grow the offset;
+// `focus` is the coral ring.
+const shadowInk = `var(--shadowInk, ${palettes.dark.shadowInk})`;
 export const shadow = {
-  sm: "0 1px 2px rgba(0,0,0,0.4)",
-  md: "0 2px 6px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.28)",
-  lg: "0 4px 16px rgba(0,0,0,0.4), 0 24px 64px rgba(0,0,0,0.5)",
-  focus: `0 0 0 3px ${"#6e7cf5"}40`,
+  sm: `2px 2px 0 ${shadowInk}`,
+  md: `4px 4px 0 ${shadowInk}`,
+  lg: `6px 6px 0 ${shadowInk}`,
+  focus: `0 0 0 3px ${palettes.dark.accent}55`,
+} as const;
+
+// Named font stacks: a bold serif for display headlines (the signature), the
+// clean sans for body/UI, and mono for ids. Wired to the @font-face imports in
+// index.css.
+export const fontFamily = {
+  serif: `"Fraunces", "Times New Roman", Georgia, serif`,
+  sans: `"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`,
+  mono: `"SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace`,
 } as const;
 
 export const font = {
+  family: fontFamily,
   size: {
     xs: 11,
     sm: 12,
@@ -84,6 +168,7 @@ export const font = {
     medium: 500,
     semibold: 600,
     bold: 700,
+    black: 900,
   },
 } as const;
 
@@ -100,26 +185,28 @@ export const text: Record<
   "display" | "title" | "heading" | "subheading" | "body" | "label" | "caption" | "metric",
   CSSProperties
 > = {
-  // Hero number / marquee value (dashboard headline metric).
+  // Hero number / marquee value (dashboard headline metric). Serif + heavy.
   display: {
+    fontFamily: fontFamily.serif,
     fontSize: font.size.display,
-    fontWeight: font.weight.semibold,
-    letterSpacing: -0.8,
-    lineHeight: 1.05,
+    fontWeight: font.weight.black,
+    letterSpacing: -1,
+    lineHeight: 1.02,
     color: colors.text,
   },
-  // Page title (top of a screen). One per view.
+  // Page title (top of a screen). One per view. Serif display.
   title: {
-    fontSize: font.size.xl + 2, // 20
-    fontWeight: font.weight.semibold,
+    fontFamily: fontFamily.serif,
+    fontSize: font.size.xl + 4, // 22
+    fontWeight: font.weight.bold,
     letterSpacing: -0.4,
-    lineHeight: 1.2,
+    lineHeight: 1.15,
     color: colors.text,
   },
   // Card / panel heading.
   heading: {
     fontSize: font.size.lg,
-    fontWeight: font.weight.semibold,
+    fontWeight: font.weight.bold,
     letterSpacing: -0.2,
     lineHeight: 1.3,
     color: colors.text,
@@ -152,12 +239,13 @@ export const text: Record<
     lineHeight: 1.4,
     color: colors.textMuted,
   },
-  // Big tabular number inside a stat tile.
+  // Big number inside a stat tile / receipt card. Serif, à la Tano's "3.5×".
   metric: {
+    fontFamily: fontFamily.serif,
     fontSize: font.size.xxl,
-    fontWeight: font.weight.semibold,
+    fontWeight: font.weight.black,
     letterSpacing: -0.5,
-    lineHeight: 1.1,
+    lineHeight: 1.05,
     color: colors.text,
     fontVariantNumeric: "tabular-nums",
   },
@@ -202,25 +290,28 @@ export function statusKey(status: string): StatusKey {
 
 // Semantic colour per workflow state. Active states are indigo, positive
 // terminals green, negative terminals red/grey, review amber.
+// Tuned for the cream canvas: saturated but dark enough to read as text/dot on
+// a light surface. Active states lean coral/lavender, positive terminals green,
+// negative red/brown, review amber.
 export const stateColor: Record<InstanceState, string> = {
-  ENROLLED: "#6a7080", // neutral — just entered
-  OUTREACH_SENT: "#8b96f8", // active indigo (light)
-  AWAITING_REPLY: "#6e7cf5", // active indigo
-  FOLLOWED_UP: "#a78bfa", // purple — re-engagement
-  REPLY_RECEIVED: "#57d9a3", // a reply came in
-  NEGOTIATING: "#d9a03f", // amber — in play
-  ACCEPTED: "#3ecf8e", // success — negotiation agreed
-  REWARD_PENDING: "#6e7cf5", // active indigo — awaiting creator confirmation
-  REWARD_CONFIRMED: "#2eb67d", // deep green — agreement confirmed
-  PAYMENT_PENDING: "#6e7cf5", // active indigo — awaiting payout form submission
-  PAYMENT_RECEIVED: "#27a06c", // deep green — payout info received
-  CONTENT_BRIEF_SENT: "#34b378", // green — campaign brief sent (terminal success)
-  NEEDS_DEAL_FINALIZATION: "#e5b454", // amber — parked, waiting on an operator
-  HANDOFF_COMPLETE: "#34b378", // green — operator finished onboarding (terminal)
-  REJECTED: "#f2555f", // failure
-  OPTED_OUT: "#e0784a", // opted out
-  NO_RESPONSE: "#6a7080", // timed out
-  MANUAL_REVIEW: "#e5b454", // needs a human
+  ENROLLED: "#8a7f6c", // neutral warm — just entered
+  OUTREACH_SENT: "#7a6fd0", // active lavender
+  AWAITING_REPLY: "#6b5fc4", // active lavender (deeper)
+  FOLLOWED_UP: "#9265c9", // purple — re-engagement
+  REPLY_RECEIVED: "#2f9e6b", // a reply came in
+  NEGOTIATING: "#c98a1e", // amber — in play
+  ACCEPTED: "#2f9e6b", // success — negotiation agreed
+  REWARD_PENDING: "#6b5fc4", // active — awaiting creator confirmation
+  REWARD_CONFIRMED: "#238055", // deep green — agreement confirmed
+  PAYMENT_PENDING: "#6b5fc4", // active — awaiting payout form submission
+  PAYMENT_RECEIVED: "#238055", // deep green — payout info received
+  CONTENT_BRIEF_SENT: "#238055", // green — campaign brief sent (terminal success)
+  NEEDS_DEAL_FINALIZATION: "#c98a1e", // amber — parked, waiting on an operator
+  HANDOFF_COMPLETE: "#238055", // green — operator finished onboarding (terminal)
+  REJECTED: "#d0402c", // failure
+  OPTED_OUT: "#c76032", // opted out
+  NO_RESPONSE: "#8a7f6c", // timed out
+  MANUAL_REVIEW: "#c98a1e", // needs a human
 };
 
 export const stateLabel: Record<InstanceState, string> = {
@@ -298,15 +389,15 @@ export function relativeTime(iso: string | null): string {
 
 // Map a transition source string to a short, human label + colour.
 export const sourceMeta: Record<string, { label: string; color: string }> = {
-  scheduler: { label: "Scheduler", color: "#a78bfa" },
-  "node-execution-worker": { label: "Worker", color: "#8b96f8" },
-  "inbound-email-worker": { label: "Inbound Worker", color: "#57d9a3" },
-  "inbound-email": { label: "Inbound Email", color: "#57d9a3" },
-  "classification-agent": { label: "Classifier AI", color: "#d9a03f" },
-  "negotiation-agent": { label: "Negotiator AI", color: "#e5b454" },
-  "payment-form": { label: "Payout Form", color: "#3ecf8e" },
-  manual: { label: "Manual", color: "#9da3ae" },
-  system: { label: "System", color: "#6a7080" },
+  scheduler: { label: "Scheduler", color: "#9265c9" },
+  "node-execution-worker": { label: "Worker", color: "#7a6fd0" },
+  "inbound-email-worker": { label: "Inbound Worker", color: "#2f9e6b" },
+  "inbound-email": { label: "Inbound Email", color: "#2f9e6b" },
+  "classification-agent": { label: "Classifier AI", color: "#c98a1e" },
+  "negotiation-agent": { label: "Negotiator AI", color: "#c76032" },
+  "payment-form": { label: "Payout Form", color: "#238055" },
+  manual: { label: "Manual", color: "#6b6152" },
+  system: { label: "System", color: "#8a7f6c" },
 };
 
 export function sourceInfo(source: string | null): { label: string; color: string } {

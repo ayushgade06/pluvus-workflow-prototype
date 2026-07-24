@@ -11,7 +11,7 @@ import {
   Badge,
 } from "../ds";
 import { stateColor, stateLabel } from "../../theme";
-import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "./nodeMeta";
+import { nodeLabel, nodeIconComponent, nodeColor, nodeDescription } from "./nodeMeta";
 import type {
   DraftNode,
   InitialOutreachConfig,
@@ -49,6 +49,7 @@ export function NodeConfigPanel({
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const color = nodeColor(node.type);
+  const Icon = nodeIconComponent(node.type);
 
   return (
     <div
@@ -84,19 +85,19 @@ export function NodeConfigPanel({
           <span
             aria-hidden
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 9,
-              background: `${color}1c`,
-              border: `1px solid ${color}26`,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: `${color}2e`,
+              border: `1.5px solid ${colors.cardBorder}`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 16,
+              color: colors.text,
               flexShrink: 0,
             }}
           >
-            {nodeIcon(node.type)}
+            <Icon size={18} strokeWidth={2.25} />
           </span>
           <div style={{ minWidth: 0 }}>
             <div

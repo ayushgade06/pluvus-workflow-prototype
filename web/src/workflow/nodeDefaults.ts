@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import type { NodeType, NodeConfig } from "../api/builderTypes";
-import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "../components/builder/nodeMeta";
+import { nodeLabel, nodeColor, nodeDescription } from "../components/builder/nodeMeta";
 
 // Types a user may add from the palette. IMPORT_CREATOR_LIST is an implicit
 // entry concept (creators enroll into the first node) and END is legacy, so the
@@ -27,7 +27,6 @@ export const PALETTE_NODE_TYPES: NodeType[] = [
 export interface PaletteItem {
   type: NodeType;
   label: string;
-  icon: string;
   color: string;
   description: string;
 }
@@ -36,7 +35,6 @@ export function paletteItems(): PaletteItem[] {
   return PALETTE_NODE_TYPES.map((type) => ({
     type,
     label: nodeLabel(type),
-    icon: nodeIcon(type),
     color: nodeColor(type),
     description: nodeDescription(type),
   }));

@@ -17,7 +17,7 @@ import ReactFlow, {
 } from "reactflow";
 import type { WorkflowNodeSummary, InstanceState } from "../api/types";
 import { StateNode, type StateNodeData } from "./StateNode";
-import { colors, stateColor } from "../theme";
+import { colors, stateColor, shadow } from "../theme";
 
 const nodeTypes: NodeTypes = { stateNode: StateNode };
 
@@ -159,16 +159,16 @@ export function WorkflowCanvas({ nodes, selectedState, onSelectState }: Props) {
       panOnScroll
       style={{ background: colors.bg }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#22242c" />
+      <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color={colors.hairline} />
       <Controls
         showInteractive={false}
         position="bottom-left"
         style={{
           background: colors.panel,
-          border: `1px solid ${colors.borderStrong}`,
+          border: `2px solid ${colors.cardBorder}`,
           borderRadius: 10,
           overflow: "hidden",
-          boxShadow: "0 2px 6px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.28)",
+          boxShadow: shadow.md,
         }}
       />
     </ReactFlow>

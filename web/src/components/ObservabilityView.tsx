@@ -11,9 +11,21 @@ import { WorkflowCanvas } from "./WorkflowCanvas";
 import { NodeDrilldown } from "./NodeDrilldown";
 import { InstanceInspector } from "./InstanceInspector";
 import { LlmUsageStrip } from "./LlmUsagePanel";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, GitBranch } from "lucide-react";
 import { EmptyState, Select } from "./ds";
-import { colors, font, text, formatTimestamp } from "../theme";
+import { ObserveInsights } from "./ObserveInsights";
+import { colors, font, text, radii, formatTimestamp } from "../theme";
+
+// Sub-tabs shown in the Observability header (matches the reference layout).
+// Pipeline Flow is the live graph; the rest surface the same data as focused
+// lists so the tab bar isn't decorative.
+type ObserveTab = "flow" | "metrics" | "events" | "attention";
+const OBSERVE_TABS: { key: ObserveTab; label: string }[] = [
+  { key: "flow", label: "Pipeline Flow" },
+  { key: "metrics", label: "Metrics" },
+  { key: "events", label: "Recent Events" },
+  { key: "attention", label: "Needs Attention" },
+];
 
 export default function ObservabilityView() {
   // W-6: an explicit workflow scope. null → "let the server pick the newest
@@ -24,6 +36,7 @@ export default function ObservabilityView() {
   const summary = useWorkflowSummary(selectedVersionId);
   const [selectedState, setSelectedState] = useState<InstanceState | null>(null);
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null);
+  const [tab, setTab] = useState<ObserveTab>("flow");
 
   const nodes = summary.data?.nodes ?? [];
   const wf = summary.data?.workflow ?? null;
@@ -53,6 +66,8 @@ export default function ObservabilityView() {
           setSelectedState(null);
           setSelectedInstanceId(null);
         }}
+        tab={tab}
+        onTab={setTab}
       />
       <LlmUsageStrip />
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
@@ -68,12 +83,32 @@ export default function ObservabilityView() {
           ) : (
             <WorkflowCanvas nodes={nodes} selectedState={selectedState} onSelectState={handleSelectState} />
           )}
-          <CanvasHint visible={!selectedState && !summary.isLoading && !summary.isError} />
+          <CanvasHint visible={!selectedState && !summary.isLoading && !summary.isError && tab === "flow"} />
         </div>
+
+        {/* Right insights column — Pipeline Summary, Stage Distribution,
+            Needs Attention, Recent Events (matches the reference layout). Its
+            active section follows the header tab. Hidden while a drilldown or
+            inspector panel is open so the canvas keeps room. */}
+        {!selectedState && !selectedInstanceId && !summary.isLoading && !summary.isError && (
+          <div
+            className="ds-slide-in-right"
+            style={{
+              width: 320,
+              flexShrink: 0,
+              borderLeft: `2px solid ${colors.cardBorder}`,
+              background: colors.bg,
+              overflow: "auto",
+            }}
+          >
+            <ObserveInsights nodes={nodes} focus={tab} onSelectState={handleSelectState} />
+          </div>
+        )}
+
         {selectedState && (
           <div
             className="ds-slide-in-right"
-            style={{ width: 340, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.panel }}
+            style={{ width: 340, flexShrink: 0, borderLeft: `2px solid ${colors.cardBorder}`, background: colors.panel }}
           >
             <NodeDrilldown
               state={selectedState}
@@ -86,7 +121,7 @@ export default function ObservabilityView() {
         {selectedInstanceId && (
           <div
             className="ds-slide-in-right"
-            style={{ width: 420, flexShrink: 0, borderLeft: `1px solid ${colors.border}`, background: colors.panel }}
+            style={{ width: 420, flexShrink: 0, borderLeft: `2px solid ${colors.cardBorder}`, background: colors.panel }}
           >
             <InstanceInspector instanceId={selectedInstanceId} onClose={() => setSelectedInstanceId(null)} />
           </div>
@@ -107,6 +142,8 @@ function ObserveTopbar({
   options,
   selectedVersionId,
   onSelectVersion,
+  tab,
+  onTab,
 }: {
   name: string;
   version: number | null;
@@ -118,6 +155,8 @@ function ObserveTopbar({
   options: WorkflowOption[];
   selectedVersionId: string | null;
   onSelectVersion: (versionId: string | null) => void;
+  tab: ObserveTab;
+  onTab: (t: ObserveTab) => void;
 }) {
   const active = nodes.filter((n) => !n.terminal).reduce((a, n) => a + n.count, 0);
   const terminal = nodes.filter((n) => n.terminal).reduce((a, n) => a + n.count, 0);
@@ -126,67 +165,95 @@ function ObserveTopbar({
   return (
     <div
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 18,
-        padding: "10px 18px",
-        borderBottom: `1px solid ${colors.border}`,
+        borderBottom: `2px solid ${colors.cardBorder}`,
         background: colors.panel,
         flexShrink: 0,
       }}
     >
-      <div style={{ ...text.label, color: colors.textMuted, letterSpacing: 0.4 }}>
-        Observability
-      </div>
-      <div style={{ width: 1, height: 22, background: colors.border }} />
-      {/* W-6: scope picker. Only shown once there is more than one workflow to
-          choose between — a single-campaign deployment sees the plain label. */}
-      {options.length > 1 ? (
-        <Select
-          value={selectedVersionId ?? ""}
-          onChange={(e) => onSelectVersion(e.target.value || null)}
-          aria-label="Workflow scope"
-          style={{ width: "auto", padding: "5px 8px", fontSize: font.size.sm }}
-        >
-          {options.map((o) => (
-            <option key={o.latestVersionId} value={o.latestVersionId}>
-              {o.workflowName} · v{o.latestVersion} ({o.instanceCount})
-            </option>
-          ))}
-        </Select>
-      ) : (
-        <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
-          {name}
-          {version !== null && <span style={{ color: colors.textDim }}> · v{version}</span>}
+      {/* Row 1 — title, scope, live stats */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 18px 8px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <GitBranch size={17} strokeWidth={2.25} color={colors.accent} />
+          <span style={{ ...text.title, fontSize: font.size.xl }}>Observability</span>
         </div>
-      )}
-      <div style={{ display: "flex", gap: 16, marginLeft: 8 }}>
-        <Stat label="total" value={total} />
-        <Stat label="active" value={active} color={colors.accent} />
-        <Stat label="terminal" value={terminal} />
-        {stuck > 0 && <Stat label="stuck" value={stuck} color={colors.warning} />}
-      </div>
-      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-        {error ? (
-          <span style={{ fontSize: font.size.sm, color: colors.danger }}>● disconnected</span>
+        <div style={{ width: 2, height: 20, background: colors.hairline }} />
+        {options.length > 1 ? (
+          <Select
+            value={selectedVersionId ?? ""}
+            onChange={(e) => onSelectVersion(e.target.value || null)}
+            aria-label="Workflow scope"
+            style={{ width: "auto", padding: "5px 8px", fontSize: font.size.sm }}
+          >
+            {options.map((o) => (
+              <option key={o.latestVersionId} value={o.latestVersionId}>
+                {o.workflowName} · v{o.latestVersion} ({o.instanceCount})
+              </option>
+            ))}
+          </Select>
         ) : (
-          <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: font.size.sm, color: colors.textMuted }}>
-            <span
-              className={fetching ? undefined : "ds-pulse"}
+          <div style={{ fontSize: font.size.md, color: colors.textMuted }}>
+            {name}
+            {version !== null && <span style={{ color: colors.textDim }}> · v{version}</span>}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 16, marginLeft: 8 }}>
+          <Stat label="total" value={total} />
+          <Stat label="active" value={active} color={colors.accent} />
+          <Stat label="terminal" value={terminal} color={colors.success} />
+          {stuck > 0 && <Stat label="stuck" value={stuck} color={colors.warning} />}
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {error ? (
+            <span style={{ fontSize: font.size.sm, color: colors.danger }}>● disconnected</span>
+          ) : (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: font.size.sm, color: colors.textMuted }}>
+              <span
+                className={fetching ? undefined : "ds-pulse"}
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: fetching ? colors.warning : colors.success,
+                  boxShadow: `0 0 8px ${fetching ? colors.warning : colors.success}66`,
+                }}
+              />
+              live · {POLL_INTERVAL_MS / 1000}s
+            </span>
+          )}
+          {generatedAt && (
+            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>updated {formatTimestamp(generatedAt)}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Row 2 — sub-tabs */}
+      <div style={{ display: "flex", gap: 4, padding: "0 14px" }} role="tablist">
+        {OBSERVE_TABS.map((t) => {
+          const activeTab = t.key === tab;
+          return (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={activeTab}
+              onClick={() => onTab(t.key)}
+              className="ds-focusable"
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: fetching ? colors.warning : colors.success,
-                boxShadow: `0 0 8px ${fetching ? colors.warning : colors.success}66`,
+                appearance: "none",
+                background: "none",
+                border: "none",
+                borderBottom: `2px solid ${activeTab ? colors.accent : "transparent"}`,
+                padding: "8px 10px",
+                marginBottom: -2,
+                fontSize: font.size.sm,
+                fontWeight: activeTab ? font.weight.bold : font.weight.medium,
+                color: activeTab ? colors.text : colors.textMuted,
+                cursor: "pointer",
               }}
-            />
-            live · {POLL_INTERVAL_MS / 1000}s
-          </span>
-        )}
-        {generatedAt && (
-          <span style={{ fontSize: font.size.xs, color: colors.textDim }}>updated {formatTimestamp(generatedAt)}</span>
-        )}
+            >
+              {t.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
