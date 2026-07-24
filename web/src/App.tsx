@@ -15,7 +15,6 @@ import { Suspense, lazy, useState, useEffect, useCallback } from "react";
 import { Sun, Moon } from "lucide-react";
 import { CampaignList } from "./components/builder/CampaignList";
 import { WorkflowBuilder } from "./components/builder/WorkflowBuilder";
-import { LandingPage } from "./components/LandingPage";
 import { ToastProvider } from "./components/ds";
 import { useThemeMode } from "./theme-mode";
 import { colors, font, radii } from "./theme";
@@ -27,7 +26,7 @@ const PartnersView = lazy(() =>
   import("./components/partners/PartnersView").then((m) => ({ default: m.PartnersView })),
 );
 
-type View = "home" | "campaigns" | "builder" | "observe" | "partners";
+type View = "campaigns" | "builder" | "observe" | "partners";
 
 interface Route {
   view: View;
@@ -42,9 +41,7 @@ function parseHash(): Route {
   if (view === "builder" && id) return { view: "builder", activeWorkflowId: decodeURIComponent(id) };
   if (view === "observe") return { view: "observe", activeWorkflowId: null };
   if (view === "partners") return { view: "partners", activeWorkflowId: null };
-  if (view === "campaigns") return { view: "campaigns", activeWorkflowId: null };
-  // Default landing surface.
-  return { view: "home", activeWorkflowId: null };
+  return { view: "campaigns", activeWorkflowId: null };
 }
 
 function routeToHash(r: Route): string {
@@ -53,8 +50,7 @@ function routeToHash(r: Route): string {
   }
   if (r.view === "observe") return "#/observe";
   if (r.view === "partners") return "#/partners";
-  if (r.view === "campaigns") return "#/campaigns";
-  return "#/home";
+  return "#/campaigns";
 }
 
 export default function App() {
@@ -92,12 +88,6 @@ export default function App() {
       <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: colors.bg }}>
         <AppTopbar view={view} onChangeView={setView} />
         <div style={{ flex: 1, minHeight: 0 }}>
-          {view === "home" && (
-            <LandingPage
-              onEnterApp={() => setView("campaigns")}
-              onOpenObservability={() => setView("observe")}
-            />
-          )}
           {view === "campaigns" && <CampaignList onSelectWorkflow={openWorkflow} />}
           {view === "builder" && activeWorkflowId && (
             <WorkflowBuilder workflowId={activeWorkflowId} onBack={backToCampaigns} />
@@ -126,7 +116,6 @@ export default function App() {
 function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View) => void }) {
   const { mode, toggle } = useThemeMode();
   const tabs: { key: View; label: string }[] = [
-    { key: "home", label: "Home" },
     { key: "campaigns", label: "Builder" },
     { key: "observe", label: "Observability" },
     { key: "partners", label: "Partners" },
@@ -146,7 +135,7 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
     >
       {/* Serif wordmark with an accent tick — the Tano editorial mark. */}
       <button
-        onClick={() => onChangeView("home")}
+        onClick={() => onChangeView("campaigns")}
         className="ds-focusable"
         style={{
           display: "flex",
