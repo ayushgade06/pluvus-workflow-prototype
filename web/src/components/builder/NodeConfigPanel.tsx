@@ -21,6 +21,14 @@ import type {
   ContentBriefConfig,
 } from "../../api/builderTypes";
 import { uploadFile } from "../../api/builderClient";
+import {
+  OUTREACH_VARIABLES,
+  type OutreachVariable,
+  PREVIEW_SAMPLE,
+  renderOutreachPreview,
+  extractUnknownTokens,
+  validateOutreachConfig,
+} from "../../workflow/outreachVariables";
 
 interface Props {
   node: DraftNode;
@@ -281,58 +289,308 @@ function InitialOutreachForm({
   config: InitialOutreachConfig;
   onUpdate: (id: string, cfg: Record<string, unknown>) => void;
 }) {
+  // Absent mode is treated as "ai" (legacy default, matches the executor). New
+  // nodes are stamped "manual" by nodeDefaults, so this branch only affects
+  // already-created legacy drafts, which stay on AI until the operator switches.
+  const [mode, setMode] = useState<"manual" | "ai">(config.outreachMode ?? "ai");
   const [subject, setSubject] = useState(config.subjectTemplate ?? "");
   const [body, setBody] = useState(config.bodyTemplate ?? "");
   const subjectId = useId();
   const bodyId = useId();
 
+  // Refs + last-focused tracking so the variable palette inserts a {{token}} at
+  // the caret of whichever field the operator last touched.
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const focusedRef = useRef<"subject" | "body">("body");
+
   useEffect(() => {
+    setMode(config.outreachMode ?? "ai");
     setSubject(config.subjectTemplate ?? "");
     setBody(config.bodyTemplate ?? "");
-  }, [nodeId, config.subjectTemplate, config.bodyTemplate]);
+  }, [nodeId, config.outreachMode, config.subjectTemplate, config.bodyTemplate]);
 
-  // Identical payload to before: spread config, override subject/body.
-  function flush() {
+  // Spread config, override mode + subject/body. `over` lets us flush a value
+  // that hasn't round-tripped through state yet (mode toggle, palette insert).
+  function flush(over?: Partial<InitialOutreachConfig>) {
     onUpdate(nodeId, {
       ...config,
+      outreachMode: mode,
       subjectTemplate: subject,
       bodyTemplate: body,
+      ...over,
     });
   }
 
+  function selectMode(next: "manual" | "ai") {
+    setMode(next);
+    flush({ outreachMode: next });
+  }
+
+  // Insert `{{name}}` at the caret of the last-focused field. Splices into the
+  // string, updates state, flushes, and restores the caret after the token.
+  function insertVariable(name: string) {
+    const token = `{{${name}}}`;
+    const target = focusedRef.current;
+    if (target === "subject") {
+      const el = subjectRef.current;
+      const at = el?.selectionStart ?? subject.length;
+      const next = subject.slice(0, at) + token + subject.slice(el?.selectionEnd ?? at);
+      setSubject(next);
+      flush({ subjectTemplate: next });
+      requestAnimationFrame(() => {
+        if (el) {
+          el.focus();
+          const pos = at + token.length;
+          el.setSelectionRange(pos, pos);
+        }
+      });
+    } else {
+      const el = bodyRef.current;
+      const at = el?.selectionStart ?? body.length;
+      const next = body.slice(0, at) + token + body.slice(el?.selectionEnd ?? at);
+      setBody(next);
+      flush({ bodyTemplate: next });
+      requestAnimationFrame(() => {
+        if (el) {
+          el.focus();
+          const pos = at + token.length;
+          el.setSelectionRange(pos, pos);
+        }
+      });
+    }
+  }
+
+  // Live validation against the effective config so inline errors mirror what
+  // the publish check will report.
+  const validationIssue = validateOutreachConfig({
+    outreachMode: mode,
+    subjectTemplate: subject,
+    bodyTemplate: body,
+  });
+  const subjectError = validationIssue?.field === "subject" ? validationIssue.message : undefined;
+  const bodyError = validationIssue?.field === "body" ? validationIssue.message : undefined;
+
+  const isManual = mode === "manual";
+
   return (
     <FormStack>
-      <InfoBox>
-        The first email sent to each creator is written by the AI, personalized from your campaign
-        details (brand, deliverables, reward, deal terms). The subject and body below are an{" "}
-        <strong>optional fallback</strong> — used only if AI generation is unavailable. Leave them
-        blank to use the built-in default. Fallback text supports template variables:{" "}
-        <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>,{" "}
-        <Code>{"{{rewardDescription}}"}</Code> (the campaign's product/sample reward, blank when
-        none).
-      </InfoBox>
-      <Section title="Fallback message (optional)">
-        <FormField label="Subject Line" htmlFor={subjectId}>
+      <OutreachModeToggle mode={mode} onSelect={selectMode} />
+
+      {isManual ? (
+        <InfoBox>
+          You are writing the exact first email each creator receives. It is sent{" "}
+          <strong>verbatim</strong> after variables are filled in — the AI does not rewrite it. Use
+          the variables below to personalize it; leave money out (rates are negotiated on reply).
+        </InfoBox>
+      ) : (
+        <InfoBox>
+          The first email is written by the <strong>AI</strong>, personalized from your campaign
+          details. The subject and body below are an <strong>optional fallback</strong>, used only if
+          AI generation is unavailable. Switch to <strong>Write it myself</strong> above to send your
+          own copy instead.
+        </InfoBox>
+      )}
+
+      <VariablePalette onInsert={insertVariable} />
+
+      <Section title={isManual ? "Your outreach email" : "Fallback message (optional)"}>
+        <FormField label="Subject Line" htmlFor={subjectId} error={subjectError}>
           <Input
             id={subjectId}
+            ref={subjectRef}
             value={subject}
+            invalid={!!subjectError}
+            onFocus={() => (focusedRef.current = "subject")}
             onChange={(e) => setSubject(e.target.value)}
-            onBlur={flush}
+            onBlur={() => flush()}
             placeholder="e.g. Partnership opportunity with {{brandName}}"
           />
         </FormField>
-        <FormField label="Email Body" htmlFor={bodyId} hint="Plain text. Template variables are supported.">
+        <FormField
+          label="Email Body"
+          htmlFor={bodyId}
+          hint="Plain text. Click a variable above to insert it at your cursor."
+          error={bodyError}
+        >
           <Textarea
             id={bodyId}
+            ref={bodyRef}
             value={body}
+            invalid={!!bodyError}
+            onFocus={() => (focusedRef.current = "body")}
             onChange={(e) => setBody(e.target.value)}
-            onBlur={flush}
-            rows={10}
-            placeholder="Leave blank to use the built-in default…"
+            onBlur={() => flush()}
+            rows={12}
+            placeholder={
+              isManual
+                ? "Hi {{creatorName}},\n\nWrite your outreach here…"
+                : "Leave blank to use the built-in default…"
+            }
           />
         </FormField>
       </Section>
+
+      <OutreachPreview subject={subject} body={body} config={config} />
     </FormStack>
+  );
+}
+
+// Segmented control: manual vs AI. Manual is the recommended, product-default
+// path (each new node ships manual); AI is the opt-in fallback path.
+function OutreachModeToggle({
+  mode,
+  onSelect,
+}: {
+  mode: "manual" | "ai";
+  onSelect: (m: "manual" | "ai") => void;
+}) {
+  const options: { key: "manual" | "ai"; label: string; sub: string }[] = [
+    { key: "manual", label: "Write it myself", sub: "Recommended — your copy is sent as-is" },
+    { key: "ai", label: "Let AI write it", sub: "The AI drafts the first email" },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Outreach mode"
+      style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+    >
+      {options.map((o) => {
+        const active = mode === o.key;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onSelect(o.key)}
+            className="ds-focusable"
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              padding: "12px 14px",
+              borderRadius: radii.md,
+              border: `1px solid ${active ? colors.accent : colors.border}`,
+              background: active ? colors.accentWash : colors.panel,
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+            }}
+          >
+            <span
+              style={{
+                fontSize: font.size.sm,
+                fontWeight: font.weight.semibold,
+                color: active ? colors.accent : colors.text,
+              }}
+            >
+              {o.label}
+            </span>
+            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{o.sub}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Click-to-insert palette of the allowed template variables, grouped. Each chip
+// inserts its {{token}} at the caret of the last-focused field.
+function VariablePalette({ onInsert }: { onInsert: (name: string) => void }) {
+  const groups: OutreachVariable["group"][] = ["Creator", "Brand", "Campaign"];
+  return (
+    <Section title="Insert a variable">
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {groups.map((g) => (
+          <div key={g} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{g}</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {OUTREACH_VARIABLES.filter((v) => v.group === g).map((v) => (
+                <button
+                  key={v.name}
+                  type="button"
+                  title={`${v.label} (${v.fallbackNote})`}
+                  onClick={() => onInsert(v.name)}
+                  className="mono ds-focusable"
+                  style={{
+                    cursor: "pointer",
+                    fontSize: 11,
+                    background: colors.panelAlt,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 4,
+                    padding: "3px 7px",
+                    color: colors.text,
+                  }}
+                >
+                  {`{{${v.name}}}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// Read-only live preview: resolves variables against the campaign's real brand/
+// campaign values (on config) + sample creator values, mirroring the server
+// send-time render. Unknown {{tokens}} are highlighted so a typo is obvious.
+function OutreachPreview({
+  subject,
+  body,
+  config,
+}: {
+  subject: string;
+  body: string;
+  config: InitialOutreachConfig;
+}) {
+  const cfg = config as unknown as Record<string, unknown>;
+  const previewSubject = renderOutreachPreview(subject, cfg);
+  const previewBody = renderOutreachPreview(body, cfg);
+  const unknown = [
+    ...new Set([...extractUnknownTokens(subject), ...extractUnknownTokens(body)]),
+  ];
+
+  return (
+    <Section title="Preview">
+      <div
+        style={{
+          border: `1px solid ${colors.border}`,
+          borderRadius: radii.md,
+          background: colors.bg,
+          padding: "14px 16px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontSize: font.size.xs, color: colors.textDim }}>
+          Sample creator: {PREVIEW_SAMPLE.creatorName} ({PREVIEW_SAMPLE.platform},{" "}
+          {PREVIEW_SAMPLE.niche})
+        </div>
+        <div style={{ fontSize: font.size.sm, fontWeight: font.weight.semibold, color: colors.text }}>
+          {previewSubject || <span style={{ color: colors.textDim }}>No subject</span>}
+        </div>
+        <div
+          style={{
+            fontSize: font.size.sm,
+            color: colors.textMuted,
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.6,
+          }}
+        >
+          {previewBody || <span style={{ color: colors.textDim }}>No body</span>}
+        </div>
+        {unknown.length > 0 && (
+          <div style={{ fontSize: font.size.xs, color: colors.danger }}>
+            Unknown variable{unknown.length > 1 ? "s" : ""}:{" "}
+            {unknown.map((u) => `{{${u}}}`).join(", ")} — these are removed when sent. Fix or remove
+            them before publishing.
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }
 

@@ -532,10 +532,20 @@ export async function executeNegotiation(
   //
   // PLU-111 (O6): openCommitments ride along as sanitized DATA so the negotiator
   // knows it owes an action — NEVER a money input. Attached only when non-empty.
+  //
+  // classify→negotiate hint: the first-reply classifier's intent for the reply
+  // being negotiated (persisted on the inbound Message row). Threaded as a SOFT
+  // advisory signal only — never a money input, never an override of the guards. A
+  // mid-negotiation reply (round >= 1) skips classify so replyIntent is null there;
+  // NEGATIVE/OPT_OUT never reach negotiation (routed terminal upstream). Attached
+  // only when present so the prompt renders exactly as before otherwise.
+  const classifiedIntent =
+    typeof latestInbound?.replyIntent === "string" ? latestInbound.replyIntent : undefined;
   const negotiationContext: PriorNegotiationContext = {
     ...priorContext,
     ...(draftHistory.length ? { conversationHistory: draftHistory } : {}),
     ...(openCommitments.length ? { openCommitments } : {}),
+    ...(classifiedIntent ? { intent: classifiedIntent } : {}),
   };
 
   // creatorQuestions / pushedFixedTerms: the comprehension /negotiate already did
@@ -550,7 +560,7 @@ export async function executeNegotiation(
   // feeds the MONEY path (context.creatorRate on a brand decision, which a brand
   // APPROVE records as the deal rate). The regex remains a fallback for copy
   // acknowledgment and guard allowlisting only.
-  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound } =
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound, negotiatorAnswers } =
     await agent.negotiate(instance.negotiationRound, config, creatorReply, negotiationContext);
 
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
@@ -633,6 +643,15 @@ export async function executeNegotiation(
     ...(openCommitments.length ? { openCommitments } : {}),
     ...(changedFields.length ? { changedFields } : {}),
     relationshipWarmth,
+    // Option A (negotiate→draft answer sync): thread the negotiator's OWN vetted
+    // answers into the copy so it rephrases them instead of re-deriving (and
+    // hallucinating) answers from raw facts. Present ONLY when the agent returned a
+    // genuine advisory draft — the mapper sets negotiatorAnswers only when the LLM
+    // strategy ran AND the guards did NOT null responseDraft, so a guard-altered
+    // decision (or rules mode) threads nothing and the copy renders exactly as
+    // before. Spread only when non-empty to keep the request minimal. Renders in the
+    // offer/onboarding prompts (the answer-bearing purposes); a no-op elsewhere.
+    ...(negotiatorAnswers && negotiatorAnswers.trim() ? { negotiatorAnswers } : {}),
   };
 
   // The reserve-time obligation writes shared across the send branches. The

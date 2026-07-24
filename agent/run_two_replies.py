@@ -7,7 +7,8 @@ import json
 import sys
 import urllib.request
 
-BASE = "http://localhost:8001"
+import os
+BASE = os.environ.get("AGENT_URL", "http://localhost:8001")
 
 
 def post(path: str, payload: dict) -> dict:
@@ -83,6 +84,9 @@ def run(name: str, reply: str, sender: str, brand: str, deal: str) -> dict:
                  "message": "initial outreach"},
                 {"role": "creator", "message": reply},
             ],
+            # classify→negotiate hint: thread the classifier's intent as a soft
+            # signal (the executor threads Message.replyIntent the same way).
+            **({"intent": classify.get("intent")} if classify.get("intent") else {}),
             "campaignConstraints": {**CONSTRAINTS, "senderName": sender,
                                     "brandDescription": brand},
         },
@@ -120,6 +124,13 @@ def run(name: str, reply: str, sender: str, brand: str, deal: str) -> dict:
             "creatorReply": reply,
             "creatorQuestions": negotiate.get("creatorQuestions", []),
             "pushedFixedTerms": negotiate.get("pushedFixedTerms", []),
+            # Option A (negotiate→draft answer sync): thread the negotiator's OWN
+            # vetted answers (its responseDraft) so DeepSeek rephrases them instead
+            # of re-deriving (and hallucinating) answers from raw facts. Only when
+            # present — the agent nulls responseDraft when the guards altered the
+            # decision, so the executor threads nothing there.
+            **({"negotiatorAnswers": negotiate.get("responseDraft")}
+               if negotiate.get("responseDraft") else {}),
         },
     )
     print("draft subject:", draft.get("subject"), file=sys.stderr)

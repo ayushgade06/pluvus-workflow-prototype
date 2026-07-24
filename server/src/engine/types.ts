@@ -174,6 +174,19 @@ export interface NegotiateResult {
    * non-final turn.
    */
   isFinalRound?: boolean;
+  /**
+   * Option A (negotiate→draft answer sync): the /negotiate model's OWN written
+   * reply (its responseDraft) — the vetted answers to every creator question this
+   * turn. DISTINCT from `message`: `message` always has a fallback string, whereas
+   * this is set ONLY when the agent returned a genuine advisory draft — i.e. the
+   * LLM strategy ran AND the money guards did NOT alter the decision (a guard-
+   * altered decision nulls responseDraft upstream so the copy can never restate a
+   * number that contradicts the recorded deal; rules mode emits only a placeholder).
+   * The executor threads it into the /draft `extra` as `negotiatorAnswers` so the
+   * copy model rephrases these approved answers instead of re-deriving (and
+   * hallucinating) them. Undefined when there is no genuine draft to pass.
+   */
+  negotiatorAnswers?: string;
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and
@@ -198,6 +211,13 @@ export interface PriorNegotiationContext {
   // by /negotiate as sanitized DATA (like the transcript), NEVER as a money input.
   // Empty/absent → no change to behavior.
   openCommitments?: string[] | undefined;
+  // classify→negotiate hint: the intent the first-reply classifier assigned to the
+  // reply being negotiated (from the persisted Message.replyIntent). Threaded as a
+  // SOFT advisory signal so the money-decision model has the upstream read of the
+  // creator's stance — never a money input, never an override of the guards. Absent
+  // for a mid-negotiation reply (round >= 1 skips classify) or an un-classified row,
+  // so the /negotiate prompt renders exactly as before.
+  intent?: string | undefined;
 }
 
 // A trimmed history entry the executor can build purely from persisted events.

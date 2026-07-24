@@ -1,4 +1,4 @@
-import type { ExecutionContext, NodeResult } from "../types.js";
+import type { ExecutionContext, NodeResult, EmailDraft } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { describeDeal } from "../dealDescription.js";
@@ -9,6 +9,19 @@ import {
   type GuardHit,
 } from "../guards/outputGuard.js";
 import { mergeCampaignFallback } from "../campaignContext.js";
+
+// Manual Initial Outreach: the operator can write the first email by hand in the
+// builder ("manual" mode) instead of having the AI draft it ("ai" mode). The
+// mode lives on the node config. An ABSENT field means the node config was saved
+// before this feature — those already-published versions keep doing exactly what
+// they did (AI-first), so absent → "ai". New nodes default to "manual" via the
+// builder / templates, so the product ships manual-first without silently
+// changing what an already-launched campaign sends.
+type OutreachMode = "manual" | "ai";
+function resolveOutreachMode(config: Record<string, unknown>): OutreachMode {
+  const m = config["outreachMode"];
+  return m === "manual" || m === "ai" ? m : "ai"; // absent → legacy AI behavior
+}
 
 // H4: the output guard is documented as a MANDATORY net before ANY AI-generated
 // email is sent, but outreach/follow-up sent unguarded. Outreach quotes NO money
@@ -52,11 +65,25 @@ export async function executeInitialOutreach(
   const negotiationConfig = nodeGraph.find((n) => n.type === "NEGOTIATION")?.config;
   const dealDescription = describeDeal(negotiationConfig);
 
-  // Try AI-generated draft first; fall back to template-based email.draft().
-  const aiDraft = await agent.draftEmail("initial_outreach", creator, config, {
-    ...(dealDescription ? { dealDescription } : {}),
-  });
-  const draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
+  // Manual vs AI. In "manual" mode the operator's written subject/body ARE the
+  // email — we skip the AI entirely and render their copy through the shared
+  // variable resolver (email.draft → resolveOutreachTemplate substitutes
+  // {{creatorName}} etc. and strips any unknown token). In "ai" mode (and for
+  // legacy nodes with no mode field) we keep today's behavior: AI first, written
+  // template as the fallback.
+  const mode = resolveOutreachMode(config);
+  let draft: EmailDraft;
+  let aiGenerated: boolean;
+  if (mode === "manual") {
+    draft = await email.draft(creator, bodyTemplate, config);
+    aiGenerated = false;
+  } else {
+    const aiDraft = await agent.draftEmail("initial_outreach", creator, config, {
+      ...(dealDescription ? { dealDescription } : {}),
+    });
+    draft = aiDraft ?? await email.draft(creator, bodyTemplate, config);
+    aiGenerated = aiDraft !== null;
+  }
 
   // H4: scan the rendered draft for a leaked floor/ceiling before sending. The
   // band lives on the NEGOTIATION node; outreach presents no rate, so nothing is
@@ -91,7 +118,11 @@ export async function executeInitialOutreach(
       subject: draft.subject,
       messageId,
       threadId,
-      aiGenerated: aiDraft !== null,
+      // aiGenerated=false marks an operator-written outreach so history and the
+      // inspector can distinguish it from an AI draft. outreachMode records which
+      // path produced this email for observability.
+      aiGenerated,
+      outreachMode: mode,
     },
   };
 }

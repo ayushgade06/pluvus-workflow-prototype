@@ -47,10 +47,14 @@ export function paletteItems(): PaletteItem[] {
 export function defaultConfigFor(type: NodeType): NodeConfig {
   switch (type) {
     case "INITIAL_OUTREACH":
+      // Ships manual-first: the operator writes the first email and it's sent
+      // as-is. The starter copy is a genuine, sendable first-touch (no price —
+      // rates are negotiated on reply) rather than a placeholder.
       return {
+        outreachMode: "manual",
         subjectTemplate: "Partnership opportunity with {{brandName}}",
         bodyTemplate:
-          "Hi {{creatorName}},\n\nWe'd love to work with you. Interested in learning more?\n\nBest,\n{{brandName}} Team",
+          "Hi {{creatorName}},\n\nI'm reaching out from {{brandName}} — we've been enjoying your {{platform}} content and think there could be a great fit for a partnership.\n\nWould you be open to hearing the details? Happy to share what we have in mind.\n\nBest,\n{{senderName}}",
         delaySeconds: 0,
       };
     case "FOLLOW_UP":
