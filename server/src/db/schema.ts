@@ -201,6 +201,23 @@ export const dealHandoffStatusEnum = pgEnum("DealHandoffStatus", [
   "COMPLETED",
 ]);
 
+// PLU-111: Conversation Obligations. A DIFFERENT concept from the payout-ledger
+// Obligation/ObligationStatus (money owed) — do not reuse those names. Member
+// order mirrors the DB (created whole by CREATE TYPE in the migration).
+export const obligationTypeEnum = pgEnum("ObligationType", [
+  "CREATOR_QUESTION",
+  "PLUVUS_COMMITMENT",
+]);
+export const convObligationStatusEnum = pgEnum("ConversationObligationStatus", [
+  "OPEN",
+  "ANSWERED",
+  "DEFERRED",
+  "ESCALATED",
+  "COMPLETED",
+  "CANCELED",
+  "NO_LONGER_RELEVANT",
+]);
+
 export const workflowStatusEnum = pgEnum("WorkflowStatus", [
   "DRAFT",
   "PUBLISHED",
@@ -291,6 +308,10 @@ export type PartnershipStatus = (typeof partnershipStatusEnum.enumValues)[number
 export type ObligationStatus = (typeof obligationStatusEnum.enumValues)[number];
 export type PayoutStatus = (typeof payoutStatusEnum.enumValues)[number];
 export type PayoutType = (typeof payoutTypeEnum.enumValues)[number];
+// PLU-111 — conversation obligations (distinct from the payout ObligationStatus).
+export type ObligationType = (typeof obligationTypeEnum.enumValues)[number];
+export type ConversationObligationStatus =
+  (typeof convObligationStatusEnum.enumValues)[number];
 
 // ---------------------------------------------------------------------------
 // Definition models
@@ -673,9 +694,17 @@ export const dealHandoffs = pgTable(
     // because a human is already the reviewer.
     fixedFee: doublePrecision("fixedFee"),
     commissionRate: doublePrecision("commissionRate"),
+    // The negotiation band the deal closed within, snapshotted so the brand
+    // confirmation email can show "your range: $500–$600" without re-reading the
+    // node config. Null when the campaign had no band configured.
+    negotiationFloor: doublePrecision("negotiationFloor"),
+    negotiationCeiling: doublePrecision("negotiationCeiling"),
     deliverables: text("deliverables"),
     timeline: text("timeline"),
     paymentTerms: text("paymentTerms"),
+    // The campaign perk/reward blurb (e.g. "one pair of the Tempo trainer"),
+    // surfaced in the brand confirmation email. Null when the campaign has none.
+    rewardDescription: text("rewardDescription"),
     acceptanceMessage: text("acceptanceMessage"),
     threadId: text("threadId"),
     acceptedAt: ts("acceptedAt").notNull(),
@@ -688,6 +717,56 @@ export const dealHandoffs = pgTable(
   (table) => [
     uniqueIndex("DealHandoff_instanceId_key").on(table.instanceId),
     index("DealHandoff_status_idx").on(table.status),
+  ],
+);
+
+// PLU-111: durable conversation obligations. ONLY-lifecycle data — status +
+// pointers back into the canonical Message rows + the original wording (audit).
+// NOT a second copy of the conversation (the transcript stays sourced from
+// Message rows, PLU-85). Non-terminal rows (OPEN/DEFERRED/ESCALATED) are fed
+// into every subsequent /negotiate + /draft context until they reach a terminal
+// state (ANSWERED/COMPLETED/CANCELED/NO_LONGER_RELEVANT).
+export const conversationObligations = pgTable(
+  "ConversationObligation",
+  {
+    id: cuidId("id"),
+    instanceId: text("instanceId")
+      .notNull()
+      .references(() => executionInstances.id),
+    type: obligationTypeEnum("type").notNull(),
+    status: convObligationStatusEnum("status").notNull().default("OPEN"),
+    // Verbatim, for audit — never overwritten.
+    originalText: text("originalText").notNull(),
+    // Dedup key (§4.3): lowercase, trimmed, punctuation-stripped, whitespace-
+    // collapsed form of originalText.
+    normalizedKey: text("normalizedKey").notNull(),
+    // Optional light bucket (usage_rights, shipping, timeline, …), best-effort.
+    category: text("category"),
+    // Short note / answer summary, set on resolution.
+    resolution: text("resolution"),
+    // "ai" | "operator" | "system".
+    resolutionSource: text("resolutionSource"),
+    // The inbound row that raised it.
+    sourceMessageId: text("sourceMessageId").references(() => messages.id),
+    // The SENT row that resolved it (stamped at reserve; flipped terminal at flush).
+    resolutionMessageId: text("resolutionMessageId").references(() => messages.id),
+    createdAt: tsNow("createdAt"),
+    updatedAt: tsUpdatedAt("updatedAt"),
+    // Set only on a terminal transition.
+    resolvedAt: ts("resolvedAt"),
+  },
+  (table) => [
+    index("ConversationObligation_instanceId_status_idx").on(
+      table.instanceId,
+      table.status,
+    ),
+    // Conservative dedup guard (§4.3): at most one NON-TERMINAL obligation per
+    // (instance, type, normalizedKey). Partial so terminal history accumulates —
+    // an answered-then-re-asked question mints a fresh open row (a new thread).
+    // Mirrors migration 20260722140000_plu111_conversation_obligations.
+    uniqueIndex("ConversationObligation_open_key")
+      .on(table.instanceId, table.type, table.normalizedKey)
+      .where(sql`${table.status} IN ('OPEN', 'DEFERRED', 'ESCALATED')`),
   ],
 );
 
@@ -931,6 +1010,9 @@ export const insertDealHandoffSchema = createInsertSchema(dealHandoffs).omit({
   createdAt: true,
   updatedAt: true,
 });
+export const insertConversationObligationSchema = createInsertSchema(
+  conversationObligations,
+).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
   id: true,
   createdAt: true,
@@ -972,6 +1054,7 @@ export type DeadLetterJob = typeof deadLetterJobs.$inferSelect;
 export type BrandNotification = typeof brandNotifications.$inferSelect;
 export type PaymentInfo = typeof paymentInfo.$inferSelect;
 export type DealHandoff = typeof dealHandoffs.$inferSelect;
+export type ConversationObligation = typeof conversationObligations.$inferSelect;
 export type Partnership = typeof partnerships.$inferSelect;
 export type Click = typeof clicks.$inferSelect;
 export type Conversion = typeof conversions.$inferSelect;
@@ -995,6 +1078,9 @@ export type InsertBrandNotification = z.infer<
 >;
 export type InsertPaymentInfo = z.infer<typeof insertPaymentInfoSchema>;
 export type InsertDealHandoff = z.infer<typeof insertDealHandoffSchema>;
+export type InsertConversationObligation = z.infer<
+  typeof insertConversationObligationSchema
+>;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 export type InsertClick = z.infer<typeof insertClickSchema>;
 export type InsertConversion = z.infer<typeof insertConversionSchema>;
@@ -1017,6 +1103,7 @@ export type DeadLetterJobInsert = typeof deadLetterJobs.$inferInsert;
 export type BrandNotificationInsert = typeof brandNotifications.$inferInsert;
 export type PaymentInfoInsert = typeof paymentInfo.$inferInsert;
 export type DealHandoffInsert = typeof dealHandoffs.$inferInsert;
+export type ConversationObligationInsert = typeof conversationObligations.$inferInsert;
 export type PartnershipInsert = typeof partnerships.$inferInsert;
 export type ClickInsert = typeof clicks.$inferInsert;
 export type ConversionInsert = typeof conversions.$inferInsert;

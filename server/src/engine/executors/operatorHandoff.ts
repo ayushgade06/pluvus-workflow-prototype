@@ -9,6 +9,7 @@ import type { IEmailProvider } from "../providers.js";
 import { sendOnce } from "./idempotentSend.js";
 import { renderOperatorHandoffEmail } from "./operatorHandoffEmail.js";
 import { resolveAgreedFee, firstNumber, firstString } from "./agreedFee.js";
+import { resolveBand } from "../band.js";
 import { resolveBrandName } from "../campaignContext.js";
 import { blockedByMissingBrand } from "./guardEscalation.js";
 import { resolveBrandRecipient } from "../../notifications/escalation.js";
@@ -91,6 +92,22 @@ export async function executeOperatorHandoff(
   );
   const paymentTerms = firstString(config["paymentTerms"], campaign?.paymentTerms);
 
+  // The negotiation band the deal closed within, so the brand confirmation email
+  // can restate "your range: $X–$Y". Read from the SAME node config the agent
+  // negotiated against (accepting either termFloor/termCeiling or minBudget/
+  // maxBudget). Absent for an unconfigured band — the email omits the range then.
+  const { floor: negotiationFloor, ceiling: negotiationCeiling } =
+    resolveBand(negotiationConfig);
+
+  // The campaign perk/reward blurb ("one pair of the Tempo trainer"), for the
+  // "Perk" line of the confirmation email. Same config-then-campaign precedence
+  // as the other denormalized terms.
+  const rewardDescription = firstString(
+    config["rewardDescription"],
+    negotiationConfig["rewardDescription"],
+    campaign?.rewardDescription,
+  );
+
   // The accepting turn's own message — the "acceptance message or event" the
   // snapshot records. Not the thread: the full conversation stays in Message and
   // is read through the existing execution inspector.
@@ -129,9 +146,12 @@ export async function executeOperatorHandoff(
     campaignName: campaign?.name ?? null,
     fixedFee: fixedFee ?? null,
     commissionRate: commissionRate ?? null,
+    negotiationFloor: negotiationFloor ?? null,
+    negotiationCeiling: negotiationCeiling ?? null,
     deliverables: deliverables ?? null,
     timeline: timeline ?? null,
     paymentTerms: paymentTerms ?? null,
+    rewardDescription: rewardDescription ?? null,
     acceptanceMessage: acceptanceMessage ?? null,
     threadId: threadId ?? null,
     acceptedAt,

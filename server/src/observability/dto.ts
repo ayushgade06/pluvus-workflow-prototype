@@ -12,6 +12,8 @@ import type {
   LlmCallRole,
   MessageDirection,
   ReplyIntent,
+  ObligationType,
+  ConversationObligationStatus,
 } from "../db/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -208,6 +210,25 @@ export interface LlmUsageTotalsDTO {
   avgLatencyMs: number | null;
 }
 
+// PLU-111: one conversation obligation for the inspector (a creator question we
+// owe an answer to, or a Pluvus commitment we owe an action on).
+export interface ConversationObligationDTO {
+  id: string;
+  type: ObligationType;
+  status: ConversationObligationStatus;
+  /** True for OPEN/DEFERRED/ESCALATED — still in the AI context, still actionable. */
+  open: boolean;
+  originalText: string;
+  category: string | null;
+  resolution: string | null;
+  resolutionSource: string | null;
+  sourceMessageId: string | null;
+  resolutionMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
 export interface InstanceDetailDTO {
   instance: {
     instanceId: string;
@@ -241,6 +262,9 @@ export interface InstanceDetailDTO {
     totals: LlmUsageTotalsDTO;
     calls: LlmCallDTO[];
   };
+  /** PLU-111: the conversation obligations — open creator questions + Pluvus
+   *  commitments (and their resolved history) — for the inspector. */
+  obligations: ConversationObligationDTO[];
 }
 
 // ---------------------------------------------------------------------------

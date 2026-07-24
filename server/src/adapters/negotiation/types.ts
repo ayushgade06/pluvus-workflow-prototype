@@ -28,6 +28,14 @@ export interface NegotiationRequest {
    * and sanitized agent-side. Empty/absent on the first turn → behaves as before.
    */
   conversationHistory?: DraftHistoryEntry[];
+  /**
+   * PLU-111: outstanding commitments Pluvus has made and not yet fulfilled
+   * (non-terminal PLUVUS_COMMITMENT obligations), e.g. "I'll confirm the usage
+   * rights". Threaded so the money-decision model knows it still owes an action.
+   * Rendered agent-side as sanitized DATA (like conversationHistory), NEVER a
+   * money input. Empty/absent → behaves as before.
+   */
+  openCommitments?: string[];
   campaignConstraints: {
     /**
      * The floor of the fee band — "Preferred Budget" in the product (V1 #1):
@@ -166,8 +174,17 @@ export interface DraftRequest {
   history?: DraftHistoryEntry[] | undefined;
   /** HARD-N2 answered-questions ledger: questions the creator raised in EARLIER
    *  rounds that our prior emails never answered, re-surfaced so they aren't
-   *  silently dropped. Distinct from creatorQuestions (this turn's asks). */
+   *  silently dropped. Distinct from creatorQuestions (this turn's asks).
+   *  PLU-111: now sourced from the ConversationObligation ledger (non-terminal
+   *  CREATOR_QUESTION rows), falling back to the computeOpenQuestions diff when
+   *  the ledger has no rows for the instance. */
   openQuestions?: string[] | undefined;
+  /** PLU-111: outstanding commitments PLUVUS has made and not yet fulfilled
+   *  (e.g. "I'll confirm the usage rights"), sourced from the non-terminal
+   *  PLUVUS_COMMITMENT obligation rows. Rendered by /draft as an additive
+   *  "outstanding commitments — honor or update these" block so the model stops
+   *  forgetting a promise it made. Absent/empty → no-op (copy unchanged). */
+  openCommitments?: string[] | undefined;
   /** Q3 (founder, autonomous launch): true on the LAST negotiation round so the
    *  offer copy states finality ("this is our final rate; no further negotiation").
    *  Default/absent on every non-final turn (copy renders exactly as before). */

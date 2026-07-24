@@ -9,8 +9,10 @@ import {
 import { findCampaignById } from "../../db/campaigns.js";
 import { findWorkflowById, findVersionById } from "../../db/workflows.js";
 import { isUniqueViolation } from "../../db/errors.js";
-import type { Creator, Message, MessageInsert } from "../../db/schema.js";
+import type { DeferralClassifier } from "../../db/conversationObligations.js";
+import type { ConversationObligation, Creator, Message, MessageInsert } from "../../db/schema.js";
 import type { EmailDraft } from "../types.js";
+import { isQuestionDeferredBySentBody } from "./commitmentDetection.js";
 import type { IEmailProvider, EmailRecipient, EmailSendOptions } from "../providers.js";
 import { isThreadLabeler } from "../providers.js";
 import { campaignLabelName } from "../../providers/nylas/campaignLabel.js";
@@ -63,9 +65,12 @@ export interface SentResult {
 export interface SendOnceDeps {
   createMessage(data: MessageInsert): Promise<Message>;
   findMessageByIdempotencyKey(key: string): Promise<Message | null>;
+  // PLU-111: the optional deferralClassifier lets the flush pass the SENT body +
+  // §4.8 deferral vocabulary so the DB resolution can tell answered vs deferred.
   updateMessageSent(
     id: string,
     data: { externalMessageId: string; threadId: string },
+    deferralClassifier?: DeferralClassifier,
   ): Promise<Message>;
   // E5: resolves the instance's thread state (reply target + canonical subject)
   // so every send threads onto the existing conversation. Injectable for tests;
@@ -415,7 +420,16 @@ export async function flushOutbound(
     );
 
     // Step 3 — finalize the reserved row with the provider's identifiers.
-    await deps.updateMessageSent(messageId, { externalMessageId, threadId });
+    // PLU-111 (§4.5 step 2 / §4.8): pass a deferral classifier built from the
+    // SENT body so updateMessageSent — which now stamps sentAt AND resolves
+    // obligations in one tx — can tell, per open question this send answers,
+    // whether the copy ANSWERED it (→ ANSWERED) or DEFERRED it (→ DEFERRED +
+    // mint a PLUVUS_COMMITMENT). The body is what actually went on the wire.
+    await deps.updateMessageSent(
+      messageId,
+      { externalMessageId, threadId },
+      buildDeferralClassifier(wireDraft.body),
+    );
 
     // Step 4 — label AFTER send + finalize (§6.4): fire-and-forget, best-effort.
     maybeLabelThreadAsync(email, threadId, campaignName);
@@ -431,6 +445,20 @@ export async function flushOutbound(
 // subject rather than throw so a stuck reservation can still flush.
 function draftSubjectFallback(row: Message): string {
   return row.subject ?? "";
+}
+
+// PLU-111 (§4.8): build the DeferralClassifier the DB resolution uses, closing
+// over the SENT body. Per open CREATOR_QUESTION this send resolves, it decides
+// answered-vs-deferred by scanning the body for a deferral marker near the
+// question's topic. Conservative — a false-negative just degrades to ANSWERED
+// (today's behavior). The commitment reuses the question's normalizedKey (safe:
+// PLUVUS_COMMITMENT is a different `type`, so it never collides with the
+// still-open DEFERRED question under the partial-unique index).
+function buildDeferralClassifier(sentBody: string): DeferralClassifier {
+  return {
+    isDeferred: (obligation: ConversationObligation) =>
+      isQuestionDeferredBySentBody(obligation, sentBody),
+  };
 }
 
 // ---------------------------------------------------------------------------
