@@ -11,8 +11,9 @@ import { WorkflowCanvas } from "./WorkflowCanvas";
 import { NodeDrilldown } from "./NodeDrilldown";
 import { InstanceInspector } from "./InstanceInspector";
 import { LlmUsageStrip } from "./LlmUsagePanel";
+import { AlertTriangle } from "lucide-react";
 import { EmptyState, Select } from "./ds";
-import { colors, font, formatTimestamp } from "../theme";
+import { colors, font, text, formatTimestamp } from "../theme";
 
 export default function ObservabilityView() {
   // W-6: an explicit workflow scope. null → "let the server pick the newest
@@ -60,7 +61,7 @@ export default function ObservabilityView() {
             <Center>Loading workflow…</Center>
           ) : summary.isError ? (
             <EmptyState
-              icon="⚠"
+              icon={<AlertTriangle size={24} strokeWidth={1.75} color={colors.warning} />}
               title="Couldn't reach the observability API"
               description="Is the server running on :3001?"
             />
@@ -134,7 +135,7 @@ function ObserveTopbar({
         flexShrink: 0,
       }}
     >
-      <div style={{ fontSize: font.size.sm, color: colors.textMuted, fontWeight: font.weight.semibold }}>
+      <div style={{ ...text.label, color: colors.textMuted, letterSpacing: 0.4 }}>
         Observability
       </div>
       <div style={{ width: 1, height: 22, background: colors.border }} />

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RadioTower } from "lucide-react";
 import { useWorkflowExecution } from "../../api/builderClient";
 import { POLL_INTERVAL_MS } from "../../api/client";
 import { colors, radii, font, stateColor, stateLabel, formatTimestamp } from "../../theme";
@@ -54,12 +55,12 @@ export function MonitorTab({ workflow }: Props) {
   const hasVersion = !!workflow.latestVersion;
 
   if (!hasVersion) {
-    return <EmptyState icon="📡" title="Nothing to monitor yet" description="Publish and launch the workflow to start monitoring." />;
+    return <EmptyState icon={<RadioTower size={24} strokeWidth={1.75} color={colors.textMuted} />} title="Nothing to monitor yet" description="Publish and launch the workflow to start monitoring." />;
   }
   if (!data || data.totalInstances === 0) {
     return (
       <EmptyState
-        icon="📡"
+        icon={<RadioTower size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="No creators enrolled yet"
         description={`Enroll and launch to begin monitoring. Auto-refreshes every ${POLL_INTERVAL_MS / 1000}s.`}
       />

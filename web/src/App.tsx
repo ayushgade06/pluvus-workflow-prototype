@@ -130,38 +130,33 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
         padding: "0 20px",
       }}
     >
+      {/* Flat mono wordmark — no gradient chip. A single accent tick before the
+          name is the only decoration, so it reads as an intentional mark rather
+          than a stock "logo square". */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 9,
-          fontSize: font.size.md,
+          gap: 8,
+          fontSize: font.size.lg,
           fontWeight: font.weight.semibold,
           color: colors.text,
-          letterSpacing: -0.2,
+          letterSpacing: -0.4,
         }}
       >
         <span
           aria-hidden
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: `linear-gradient(135deg, ${colors.accent}, ${colors.accentDim})`,
-            boxShadow: `0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontSize: 12,
-            fontWeight: 700,
+            width: 3,
+            height: 15,
+            borderRadius: 2,
+            background: colors.accent,
           }}
-        >
-          P
-        </span>
+        />
         Pluvus
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }} role="tablist">
+      <div aria-hidden style={{ width: 1, height: 18, background: colors.border, opacity: 0.7 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 2 }} role="tablist">
         {tabs.map((tab) => {
           const activeView =
             view === tab.key ||
@@ -175,10 +170,11 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
               className="ds-focusable"
               style={{
                 height: 30,
-                padding: "0 12px",
-                background: activeView ? colors.panelAlt : "none",
-                border: "1px solid transparent",
-                borderColor: activeView ? colors.border : "transparent",
+                padding: "0 11px",
+                // Tinted wash for the active tab instead of a bordered box —
+                // avoids the nested-box look while staying clearly selected.
+                background: activeView ? colors.accentWash : "none",
+                border: "none",
                 borderRadius: 7,
                 color: activeView ? colors.text : colors.textMuted,
                 fontSize: font.size.md,

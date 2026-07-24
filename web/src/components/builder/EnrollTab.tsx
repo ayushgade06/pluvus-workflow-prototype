@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef } from "react";
+import { Lock, Search } from "lucide-react";
 import {
   useCreators,
   addCreator,
@@ -383,7 +384,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
   if (!hasVersion) {
     return (
       <EmptyState
-        icon="🔒"
+        icon={<Lock size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="Workflow not published"
         description="Publish the workflow before enrolling creators."
       />
@@ -611,7 +612,7 @@ export function EnrollTab({ workflow, onEnrolled }: Props) {
         ) : filtered.length === 0 ? (
           <EmptyState
             compact
-            icon="🔍"
+            icon={<Search size={24} strokeWidth={1.75} color={colors.textMuted} />}
             title={filter ? "No matching creators" : "No creators here"}
             description={
               filter

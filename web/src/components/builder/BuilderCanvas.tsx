@@ -9,6 +9,7 @@ import ReactFlow, {
   MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import { Puzzle } from "lucide-react";
 import { BuilderNodeComponent } from "./BuilderNode";
 import { nodeColor } from "./nodeMeta";
 import { colors } from "../../theme";
@@ -94,7 +95,7 @@ export function BuilderCanvas({
   if (nodes.length === 0) {
     return (
       <EmptyState
-        icon="🧩"
+        icon={<Puzzle size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="No nodes in this workflow"
         description="This workflow has no steps yet. Nodes come from the template you chose when creating the workflow."
       />

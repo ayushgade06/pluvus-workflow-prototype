@@ -6,6 +6,7 @@
 // stuck flag). Clicking a row opens the instance inspector.
 
 import { useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import type { InstanceState, InstanceListItem } from "../api/types";
 import { useInstances } from "../api/client";
 import { colors, radii, font, stateColor, stateLabel, stateDescription, formatDuration, formatTimestamp } from "../theme";
@@ -99,7 +100,7 @@ export function NodeDrilldown({
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0, padding: "10px" }}>
         {isLoading && <SkeletonRows count={5} height={62} />}
         {isError && (
-          <EmptyState compact icon="⚠" title="Failed to load" description={(error as Error)?.message} />
+          <EmptyState compact icon={<AlertTriangle size={24} strokeWidth={1.75} color={colors.warning} />} title="Failed to load" description={(error as Error)?.message} />
         )}
         {!isLoading && !isError && items.length === 0 && (
           <EmptyState

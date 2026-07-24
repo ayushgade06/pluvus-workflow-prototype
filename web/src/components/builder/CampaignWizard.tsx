@@ -1,4 +1,5 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
+import { TrendingUp, Handshake, DollarSign } from "lucide-react";
 import { createCampaign, createWorkflowForCampaign } from "../../api/builderClient";
 import { colors, radii, font } from "../../theme";
 import { Modal, Button, Input, Textarea, Toggle, Select, FormField, useToast } from "../ds";
@@ -9,27 +10,27 @@ interface Props {
   onClose: () => void;
 }
 
-const TEMPLATES: { key: TemplateKey; name: string; description: string; icon: string }[] = [
+const TEMPLATES: { key: TemplateKey; name: string; description: string; icon: ReactNode }[] = [
   {
     key: "affiliate",
     name: "Affiliate Campaign",
     description:
       "Performance-based. Creators earn commission on conversions. Zero upfront cost to the brand.",
-    icon: "📈",
+    icon: <TrendingUp size={18} strokeWidth={1.75} />,
   },
   {
     key: "hybrid",
     name: "Hybrid Campaign",
     description:
       "Base fee + affiliate commission. Best for mid-tier creators who want guaranteed payment.",
-    icon: "🤝",
+    icon: <Handshake size={18} strokeWidth={1.75} />,
   },
   {
     key: "fixed_fee",
     name: "Fixed Fee Campaign",
     description:
       "Flat payment for deliverables. Simple, predictable, no performance tracking needed.",
-    icon: "💰",
+    icon: <DollarSign size={18} strokeWidth={1.75} />,
   },
 ];
 
@@ -413,7 +414,7 @@ function TemplateCard({
   selected,
   onSelect,
 }: {
-  template: { key: string; name: string; description: string; icon: string };
+  template: { key: string; name: string; description: string; icon: ReactNode };
   selected: boolean;
   onSelect: () => void;
 }) {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LifeBuoy, Link2, MessagesSquare } from "lucide-react";
 import {
   useManualQueue,
   notifyBrand,
@@ -44,7 +45,7 @@ export function ManualQueueTab({ workflow }: Props) {
   if (!hasVersion) {
     return (
       <EmptyState
-        icon="🛟"
+        icon={<LifeBuoy size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="Manual queue is empty"
         description="Publish and launch the workflow first. Creators the AI can't handle on its own — and deals waiting for operator onboarding — will appear here for a human to pick up."
       />
@@ -54,7 +55,7 @@ export function ManualQueueTab({ workflow }: Props) {
   if (!data || data.total === 0) {
     return (
       <EmptyState
-        icon="🛟"
+        icon={<LifeBuoy size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="Nothing needs a human"
         description={`No escalations and no deals awaiting onboarding. Auto-refreshes every ${POLL_INTERVAL_MS / 1000}s.`}
       />
@@ -368,7 +369,8 @@ function QueueRow({
           }}
         >
           <span style={{ fontSize: font.size.xs, color: colors.textDim }}>
-            🔗 {item.linkCount} content link{item.linkCount === 1 ? "" : "s"} submitted
+            <Link2 size={13} strokeWidth={1.75} style={{ verticalAlign: "-2px", marginRight: 6 }} />
+            {item.linkCount} content link{item.linkCount === 1 ? "" : "s"} submitted
           </span>
           {item.submittedUrls.map((url) => (
             <a
@@ -419,7 +421,8 @@ function QueueRow({
             whiteSpace: "nowrap",
           }}
         >
-          🧵 Open thread
+          <MessagesSquare size={13} strokeWidth={1.75} style={{ verticalAlign: "-2px", marginRight: 6 }} />
+          Open thread
         </a>
       )}
 

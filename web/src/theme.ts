@@ -8,17 +8,25 @@
 
 import type { InstanceState } from "./api/types";
 
+// Subtly-warm neutral base. Same near-black Linear/Vercel feel, but every gray
+// carries a hair of warmth (a touch more red than blue) so the surface reads as
+// "chosen" rather than clinical default-black. The indigo accent is unchanged.
 export const colors = {
-  bg: "#0b0c0f",
-  panel: "#131418",
-  panelAlt: "#1b1c22",
-  border: "#22242c",
-  borderStrong: "#32343e",
-  text: "#f2f3f5",
-  textMuted: "#9da3ae",
-  textDim: "#5f6470",
+  bg: "#0e0d10",
+  panel: "#16151a",
+  panelAlt: "#1e1c24",
+  border: "#282630",
+  borderStrong: "#38353f",
+  // A near-invisible hairline for dividers *inside* a surface — softer than
+  // `border`, used to separate sections without drawing a full box.
+  hairline: "#1f1d24",
+  text: "#f3f2f5",
+  textMuted: "#a1a0ab",
+  textDim: "#6a6672",
   accent: "#6e7cf5",
   accentDim: "#5a68e8",
+  // Faint accent wash for selected/active surfaces (tinted, not bordered).
+  accentWash: "rgba(110, 124, 245, 0.10)",
   warning: "#d9a03f",
   danger: "#f2555f",
   success: "#3ecf8e",
@@ -69,12 +77,89 @@ export const font = {
     lg: 15,
     xl: 18,
     xxl: 26,
+    display: 32,
   },
   weight: {
     regular: 400,
     medium: 500,
     semibold: 600,
     bold: 700,
+  },
+} as const;
+
+// ---------------------------------------------------------------------------
+// Type roles — the missing hierarchy layer.
+// ---------------------------------------------------------------------------
+// Screens read as "uniform gray AI slop" when everything is 13px/semibold. These
+// are ready-to-spread style objects that give each piece of text a *role*:
+// page titles are big and tight, section labels are small/tracked/dim, metadata
+// recedes. Spread them: `<h1 style={{ ...text.title }}>`.
+import type { CSSProperties } from "react";
+
+export const text: Record<
+  "display" | "title" | "heading" | "subheading" | "body" | "label" | "caption" | "metric",
+  CSSProperties
+> = {
+  // Hero number / marquee value (dashboard headline metric).
+  display: {
+    fontSize: font.size.display,
+    fontWeight: font.weight.semibold,
+    letterSpacing: -0.8,
+    lineHeight: 1.05,
+    color: colors.text,
+  },
+  // Page title (top of a screen). One per view.
+  title: {
+    fontSize: font.size.xl + 2, // 20
+    fontWeight: font.weight.semibold,
+    letterSpacing: -0.4,
+    lineHeight: 1.2,
+    color: colors.text,
+  },
+  // Card / panel heading.
+  heading: {
+    fontSize: font.size.lg,
+    fontWeight: font.weight.semibold,
+    letterSpacing: -0.2,
+    lineHeight: 1.3,
+    color: colors.text,
+  },
+  subheading: {
+    fontSize: font.size.md,
+    fontWeight: font.weight.semibold,
+    letterSpacing: -0.1,
+    lineHeight: 1.4,
+    color: colors.text,
+  },
+  body: {
+    fontSize: font.size.md,
+    fontWeight: font.weight.regular,
+    lineHeight: 1.55,
+    color: colors.textMuted,
+  },
+  // Uppercase tracked section label (the SectionHeader / StatTile caption look).
+  label: {
+    fontSize: font.size.xs,
+    fontWeight: font.weight.semibold,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    color: colors.textDim,
+  },
+  // Timestamps, secondary metadata — recedes.
+  caption: {
+    fontSize: font.size.sm,
+    fontWeight: font.weight.regular,
+    lineHeight: 1.4,
+    color: colors.textMuted,
+  },
+  // Big tabular number inside a stat tile.
+  metric: {
+    fontSize: font.size.xxl,
+    fontWeight: font.weight.semibold,
+    letterSpacing: -0.5,
+    lineHeight: 1.1,
+    color: colors.text,
+    fontVariantNumeric: "tabular-nums",
   },
 } as const;
 

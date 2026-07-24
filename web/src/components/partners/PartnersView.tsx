@@ -5,6 +5,7 @@
 // Mounted from App.tsx as the "Partners" tab.
 
 import { useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { usePartnerships } from "../../api/partnersClient";
 import { PartnersList } from "./PartnersList";
 import { PartnerDetail } from "./PartnerDetail";
@@ -35,7 +36,7 @@ export function PartnersView() {
   if (error) {
     return (
       <EmptyState
-        icon="⚠"
+        icon={<AlertTriangle size={24} strokeWidth={1.75} color={colors.warning} />}
         title="Failed to load partners"
         description={(error as Error).message}
         action={

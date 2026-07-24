@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Lock, Users } from "lucide-react";
 import { launchWorkflow, useWorkflowExecution } from "../../api/builderClient";
 import { colors, radii, font, stateColor, stateLabel } from "../../theme";
 import { Button, StatTile, EmptyState, ConfirmDialog, SectionHeader, useToast } from "../ds";
@@ -61,10 +62,10 @@ export function LaunchTab({ workflow, onLaunched }: Props) {
   }
 
   if (!hasVersion) {
-    return <EmptyState icon="🔒" title="Workflow not published" description="Publish the workflow before launching." />;
+    return <EmptyState icon={<Lock size={24} strokeWidth={1.75} color={colors.textMuted} />} title="Workflow not published" description="Publish the workflow before launching." />;
   }
   if (totalInstances === 0) {
-    return <EmptyState icon="👥" title="No creators enrolled" description="Enroll creators on the Enroll tab before launching." />;
+    return <EmptyState icon={<Users size={24} strokeWidth={1.75} color={colors.textMuted} />} title="No creators enrolled" description="Enroll creators on the Enroll tab before launching." />;
   }
 
   const checklist = [
