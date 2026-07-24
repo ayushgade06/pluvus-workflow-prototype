@@ -102,6 +102,87 @@ function UsageStat({ label, value, color }: { label: string; value: string; colo
 }
 
 // ---------------------------------------------------------------------------
+// Compact side-rail card (Observability right panel)
+// ---------------------------------------------------------------------------
+// A slim vertical AI-usage summary for the Observability page's right rail, so
+// the canvas keeps the majority of the width. Stacked metric rows + per-role
+// breakdown. Silent until there are persisted calls.
+
+export function LlmUsageCard() {
+  const usage = useLlmUsage();
+  const d = usage.data;
+  if (!d || d.totals.calls === 0) {
+    return (
+      <div style={{ padding: "14px 15px" }}>
+        <CardHeading />
+        <div style={{ fontSize: font.size.sm, color: colors.textDim, lineHeight: 1.5 }}>
+          No AI calls recorded yet.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "14px 15px", display: "flex", flexDirection: "column", gap: 14 }}>
+      <CardHeading />
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <StackRow label="Calls (24h)" value={String(d.last24h.calls)} sub={`${d.totals.calls} total`} />
+        <StackRow label="Tokens (24h)" value={formatTokens(d.last24h.totalTokens)} sub={`${formatTokens(d.totals.totalTokens)} total`} />
+        <StackRow label="Est. cost (24h)" value={formatCost(d.last24h.estCostUsd)} sub={`${formatCost(d.totals.estCostUsd)} total`} />
+        <StackRow label="Avg latency" value={formatLatency(d.totals.avgLatencyMs)} />
+        {d.totals.errors > 0 && (
+          <StackRow label="Errors" value={String(d.totals.errors)} danger />
+        )}
+      </div>
+
+      {d.byRole.length > 0 && (
+        <div>
+          <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: colors.textDim, fontWeight: 600, marginBottom: 8 }}>
+            By role
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {d.byRole.map((r) => (
+              <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: font.size.sm }}>
+                <span style={{ color: colors.textMuted, flex: 1, textTransform: "capitalize" }}>{r.key}</span>
+                <span className="nums" style={{ color: colors.text, fontWeight: font.weight.semibold }}>{r.totals.calls}</span>
+                <span className="nums" style={{ color: colors.textDim, fontSize: font.size.xs, width: 52, textAlign: "right" }}>
+                  {formatTokens(r.totals.totalTokens)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardHeading() {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: colors.accent }} />
+      <span style={{ fontSize: font.size.xs, fontWeight: font.weight.bold, textTransform: "uppercase", letterSpacing: 0.7, color: colors.textMuted }}>
+        AI Usage
+      </span>
+    </div>
+  );
+}
+
+function StackRow({ label, value, sub, danger }: { label: string; value: string; sub?: string; danger?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
+      <span style={{ fontSize: font.size.sm, color: colors.textMuted }}>{label}</span>
+      <span style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+        {sub && <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{sub}</span>}
+        <span className="nums" style={{ fontSize: font.size.md, fontWeight: font.weight.bold, color: danger ? colors.danger : colors.text }}>
+          {value}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Per-instance panel (InstanceInspector "AI Usage" tab)
 // ---------------------------------------------------------------------------
 
