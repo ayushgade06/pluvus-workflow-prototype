@@ -13,6 +13,8 @@ import {
   buildOpenObligations,
   buildQuestionObligationPlan,
   type QuestionObligationPlanItem,
+  computeChangedFields,
+  computeRelationshipWarmth,
 } from "./negotiationHistory.js";
 import { resolveBriefKnowledge } from "./briefKnowledge.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
@@ -595,12 +597,42 @@ export async function executeNegotiation(
     detectObligationCategory,
   );
 
-  // Shared HARD-N2 / PLU-111 draft context threaded into every draftEmail call
-  // this turn. openCommitments is additive — absent/empty → the copy is unchanged.
+  // drafting-humanization (§Conversation State): the two STYLE hints threaded into
+  // /draft so the offer copy states deltas (not full state) and warms up across the
+  // thread. Both are purely stylistic — the money decision above already ran and
+  // never reads them — and both default so an unset value renders as today.
+  //   changedFields — "fee" when the rate we're presenting is new/changed vs our
+  //     last offer; [] when unchanged (agent then omits the delta hint). Uses
+  //     proposedRate, the number this turn actually puts on the table.
+  //   relationshipWarmth — from the round + a cheap cooperativeness read. The
+  //     creator "moved toward us" when their current ask is at or below the rate we
+  //     last offered (they've met us or come under). ackRequestedRate is the
+  //     agent's validated read of their ask (regex fallback), and currentOffer is
+  //     our last standing number — both already computed above, no extra work.
+  const changedFields = computeChangedFields(priorContext, proposedRate);
+  const creatorMovedToward =
+    ackRequestedRate !== undefined &&
+    priorContext.currentOffer !== undefined &&
+    ackRequestedRate <= priorContext.currentOffer;
+  const relationshipWarmth = computeRelationshipWarmth({
+    round: instance.negotiationRound,
+    maxRounds,
+    priorTurnCount: priorContext.history.length,
+    creatorMovedToward,
+  });
+
+  // Shared HARD-N2 / PLU-111 + humanization draft context threaded into every
+  // draftEmail call this turn. openCommitments is additive (PLU-111);
+  // changedFields/relationshipWarmth are the humanization style hints, only
+  // meaningful on the offer purposes (counter/accept/present) — the branches
+  // below spread this into exactly those. Empty changedFields is omitted so the
+  // request stays minimal; every field defaults so the copy is unchanged when unset.
   const draftHistoryExtra = {
     ...(draftHistory.length ? { history: draftHistory } : {}),
     ...(openQuestions.length ? { openQuestions } : {}),
     ...(openCommitments.length ? { openCommitments } : {}),
+    ...(changedFields.length ? { changedFields } : {}),
+    relationshipWarmth,
   };
 
   // The reserve-time obligation writes shared across the send branches. The

@@ -79,19 +79,24 @@ def test_cta_asks_to_confirm_not_schedule():
 
 
 def test_commission_percentage_not_repeated_as_content():
-    """The commission % must appear as email CONTENT in exactly one place — the
-    dedicated bullet. The old prompt injected it three ways (a numbered
-    'Commission' point, the bullet hint, AND the full deal-structure sentence),
-    which made the model write the commission twice. We assert it isn't over-
-    injected: the numbered 'Commission' point is gone, the deal-structure line
-    carries the deal LABEL only (no percentage), and the bullet says it once.
+    """The commission % must appear as email CONTENT in exactly one place. The old
+    prompt injected it three ways (a numbered 'Commission' point, the bullet hint,
+    AND the full deal-structure sentence), which made the model write the commission
+    twice. We assert it isn't over-injected: the numbered 'Commission' point is
+    gone, the deal-structure line carries the deal LABEL only (no percentage), and
+    the commission is stated once.
+
+    drafting-humanization: the commission is no longer forced onto its OWN BULLET —
+    it may be a clause or a line (prose-default) — but the state-it-ONCE de-dup
+    guarantee is unchanged, so this test now asserts the single-shot wording rather
+    than the retired "separate bullet" phrasing.
     """
     p = _prompt()
     # No standalone numbered "Commission" instruction any more.
     assert "Commission —" not in p and "Commission -" not in p
-    # The commission bullet exists and is explicitly single-shot.
+    # The commission is stated, and explicitly single-shot / de-duplicated.
     assert "10% commission" in p
-    assert "state the percentage here and only here" in p
+    assert "stated once" in p and "never on the deal-structure line" in p
     # The deal-structure point must NOT carry the percentage (it's the duplicate
     # source): the "10%" must not sit on the "Deal structure" line.
     deal_line = next(ln for ln in p.splitlines() if "Deal structure" in ln)
@@ -258,3 +263,58 @@ def test_prompt_byte_identical_when_comprehension_empty():
     baseline = _prompt()
     with_empty = _prompt(creatorQuestions=[], pushedFixedTerms=[])
     assert baseline == with_empty
+
+
+# ── drafting-humanization Phase 2: changedFields + relationshipWarmth ──────────
+#    Two optional, defaulted STYLE hints. Both must be backward-compatible (the
+#    default path is byte-identical) and drive the say-only-what-changed + warmth
+#    behaviors when populated. Purely stylistic — no money/safety machinery moves.
+
+
+def test_prompt_byte_identical_when_style_hints_defaulted():
+    """Backward compatibility (spec §Backwards compatibility): passing the Phase-2
+    fields at their defaults (changedFields=[], relationshipWarmth="new") produces a
+    prompt IDENTICAL to one that never passes them — an old caller renders exactly
+    as before."""
+    baseline = _prompt()
+    with_defaults = _prompt(changedFields=[], relationshipWarmth="new")
+    assert baseline == with_defaults
+
+
+def test_changed_fields_renders_delta_hint_and_filters_vocabulary():
+    """A populated changedFields becomes a 'restate ONLY what changed' hint naming
+    exactly the changed terms (spec §Repetition Reduction). Values outside the closed
+    vocabulary are ignored (never injected as free text), and the must-answer
+    override is preserved in the hint text."""
+    p = _prompt(changedFields=["fee", "not_a_real_field", "timeline"])
+    assert "Changed this turn: fee, timeline." in p
+    assert "not_a_real_field" not in p  # stray value filtered out
+    # The questions-checklist override survives inside the hint.
+    assert "explicitly asked about is still always answered" in p
+    # Absent by default (empty changedFields).
+    assert "Changed this turn:" not in _prompt()
+
+
+def test_relationship_warmth_steps_up_the_tone_and_opener():
+    """relationshipWarmth augments `round` on the warmth ladder (spec §Progressive
+    Conversation Behaviour). An "established" hint yields the brief-and-direct rung
+    with a reply-to-their-last-message opener (no cold open), even where `round`
+    alone would only reach "warming"."""
+    warming = _prompt(round=2)  # default warmth "new" → round-derived "warming"
+    assert "you have rapport" in warming
+    established = _prompt(round=2, relationshipWarmth="established")
+    assert "been at this a while" in established
+    assert "no re-intro, no cold opener" in established
+    # An unknown warmth value is safe — falls back to the round-derived rung.
+    assert _prompt(round=1, relationshipWarmth="bogus") == _prompt(round=1)
+
+
+def test_relationship_warmth_never_overrides_final_offer_tone():
+    """On the final round final_offer_rule owns the tone: round_tone is suppressed
+    regardless of relationshipWarmth, but the finality copy + the shortest length
+    target still render (spec §Progressive Conversation Behaviour)."""
+    p = _prompt(round=4, isFinalRound=True, relationshipWarmth="established")
+    assert "FINAL round" in p
+    assert "40-70 words" in p
+    # The mid-thread rapport tone note must NOT appear on the final round.
+    assert "you have rapport" not in p and "been at this a while" not in p

@@ -189,6 +189,20 @@ export interface DraftRequest {
    *  offer copy states finality ("this is our final rate; no further negotiation").
    *  Default/absent on every non-final turn (copy renders exactly as before). */
   isFinalRound?: boolean | undefined;
+  /** drafting-humanization (§Conversation State): which offer terms actually
+   *  changed THIS turn, from the closed vocabulary "fee" | "commission" |
+   *  "deliverables" | "timeline" | "perk". Lets the offer copy state DELTAS
+   *  instead of the full state (§Repetition Reduction). Purely stylistic — the
+   *  decision layer never reads it. Absent/[] = "nothing changed this turn" → the
+   *  copy restates only what the creator asked about, exactly as before. */
+  changedFields?: string[] | undefined;
+  /** drafting-humanization (§Conversation State): coarse relationship-warmth
+   *  signal for tone progression, one of "new" | "warming" | "established",
+   *  derived server-side from round count + whether the creator has been
+   *  cooperative. Selects the offer email's warmth rung; augments `round` and
+   *  never overrides the final-round tone. Purely stylistic. Absent/"new" =
+   *  today's round-1 tone (copy renders exactly as before). */
+  relationshipWarmth?: string | undefined;
 }
 
 /** HARD-N2: one turn of the threaded /draft conversation. `role` is "us" for a
