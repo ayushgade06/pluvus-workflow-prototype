@@ -47,7 +47,7 @@ import {
   dedupeIssues,
   type ValidationIssue,
 } from "../../workflow/graphValidation";
-import { nodeLabel, nodeIcon } from "./nodeMeta";
+import { nodeLabel, nodeIconComponent } from "./nodeMeta";
 
 type Tab = "build" | "enroll" | "launch" | "monitor" | "queue";
 
@@ -575,11 +575,23 @@ export function WorkflowBuilder({ workflowId, onBack }: Props) {
                   }}
                 >
                   <span aria-hidden>·</span>
-                  {node && (
-                    <span style={{ fontWeight: font.weight.semibold }}>
-                      {nodeIcon(node.type)} {nodeLabel(node.type)}:
-                    </span>
-                  )}
+                  {node &&
+                    (() => {
+                      const NIcon = nodeIconComponent(node.type);
+                      return (
+                        <span
+                          style={{
+                            fontWeight: font.weight.semibold,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          <NIcon size={12} strokeWidth={2.25} style={{ flexShrink: 0 }} />
+                          {nodeLabel(node.type)}:
+                        </span>
+                      );
+                    })()}
                   <span>{issue.message}</span>
                   {clickable && (
                     <span aria-hidden style={{ color: colors.textDim, fontSize: font.size.xs }}>
@@ -858,15 +870,24 @@ function IssuesPanel({
                 }}
               >
                 {node ? (
-                  <span
-                    style={{
-                      fontSize: font.size.xs,
-                      color: colors.textMuted,
-                      fontWeight: font.weight.semibold,
-                    }}
-                  >
-                    {nodeIcon(node.type)} {nodeLabel(node.type)}
-                  </span>
+                  (() => {
+                    const NIcon = nodeIconComponent(node.type);
+                    return (
+                      <span
+                        style={{
+                          fontSize: font.size.xs,
+                          color: colors.textMuted,
+                          fontWeight: font.weight.semibold,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        <NIcon size={12} strokeWidth={2.25} style={{ flexShrink: 0 }} />
+                        {nodeLabel(node.type)}
+                      </span>
+                    );
+                  })()
                 ) : (
                   <span
                     style={{

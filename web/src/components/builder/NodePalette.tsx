@@ -7,9 +7,11 @@
 // a node (handled by the parent via onAdd).
 // ---------------------------------------------------------------------------
 
-import { colors, radii, font } from "../../theme";
+import { GripVertical } from "lucide-react";
+import { colors, radii, font, shadow } from "../../theme";
 import { SectionHeader, Tooltip } from "../ds";
 import { paletteItems } from "../../workflow/nodeDefaults";
+import { nodeIconComponent } from "./nodeMeta";
 import type { NodeType } from "../../api/builderTypes";
 
 export const PALETTE_DND_MIME = "application/x-pluvus-node-type";
@@ -38,73 +40,75 @@ export function NodePalette({ onAdd }: Props) {
           gap: 8,
         }}
       >
-        {items.map((item) => (
-          <Tooltip key={item.type} content={item.description}>
-            <div
-              role="button"
-              tabIndex={0}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(PALETTE_DND_MIME, item.type);
-                e.dataTransfer.effectAllowed = "move";
-              }}
-              onClick={() => onAdd(item.type)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onAdd(item.type);
-                }
-              }}
-              className="ds-focusable ds-card-interactive"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 12px",
-                background: colors.panelAlt,
-                border: `1px solid ${colors.border}`,
-                borderRadius: radii.md,
-                cursor: "grab",
-                userSelect: "none",
-              }}
-            >
-              <span
-                aria-hidden
+        {items.map((item) => {
+          const Icon = nodeIconComponent(item.type);
+          return (
+            <Tooltip key={item.type} content={item.description}>
+              <div
+                role="button"
+                tabIndex={0}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(PALETTE_DND_MIME, item.type);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onClick={() => onAdd(item.type)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onAdd(item.type);
+                  }
+                }}
+                className="ds-focusable ds-card-interactive"
                 style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 8,
-                  background: `${item.color}1c`,
-                  border: `1px solid ${item.color}26`,
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 14,
-                  flexShrink: 0,
+                  gap: 10,
+                  padding: "10px 12px",
+                  background: colors.panel,
+                  border: `2px solid ${colors.cardBorder}`,
+                  borderRadius: radii.md,
+                  boxShadow: shadow.sm,
+                  cursor: "grab",
+                  userSelect: "none",
                 }}
               >
-                {item.icon}
-              </span>
-              <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: font.size.md,
-                  fontWeight: font.weight.medium,
-                  color: colors.text,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {item.label}
-              </span>
-              <span aria-hidden style={{ color: colors.textDim, fontSize: 13, flexShrink: 0, opacity: 0.7 }}>
-                ⠿
-              </span>
-            </div>
-          </Tooltip>
-        ))}
+                <span
+                  aria-hidden
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 9,
+                    background: `${item.color}2e`,
+                    border: `1.5px solid ${colors.cardBorder}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: colors.text,
+                    flexShrink: 0,
+                  }}
+                >
+                  <Icon size={16} strokeWidth={2.25} />
+                </span>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: font.size.md,
+                    fontWeight: font.weight.semibold,
+                    color: colors.text,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {item.label}
+                </span>
+                <GripVertical size={14} aria-hidden style={{ color: colors.textDim, flexShrink: 0, opacity: 0.7 }} />
+              </div>
+            </Tooltip>
+          );
+        })}
       </div>
     </div>
   );

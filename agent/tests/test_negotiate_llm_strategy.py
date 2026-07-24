@@ -183,6 +183,71 @@ def test_counter_above_ceiling_is_clamped_to_ceiling():
     assert d.proposed_rate == CEILING
 
 
+# ---------------------------------------------------------------------------
+# The live "$325" over-close bug: an ACCEPT must never close ABOVE our own
+# standing offer when the creator named NO new rate this turn.
+# ---------------------------------------------------------------------------
+# Real deal: our standing counter was $325; the creator replied "Sounds good,
+# let's do it." (no number). The model returned ACCEPT $450 (the creator's OWN
+# earlier ask, since superseded). prior_offer arrived None at runtime (a stale /
+# floor-equal history snapshot), so the old else-branch trusted the model's $450
+# and closed the deal $125 too high. `standing_offer` is ALWAYS populated (prior
+# offer, else recommended) and caps the close DOWN even when prior_offer is None.
+
+
+def test_accept_never_exceeds_standing_offer_when_prior_offer_none():
+    # THE BUG: creator named no rate, model ACCEPT $450, but our standing figure is
+    # $325 and prior_offer arrived None. Must close at $325, not $450.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 450,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=None, tolerance_ceiling=500.0,
+        prior_offer=None, standing_offer=325.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 325.0
+
+
+def test_final_round_counter_coercion_never_exceeds_standing_offer():
+    # Same bug reached via the final-round COUNTER→ACCEPT coercion path: creator
+    # named no rate, model COUNTER $450, prior_offer None, standing $325 → $325.
+    d = neg_mod._apply_decision_guards(
+        "COUNTER", 450,
+        floor_rate=200.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=None, tolerance_ceiling=500.0,
+        prior_offer=None, standing_offer=325.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 325.0
+
+
+def test_standing_offer_only_caps_down_never_raises():
+    # A creator who UNDERCUTS the standing offer still closes at their cheaper
+    # number — standing_offer never raises a close, only caps it down.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 180,
+        floor_rate=100.0, ceiling_rate=500.0, is_final_round=True,
+        creator_ask=None, tolerance_ceiling=500.0,
+        prior_offer=325.0, standing_offer=325.0,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 180.0
+
+
+def test_no_standing_offer_leaves_behavior_unchanged():
+    # When neither prior_offer nor standing_offer is supplied (legacy call sites /
+    # first turn), the guard must not invent a clamp — the model's in-band rate
+    # passes through exactly as before this fix.
+    d = neg_mod._apply_decision_guards(
+        "ACCEPT", 450,
+        floor_rate=100.0, ceiling_rate=500.0, is_final_round=False,
+        creator_ask=None, tolerance_ceiling=500.0,
+        prior_offer=None, standing_offer=None,
+    )
+    assert d.action == "ACCEPT"
+    assert d.proposed_rate == 450.0
+
+
 def test_counter_below_floor_is_clamped_to_floor():
     d = guard("COUNTER", 10)
     assert d.action == "COUNTER"

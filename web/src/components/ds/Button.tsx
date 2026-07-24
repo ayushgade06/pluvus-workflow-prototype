@@ -16,25 +16,24 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const SIZES: Record<ButtonSize, { padding: string; fontSize: number; height: number }> = {
-  sm: { padding: "0 12px", fontSize: font.size.sm, height: 30 },
-  md: { padding: "0 16px", fontSize: font.size.md, height: 36 },
+  sm: { padding: "0 16px", fontSize: font.size.sm, height: 32 },
+  md: { padding: "0 22px", fontSize: font.size.md, height: 40 },
 };
 
+// Sticker buttons: an ink border on the solid variants + the hard offset shadow
+// (from .ds-btn in index.css). Primary = solid coral; secondary = panel fill;
+// danger = solid danger; ghost = borderless text button.
 function variantStyle(variant: ButtonVariant): React.CSSProperties {
   switch (variant) {
     case "primary":
-      return { background: colors.accent, color: "#fff", border: "1px solid transparent" };
+      return { background: colors.accent, color: "#fff", border: `2px solid ${colors.cardBorder}` };
     case "secondary":
-      return { background: colors.panel, color: colors.text, border: `1px solid ${colors.borderStrong}` };
+      return { background: colors.panel, color: colors.text, border: `2px solid ${colors.cardBorder}` };
     case "danger":
-      return {
-        background: `${colors.danger}14`,
-        color: colors.danger,
-        border: `1px solid ${colors.danger}40`,
-      };
+      return { background: colors.danger, color: "#fff", border: `2px solid ${colors.cardBorder}` };
     case "ghost":
     default:
-      return { background: "transparent", color: colors.textMuted, border: "1px solid transparent" };
+      return { background: "transparent", color: colors.textMuted, border: "2px solid transparent" };
   }
 }
 
@@ -58,13 +57,14 @@ export function Button({
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        gap: 7,
+        gap: 8,
         padding: s.padding,
         height: s.height,
         width: fullWidth ? "100%" : undefined,
-        borderRadius: radii.sm + 1,
+        // Pill shape — the Tano CTA look.
+        borderRadius: radii.pill,
         fontSize: s.fontSize,
-        fontWeight: variant === "primary" ? font.weight.semibold : font.weight.medium,
+        fontWeight: font.weight.semibold,
         lineHeight: 1,
         whiteSpace: "nowrap",
         ...variantStyle(variant),

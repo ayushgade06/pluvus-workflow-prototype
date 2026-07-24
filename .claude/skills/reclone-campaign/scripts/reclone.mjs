@@ -1,32 +1,38 @@
 #!/usr/bin/env node
 // Reclone the latest campaign in the local Pluvus dev DB, then set it up for a
-// fresh run: patch the negotiation band, attach a Content Brief PDF, publish,
-// enroll one creator, and launch.
+// fresh run: attach a HYBRID workflow, patch the negotiation band, attach a
+// Content Brief PDF, publish, enroll one creator, and launch. Every clone is
+// stamped postAcceptanceMode=operator_handoff ("After a creator accepts → send to
+// operator for onboarding").
 //
-// Flow: GET /campaigns -> clone latest campaign's fields via POST -> DELETE the
-// original -> attach a hybrid workflow -> patch the NEGOTIATION node band (floor
+// Default flow: GET /campaigns -> clone latest campaign's fields via POST (forcing
+// notifyEmail=escalation inbox and postAcceptanceMode=operator_handoff) -> DELETE
+// the original -> attach a hybrid workflow -> patch the NEGOTIATION band (floor
 // 200 / ceiling 500 / maxRounds 2) -> upload the newest Desktop PDF into the
 // CONTENT_BRIEF node -> PUT the patched draft -> publish -> upsert + enroll the
 // creator -> launch. Talks only to the running dev server's REST API (no DB
 // access), so the server's validation and cascade-delete logic applies.
 //
+// Pass --no-workflow to create the campaign ONLY (clone + delete + stop).
+//
 // Usage:
 //   node reclone.mjs [templateKey] [--keep] [--no-workflow] [--no-launch]
-//     templateKey   affiliate | hybrid | fixed_fee   (default: hybrid)
-//     --keep        do not delete the original campaign
-//     --no-workflow clone (and delete) only; skip everything after
-//     --no-launch   patch + publish + enroll, but do NOT launch (leave enrolled)
+//     templateKey    affiliate | hybrid | fixed_fee   (default: hybrid)
+//     --keep         do not delete the original campaign
+//     --no-workflow  create the campaign only; skip workflow + band + brief + enroll + launch
+//     --no-launch    publish + enroll but do NOT launch (leave enrolled)
 //
 // Env overrides:
-//   PORT              server port (default 3001)
-//   ESCALATION_EMAIL  brand-decision notify inbox (default gadeayush23@gmail.com)
-//   CREATOR_EMAIL     creator to enroll (default ayushgade23@gmail.com)
-//   CREATOR_NAME      creator display name (default "Ayush Gade")
-//   CREATOR_PLATFORM  creator platform (default "Instagram")
-//   DESKTOP_DIR       where to find the brief PDF (default the Windows Desktop)
-//   MIN_BUDGET        negotiation floor (default 200)
-//   MAX_BUDGET        negotiation ceiling (default 500)
-//   MAX_ROUNDS        negotiation max rounds (default 2)
+//   PORT                  server port (default 3001)
+//   ESCALATION_EMAIL      brand-decision notify inbox (default gadeayush23@gmail.com)
+//   POST_ACCEPTANCE_MODE  after-accept mode (default operator_handoff; or local_payment)
+//   CREATOR_EMAIL         creator to enroll (default ayushgade23@gmail.com)
+//   CREATOR_NAME          creator display name (default "Ayush Gade")
+//   CREATOR_PLATFORM      creator platform (default "Instagram")
+//   DESKTOP_DIR           where to find the brief PDF (default the Windows Desktop)
+//   MIN_BUDGET            negotiation floor (default 200)
+//   MAX_BUDGET            negotiation ceiling (default 500)
+//   MAX_ROUNDS            negotiation max rounds (default 2)
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -81,6 +87,11 @@ const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
 const templateKey = args.find((a) => !a.startsWith("--")) || "hybrid";
 const keepOriginal = flags.has("--keep");
+// DEFAULT is the full run-setup pipeline: clone -> attach a HYBRID workflow ->
+// negotiation band -> brief PDF -> publish -> enroll + launch one creator. Every
+// clone still gets postAcceptanceMode=operator_handoff. Pass --no-workflow to
+// create the campaign only (clone + delete + stop). --with-workflow / --workflow
+// are accepted as explicit opt-ins (no-ops now that workflow is the default).
 const skipWorkflow = flags.has("--no-workflow");
 const skipLaunch = flags.has("--no-launch");
 
@@ -102,7 +113,17 @@ const CAMPAIGN_FIELDS = [
   "shipsPhysicalProduct",
   "targetUrl",
   "hiddenParamKey",
+  // PLU-70: "After a creator accepts" mode. The clone forces this to
+  // operator_handoff below ("send to operator for onboarding"), so cloning the
+  // source value is only a fallback if the force is ever disabled.
+  "postAcceptanceMode",
 ];
+
+// "After a creator accepts" behaviour stamped onto every clone. operator_handoff
+// = "send to operator for onboarding": once a creator accepts, the deal is handed
+// to the human operator's inbox to finalize/onboard rather than running the local
+// payment flow. Override with POST_ACCEPTANCE_MODE (local_payment | operator_handoff).
+const POST_ACCEPTANCE_MODE = process.env.POST_ACCEPTANCE_MODE || "operator_handoff";
 
 async function req(method, path, body) {
   let res;
@@ -198,12 +219,21 @@ async function main() {
 
   // 2. Clone the campaign fields. Force notifyEmail to the escalation inbox so
   //    manual-escalation / brand-decision emails always reach an inbox we watch,
-  //    regardless of what the source campaign carried.
-  const cloneFields = { ...pick(original, CAMPAIGN_FIELDS), notifyEmail: ESCALATION_EMAIL };
+  //    regardless of what the source campaign carried. Force postAcceptanceMode
+  //    to operator_handoff ("send to operator for onboarding") so an accepted
+  //    creator is handed to the operator inbox to finalize.
+  const cloneFields = {
+    ...pick(original, CAMPAIGN_FIELDS),
+    notifyEmail: ESCALATION_EMAIL,
+    postAcceptanceMode: POST_ACCEPTANCE_MODE,
+  };
   // Override targetUrl from env if provided (campaign POST accepts it; PATCH does not).
   if (TARGET_URL) cloneFields.targetUrl = TARGET_URL;
   const clone = await req("POST", "/campaigns", cloneFields);
-  console.log(`> Cloned -> new campaign id ${clone.id} (notifyEmail=${ESCALATION_EMAIL})`);
+  console.log(
+    `> Cloned -> new campaign id ${clone.id} ` +
+      `(notifyEmail=${ESCALATION_EMAIL}, postAcceptanceMode=${POST_ACCEPTANCE_MODE})`,
+  );
 
   // 3. Delete the original (unless --keep).
   if (keepOriginal) {
@@ -213,14 +243,21 @@ async function main() {
     console.log(`> Deleted original ${original.id}`);
   }
 
-  // 4. Attach a workflow.
+  // 4. Attach a workflow — the default. Pass --no-workflow to create the campaign
+  //    only (clone + delete + stop; no band / brief / enroll / launch).
   if (skipWorkflow) {
-    console.log("> Skipping workflow creation (--no-workflow).");
+    console.log("> Campaign created only (--no-workflow). Omit it to attach a hybrid workflow + launch.");
     const after = await req("GET", "/campaigns");
     console.log(`> Campaigns now: ${after.length}`);
     console.log("\nDone.");
     console.log(JSON.stringify(
-      { originalId: original.id, cloneId: clone.id, originalDeleted: !keepOriginal, workflowId: null },
+      {
+        originalId: original.id,
+        cloneId: clone.id,
+        originalDeleted: !keepOriginal,
+        postAcceptanceMode: POST_ACCEPTANCE_MODE,
+        workflowId: null,
+      },
       null, 2,
     ));
     return;
@@ -284,10 +321,15 @@ async function main() {
   console.log(`> Published workflow version ${version.version} (${version.versionId})`);
 
   // 7. Upsert the creator (reuse if the email already exists) and get its id.
-  const imported = await req("POST", "/creators/import", {
-    rows: [{ email: CREATOR_EMAIL, name: CREATOR_NAME, platform: CREATOR_PLATFORM }],
+  //    POST /creators upserts a SINGLE creator by email and returns { creator }.
+  //    (The bulk /creators/imports path is a multipart CSV flow — not what we want
+  //    for one row.)
+  const created = await req("POST", "/creators", {
+    email: CREATOR_EMAIL,
+    name: CREATOR_NAME,
+    platform: CREATOR_PLATFORM,
   });
-  const creator = (imported.creators || []).find((c) => c.email === CREATOR_EMAIL) || imported.creators?.[0];
+  const creator = created.creator;
   if (!creator) throw new Error(`creator upsert returned no creator for ${CREATOR_EMAIL}`);
   console.log(`> Creator ready: ${creator.email} (${creator.id})`);
 

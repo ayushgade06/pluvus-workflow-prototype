@@ -289,6 +289,9 @@ export class AgentProviderAdapter implements IAgentProvider {
       // stylistic; absent = today's behavior.
       changedFields?: string[];
       relationshipWarmth?: string;
+      // Option A (negotiate→draft answer sync): the /negotiate model's own vetted
+      // reply, so the copy rephrases approved answers instead of inventing them.
+      negotiatorAnswers?: string;
     },
   ): Promise<EmailDraft | null> {
     // PLU-109: the CSV import accepts creator-discovery vendor exports carrying
@@ -335,6 +338,10 @@ export class AgentProviderAdapter implements IAgentProvider {
       // Both default safely agent-side when absent (empty delta / "new" warmth).
       changedFields: extra?.changedFields,
       relationshipWarmth: extra?.relationshipWarmth,
+      // Option A: forward the negotiator's vetted answers so /draft renders the
+      // authoritative <vetted_answers> block. Undefined → Python default (None)
+      // omits the block, so the copy is byte-identical for callers that pass none.
+      negotiatorAnswers: extra?.negotiatorAnswers,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

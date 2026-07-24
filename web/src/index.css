@@ -1,9 +1,64 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700;9..144,900&display=swap");
 
-:root {
+/* ------------------------------------------------------------------------- */
+/* Tano dual theme — palettes as CSS variables.                              */
+/* ------------------------------------------------------------------------- */
+/* theme.ts reads every colour token as var(--x); these blocks supply the    */
+/* real values. <ThemeProvider> sets data-theme on <html>. Default is dark   */
+/* (also the fallback baked into theme.ts).                                   */
+
+:root,
+[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b0c0f;
-  --text: #f2f3f5;
+  --bg: #17140f;
+  --panel: #201c16;
+  --panelAlt: #2a251d;
+  --border: #0a0805;
+  --borderStrong: #3a342a;
+  --hairline: #302a21;
+  --text: #f6f0e2;
+  --textMuted: #b0a48c;
+  --textDim: #7c7159;
+  --accent: #f0603c;
+  --accentDim: #d94e2c;
+  --accentWash: rgba(240, 96, 60, 0.16);
+  --warning: #e8b23e;
+  --danger: #f0603c;
+  --success: #3ecf8e;
+  --shadowInk: #000000;
+  --cardBorder: #0a0805;
+  /* Derived helpers used only in CSS (hover fills, scrollbars, canvas). */
+  --row-hover: rgba(246, 240, 226, 0.05);
+  --scroll-thumb: #3a342a;
+  --scroll-thumb-hover: #4a4234;
+  --rf-edge: #4a4234;
+  --rf-edge-strong: #6a6151;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4efe3;
+  --panel: #fbf8f0;
+  --panelAlt: #efe8d8;
+  --border: #141210;
+  --borderStrong: #141210;
+  --hairline: #e2d9c6;
+  --text: #141210;
+  --textMuted: #6b6152;
+  --textDim: #9a8f7c;
+  --accent: #f0603c;
+  --accentDim: #d94e2c;
+  --accentWash: rgba(240, 96, 60, 0.12);
+  --warning: #c98a1e;
+  --danger: #d0402c;
+  --success: #2f9e6b;
+  --shadowInk: #141210;
+  --cardBorder: #141210;
+  --row-hover: rgba(20, 18, 16, 0.045);
+  --scroll-thumb: #d8cdb6;
+  --scroll-thumb-hover: #c4b89c;
+  --rf-edge: #cabd9f;
+  --rf-edge-strong: #141210;
 }
 
 * {
@@ -19,10 +74,16 @@ body,
   color: var(--text);
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
-  font-feature-settings: "cv05", "cv11";
   letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* Serif display type — the Tano signature. Applied via the `.serif` helper and
+   the text.display/title/metric roles in theme.ts. */
+.serif {
+  font-family: "Fraunces", "Times New Roman", Georgia, serif;
 }
 
 button {
@@ -38,59 +99,58 @@ select {
 }
 
 ::selection {
-  background: rgba(110, 124, 245, 0.35);
+  background: rgba(240, 96, 60, 0.3);
 }
 
-/* Thin, unobtrusive scrollbars for the panels. */
+/* Scrollbars ------------------------------------------------------------- */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2a2c35;
-  border-radius: 4px;
+  background: var(--scroll-thumb);
+  border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #383b46;
+  background: var(--scroll-thumb-hover);
 }
 
-/* React Flow: match the dark canvas. */
+/* React Flow: match the themed canvas. ---------------------------------- */
 .react-flow__attribution {
   background: transparent !important;
-  color: #3c404b !important;
+  color: var(--textDim) !important;
 }
+/* Edge colour/width is set PER-EDGE inline by WorkflowCanvas (primary vs branch
+   vs focused). We only set a default transition here and deliberately do NOT
+   force a stroke colour, so the inline styles win. */
 .react-flow__edge-path {
-  stroke: #383b46;
-  stroke-width: 1.5;
-  transition: stroke 0.15s ease;
-}
-.react-flow__edge.animated .react-flow__edge-path {
-  stroke: #4c5060;
-}
-.react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke: #6e7cf5;
+  transition: stroke 0.18s ease, opacity 0.18s ease;
 }
 .react-flow__connection-path {
-  stroke: #6e7cf5;
-  stroke-width: 1.5;
+  stroke: var(--accent);
+  stroke-width: 2;
 }
-/* Zoom/fit controls: restyle React Flow's default light buttons for the dark
-   canvas so they match the panel chrome. */
+/* Zoom/fit controls: themed sticker buttons with the heavy border. */
+.react-flow__controls {
+  box-shadow: 3px 3px 0 var(--shadowInk);
+  border: 2px solid var(--cardBorder);
+  border-radius: 10px;
+  overflow: hidden;
+}
 .react-flow__controls-button {
-  background: #131418;
-  border-bottom: 1px solid #22242c;
-  color: #9da3ae;
+  background: var(--panel);
+  border-bottom: 2px solid var(--cardBorder);
+  color: var(--textMuted);
   width: 28px;
   height: 28px;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .react-flow__controls-button:hover {
-  background: #1b1c22;
-  color: #f2f3f5;
+  background: var(--panelAlt);
+  color: var(--text);
 }
 .react-flow__controls-button svg {
   fill: currentColor;
@@ -115,12 +175,11 @@ select {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Design-system interaction states (Phase A)                                */
+/* Design-system interaction states                                          */
 /* ------------------------------------------------------------------------- */
-/* Inline styles can't express :hover / :focus-visible / :active, so the DS    */
-/* primitives attach these classes. Colours mirror tokens in theme.ts.         */
+/* Inline styles can't express :hover / :focus-visible / :active, so the DS   */
+/* primitives attach these classes. Colours mirror the CSS vars above.        */
 
-/* Shared focus ring for every interactive primitive. */
 .ds-focusable {
   outline: none;
   transition: background 0.14s ease, border-color 0.14s ease,
@@ -128,50 +187,49 @@ select {
     transform 0.08s ease;
 }
 
-/* Buttons --------------------------------------------------------------- */
+/* Buttons — sticker pills. Rest state has a hard offset shadow; hover pushes
+   the button down into its shadow (the tactile "press" of the Tano look). --- */
+.ds-btn {
+  box-shadow: 3px 3px 0 var(--shadowInk);
+}
 .ds-btn:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+  box-shadow: none;
 }
-.ds-btn-primary {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(0, 0, 0, 0.35);
+.ds-btn:not(:disabled):hover {
+  transform: translate(1px, 1px);
+  box-shadow: 2px 2px 0 var(--shadowInk);
+}
+.ds-btn:not(:disabled):active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--shadowInk);
 }
 .ds-btn-primary:not(:disabled):hover {
-  background: #7d89f7;
+  background: var(--accentDim);
 }
-.ds-btn-primary:not(:disabled):active {
-  transform: translateY(0.5px);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-.ds-btn-secondary {
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-}
-.ds-btn-secondary:not(:disabled):hover {
-  background: #1b1c22;
-  border-color: #383b46;
+.ds-btn-ghost {
+  box-shadow: none;
 }
 .ds-btn-ghost:not(:disabled):hover {
-  background: rgba(157, 163, 174, 0.09);
-  color: #f2f3f5;
-}
-.ds-btn-danger:not(:disabled):hover {
-  background: rgba(242, 85, 95, 0.12);
+  background: var(--row-hover);
+  color: var(--text);
+  transform: none;
+  box-shadow: none;
 }
 
 /* Icon-only buttons ----------------------------------------------------- */
 .ds-iconbtn:not(:disabled):hover {
-  background: rgba(157, 163, 174, 0.12);
-  color: #f2f3f5;
+  background: var(--row-hover);
+  color: var(--text);
 }
 
-/* Destructive icon action (row delete). Dimmed at rest so it does not compete
-   with the data, full-strength danger on hover/focus. Always rendered rather
-   than revealed on hover, so it stays reachable by keyboard. */
+/* Destructive icon action (row delete). */
 .ds-danger-hover:not(:disabled):hover,
 .ds-danger-hover:not(:disabled):focus-visible {
   opacity: 1 !important;
-  background: rgba(242, 85, 95, 0.14);
-  color: #f2555f;
+  background: rgba(240, 96, 60, 0.16);
+  color: var(--danger);
 }
 
 /* Inputs / selects / textareas ----------------------------------------- */
@@ -180,44 +238,39 @@ select {
     background 0.14s ease;
 }
 .ds-input:hover:not(:focus):not(:disabled) {
-  border-color: #32343e;
+  border-color: var(--borderStrong);
 }
 .ds-input:focus-visible,
 .ds-input:focus {
-  border-color: #6e7cf5;
-  box-shadow: 0 0 0 3px rgba(110, 124, 245, 0.18);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 96, 60, 0.2);
 }
 .ds-input::placeholder {
-  color: #5f6470;
+  color: var(--textDim);
 }
 select.ds-input {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239da3ae' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6152' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   padding-right: 30px;
 }
 
-/* Cards (hover lift only when interactive) ------------------------------ */
+/* Cards — sticker hover lift (only when interactive). The card owns its own
+   hard offset shadow inline; here we grow the offset + lift on hover. ------ */
 .ds-card-interactive {
-  transition: border-color 0.16s ease, box-shadow 0.16s ease,
-    background 0.16s ease, transform 0.16s ease;
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
 }
 .ds-card-interactive:hover {
-  border-color: #32343e;
-  background: #16171c;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
-  transform: translateY(-1px);
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--shadowInk);
 }
 
-/* Workflow node connection handles --------------------------------------
-   Visible connection dots. They sit half-hidden by default so cards stay
-   clean, then grow + brighten on node/handle hover so it's obvious they're
-   grabbable to draw a connection. */
+/* Workflow node connection handles -------------------------------------- */
 .react-flow__handle.rf-handle {
   border-radius: 50%;
   cursor: crosshair;
   transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
-  opacity: 0.45;
+  opacity: 0.5;
   z-index: 5;
 }
 .react-flow__node:hover .react-flow__handle.rf-handle,
@@ -226,20 +279,19 @@ select.ds-input {
 }
 .react-flow__handle.rf-handle:hover {
   transform: scale(1.35);
-  box-shadow: 0 0 0 4px rgba(110, 124, 245, 0.25);
+  box-shadow: 0 0 0 4px rgba(240, 96, 60, 0.3);
 }
-/* While a connection is being drawn, make all target dots pop as drop zones. */
 .react-flow__handle.rf-handle.connectingto,
 .react-flow.connecting .react-flow__handle.rf-handle {
   opacity: 1;
 }
 
-/* Generic row hover (list rows, node-list items) ------------------------ */
+/* Generic row hover ----------------------------------------------------- */
 .ds-row {
   transition: background 0.12s ease;
 }
 .ds-row:hover {
-  background: rgba(157, 163, 174, 0.06);
+  background: var(--row-hover);
 }
 
 /* Tooltip --------------------------------------------------------------- */
@@ -249,20 +301,20 @@ select.ds-input {
 }
 .ds-tooltip {
   position: absolute;
-  bottom: calc(100% + 7px);
+  bottom: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%) translateY(2px);
-  background: #1b1c22;
-  border: 1px solid #2a2c35;
-  color: #f2f3f5;
+  background: var(--panel);
+  border: 2px solid var(--cardBorder);
+  color: var(--text);
   font-size: 11.5px;
   line-height: 1.45;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: 9px;
   white-space: normal;
   width: max-content;
   max-width: 230px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.28);
+  box-shadow: 3px 3px 0 var(--shadowInk);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.14s ease, transform 0.14s ease;
@@ -284,7 +336,12 @@ select.ds-input {
   }
 }
 .ds-skeleton {
-  background: linear-gradient(90deg, #16171c 25%, #1e2028 37%, #16171c 63%);
+  background: linear-gradient(
+    90deg,
+    var(--panelAlt) 25%,
+    var(--hairline) 37%,
+    var(--panelAlt) 63%
+  );
   background-size: 200% 100%;
   animation: ds-shimmer 1.6s ease-in-out infinite;
   border-radius: 6px;
@@ -331,7 +388,7 @@ select.ds-input {
   animation: ds-backdrop-in 0.18s ease-out;
 }
 
-/* Content entrance (tab switches, panel mounts) ------------------------- */
+/* Content entrance ------------------------------------------------------ */
 @keyframes ds-fade-in {
   from {
     opacity: 0;
@@ -361,7 +418,7 @@ select.ds-input {
   animation: ds-slide-in-right 0.2s cubic-bezier(0.21, 1.02, 0.73, 1);
 }
 
-/* Live-status pulse (monitor dashboards) --------------------------------- */
+/* Live-status pulse ----------------------------------------------------- */
 @keyframes ds-pulse {
   0%,
   100% {
@@ -375,9 +432,67 @@ select.ds-input {
   animation: ds-pulse 2s ease-in-out infinite;
 }
 
+/* ------------------------------------------------------------------------- */
+/* Observability canvas — React Flow is the renderer, not the visual identity */
+/* ------------------------------------------------------------------------- */
+
+/* A node whose creator count changed on the latest poll pulses ONCE — the
+   honest "something moved" cue given a polling (not streaming) feed. */
+@keyframes obs-node-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accentWash), 0 4px 12px rgba(0, 0, 0, 0.22);
+  }
+  40% {
+    box-shadow: 0 0 0 6px var(--accentWash), 0 6px 18px rgba(0, 0, 0, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0), 0 4px 12px rgba(0, 0, 0, 0.22);
+  }
+}
+.ds-node-pulse {
+  animation: obs-node-pulse 1.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Flowing dash on animated (active-path) edges — subtle, premium, not busy. */
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 6 6;
+  animation: obs-dash 0.9s linear infinite;
+}
+@keyframes obs-dash {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Minimal zoom controls — flat, bordered, matches the panel chrome. */
+.obs-controls {
+  box-shadow: none;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.obs-controls .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--textMuted);
+  width: 30px;
+  height: 30px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.obs-controls .react-flow__controls-button:hover {
+  background: var(--panelAlt);
+  color: var(--text);
+}
+.obs-controls .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 11px;
+  max-height: 11px;
+}
+
 /* Shared focus ring — declared last so it wins over per-variant shadows. */
 .ds-focusable:focus-visible {
-  box-shadow: 0 0 0 3px rgba(110, 124, 245, 0.4);
+  box-shadow: 0 0 0 3px rgba(240, 96, 60, 0.45);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -393,7 +508,8 @@ select.ds-input {
   .ds-focusable,
   .ds-card-interactive,
   .ds-input,
-  .ds-row {
+  .ds-row,
+  .ds-btn {
     transition: none;
   }
 }

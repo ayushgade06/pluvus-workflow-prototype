@@ -178,14 +178,52 @@ test("missing content brief attachment is rejected", () => {
   assert.ok(codes(res).includes("MISSING_BRIEF_ATTACHMENT"));
 });
 
-test("missing outreach subject is rejected", () => {
+test("manual outreach missing subject is rejected", () => {
   const nodes = [
-    gnode("a", "INITIAL_OUTREACH", ["r"], { bodyTemplate: "Body only" }),
+    gnode("a", "INITIAL_OUTREACH", ["r"], { outreachMode: "manual", bodyTemplate: "Body only" }),
     gnode("r", "REWARD_SETUP", []),
   ];
   const res = validateWorkflowGraph(nodes);
   assert.equal(res.valid, false);
   assert.ok(codes(res).includes("MISSING_SUBJECT"));
+});
+
+test("manual outreach missing body is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["r"], { outreachMode: "manual", subjectTemplate: "Hi" }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("MISSING_BODY"));
+});
+
+test("ai/legacy outreach with no subject/body is allowed (AI writes it)", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["r"], { outreachMode: "ai" }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  assert.equal(validateWorkflowGraph(nodes).valid, true);
+  // absent mode is treated as ai → also lenient
+  const legacy = [
+    gnode("a", "INITIAL_OUTREACH", ["r"], {}),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  assert.equal(validateWorkflowGraph(legacy).valid, true);
+});
+
+test("manual outreach with an unknown {{variable}} is rejected", () => {
+  const nodes = [
+    gnode("a", "INITIAL_OUTREACH", ["r"], {
+      outreachMode: "manual",
+      subjectTemplate: "Hi",
+      bodyTemplate: "Hi {{firstName}}",
+    }),
+    gnode("r", "REWARD_SETUP", []),
+  ];
+  const res = validateWorkflowGraph(nodes);
+  assert.equal(res.valid, false);
+  assert.ok(codes(res).includes("UNKNOWN_VARIABLE"));
 });
 
 test("negotiation max below min is rejected", () => {

@@ -21,6 +21,12 @@ export type NodeType =
   | "END";
 
 export interface InitialOutreachConfig {
+  // Manual Initial Outreach. "manual" (default for new nodes) → the operator's
+  // subject/body below ARE the email, sent verbatim after {{variable}}
+  // substitution; the AI is not called. "ai" → the AI writes the outreach and
+  // these templates are the fallback. Absent (legacy nodes) is treated as "ai"
+  // by the executor so already-published campaigns are unchanged.
+  outreachMode?: "manual" | "ai";
   subjectTemplate: string;
   bodyTemplate: string;
   delaySeconds: number;

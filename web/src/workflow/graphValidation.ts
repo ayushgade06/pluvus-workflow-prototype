@@ -13,6 +13,7 @@
 
 import type { NodeType } from "../api/builderTypes";
 import type { WorkflowDefinition, GraphNode } from "./graphModel";
+import { validateOutreachConfig } from "./outreachVariables";
 
 // ---------------------------------------------------------------------------
 // Structured result shape
@@ -402,13 +403,14 @@ function validateNodeConfig(n: GraphNode): ValidationIssue | null {
   const cfg = (n.config ?? {}) as Record<string, unknown>;
   switch (n.type) {
     case "INITIAL_OUTREACH": {
-      // Subject/body are OPTIONAL: production generates the outreach email with
-      // the AI (executeInitialOutreach → agent.draftEmail), which writes both the
-      // subject and body itself. These templates are only the fallback the engine
-      // renders if AI generation fails after retries, so an empty field is valid
-      // (the shipped default template covers the fallback). Requiring them here
-      // forced the brand to author copy the happy path discards.
-      return null;
+      // Manual Initial Outreach: mode-aware validation. In "manual" mode the
+      // operator's subject/body ARE the email, so both are required; in "ai" mode
+      // (and legacy nodes with no mode) they're the AI fallback and stay optional.
+      // Both modes reject an unknown {{variable}} so a typo can't ship literal
+      // braces to a creator. Logic mirrors the server via the shared outreach
+      // variables module.
+      const issue = validateOutreachConfig(cfg);
+      return issue ? cfgErr(n, issue.code, issue.message) : null;
     }
     case "FOLLOW_UP": {
       // Body is OPTIONAL for the same reason as INITIAL_OUTREACH: production
