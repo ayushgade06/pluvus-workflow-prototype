@@ -123,17 +123,11 @@ select {
   background: transparent !important;
   color: var(--textDim) !important;
 }
+/* Edge colour/width is set PER-EDGE inline by WorkflowCanvas (primary vs branch
+   vs focused). We only set a default transition here and deliberately do NOT
+   force a stroke colour, so the inline styles win. */
 .react-flow__edge-path {
-  stroke: var(--rf-edge);
-  stroke-width: 2;
-  transition: stroke 0.15s ease;
-}
-.react-flow__edge.animated .react-flow__edge-path {
-  stroke: var(--rf-edge-strong);
-}
-.react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--accent);
+  transition: stroke 0.18s ease, opacity 0.18s ease;
 }
 .react-flow__connection-path {
   stroke: var(--accent);
@@ -436,6 +430,64 @@ select.ds-input {
 }
 .ds-pulse {
   animation: ds-pulse 2s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Observability canvas — React Flow is the renderer, not the visual identity */
+/* ------------------------------------------------------------------------- */
+
+/* A node whose creator count changed on the latest poll pulses ONCE — the
+   honest "something moved" cue given a polling (not streaming) feed. */
+@keyframes obs-node-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accentWash), 0 4px 12px rgba(0, 0, 0, 0.22);
+  }
+  40% {
+    box-shadow: 0 0 0 6px var(--accentWash), 0 6px 18px rgba(0, 0, 0, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0), 0 4px 12px rgba(0, 0, 0, 0.22);
+  }
+}
+.ds-node-pulse {
+  animation: obs-node-pulse 1.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Flowing dash on animated (active-path) edges — subtle, premium, not busy. */
+.react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 6 6;
+  animation: obs-dash 0.9s linear infinite;
+}
+@keyframes obs-dash {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Minimal zoom controls — flat, bordered, matches the panel chrome. */
+.obs-controls {
+  box-shadow: none;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.obs-controls .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--textMuted);
+  width: 30px;
+  height: 30px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.obs-controls .react-flow__controls-button:hover {
+  background: var(--panelAlt);
+  color: var(--text);
+}
+.obs-controls .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 11px;
+  max-height: 11px;
 }
 
 /* Shared focus ring — declared last so it wins over per-variant shadows. */
