@@ -15,7 +15,12 @@ import {
   appendEvent,
   createMessage,
   findMessageByExternalId,
+  upsertQuestionObligation,
+  linkResolutionMessage,
+  escalateObligations,
+  listOpenObligationsByInstance,
 } from "../db/index.js";
+import type { Db, DbTx } from "../db/drizzle.js";
 import { findCampaignById } from "../db/campaigns.js";
 import { isTerminal, assertTransition } from "./stateMachine.js";
 import type { IEmailProvider, IAgentProvider } from "./providers.js";
@@ -307,6 +312,16 @@ export class WorkflowRuntime {
           },
           tx,
         );
+      }
+
+      // PLU-111: apply the conversation-obligation write-plan INSIDE this same
+      // transaction (invariant #5, §4.6) — so a rolled-back turn (returned above
+      // on a stale OCC) leaves no half-written obligation. The ANSWERED/COMPLETED
+      // transition does NOT happen here; only create/update + the reserve-time
+      // resolution LINK. The terminal transition fires later at flush time, gated
+      // on the resolving Message's sentAt (resolveObligationsByResolutionMessage).
+      if (result.obligationWrites) {
+        await applyObligationWrites(instanceId, result.obligationWrites, tx);
       }
 
       return row;
@@ -1104,6 +1119,66 @@ function hasPaymentInfoNode(nodeGraph: NodeSnapshot[]): boolean {
 // stays terminal for them.
 function hasContentBriefNode(nodeGraph: NodeSnapshot[]): boolean {
   return nodeGraph.some((n) => n.type === "CONTENT_BRIEF");
+}
+
+// ---------------------------------------------------------------------------
+// PLU-111 — apply a turn's conversation-obligation write-plan in the tx (§4.6)
+// ---------------------------------------------------------------------------
+// Runs INSIDE stepInstance's db.transaction, after the domain-event append, with
+// the tx handle — so create/update + the reserve-time resolution link commit
+// atomically with the NEGOTIATION_TURN event + OCC state write (invariant #5). A
+// StaleInstanceError rolls the whole thing back → no half-written obligation.
+//
+// This does the CREATE/UPDATE and the reserve-time LINK only. The ANSWERED/
+// COMPLETED transition happens LATER at flush time (resolveObligationsByResolution-
+// Message), gated on the resolving Message's sentAt — never here, never on draft
+// generation (invariant #2).
+async function applyObligationWrites(
+  instanceId: string,
+  writes: NonNullable<NodeResult["obligationWrites"]>,
+  tx: Db | DbTx,
+): Promise<void> {
+  // 1. Create/update this turn's creator-question obligations (§4.3, §4.4). A
+  //    "touch" bumps the existing open row; an "insert" mints a fresh OPEN row.
+  //    upsertQuestionObligation catches a concurrent double-insert on the partial-
+  //    unique index, so a BullMQ retry racing the same turn can't double-list.
+  for (const item of writes.questionPlan) {
+    await upsertQuestionObligation(
+      {
+        instanceId,
+        normalizedKey: item.normalizedKey,
+        originalText: item.originalText,
+        sourceMessageId: writes.sourceMessageId ?? null,
+        category: item.category ?? null,
+      },
+      tx,
+    );
+  }
+
+  // 2. Reserve-time resolution LINK (§4.5 step 1): the reserved outbound message
+  //    is the one that WILL answer the currently-open questions. Link ALL of the
+  //    instance's non-terminal CREATOR_QUESTION obligations to it (they are the
+  //    must-answer checklist we handed /draft this turn). Status is left unchanged
+  //    — the terminal ANSWERED transition is at flush. If this turn ESCALATED
+  //    instead of sending, there's no reserved message and we skip the link.
+  const openRows = await listOpenObligationsByInstance(instanceId, tx);
+  if (writes.reservedResolutionMessageId) {
+    const questionIds = openRows
+      .filter((r) => r.type === "CREATOR_QUESTION")
+      .map((r) => r.id);
+    await linkResolutionMessage(questionIds, writes.reservedResolutionMessageId, tx);
+  }
+
+  // 3. Escalation (§4.2): move every non-terminal obligation to ESCALATED (non-
+  //    terminal) when this turn escalated on an always-escalate topic. Nothing is
+  //    lost — they stay in the AI context and surface in the Manual Queue. Applied
+  //    AFTER the plan so rows this turn just created are included.
+  if (writes.escalateAfterWrite) {
+    await escalateObligations(
+      openRows.map((r) => r.id),
+      tx,
+    );
+  }
 }
 
 function inferSourceFromEvent(eventType: EventType): TransitionSource {

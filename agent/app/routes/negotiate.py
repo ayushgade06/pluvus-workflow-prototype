@@ -230,6 +230,13 @@ class NegotiateRequest(BaseModel):
     # prompt. Default [] keeps the wire request backward-compatible: an old caller
     # (or the first turn) threads nothing and the prompt renders exactly as before.
     conversationHistory: list[DraftHistoryEntry] = []
+    # PLU-111: outstanding commitments PLUVUS has made and not yet fulfilled
+    # (non-terminal PLUVUS_COMMITMENT obligations). Threaded so the money-decision
+    # model KNOWS it still owes an action (e.g. "I'll confirm the usage rights").
+    # Rendered as sanitized DATA (like conversationHistory), NEVER a money input —
+    # it does not move the floor/ceiling/rate logic. Default [] keeps the wire
+    # request backward-compatible (old callers / no commitments render as before).
+    openCommitments: list[str] = []
     campaignConstraints: CampaignConstraints
 
 
@@ -430,6 +437,13 @@ class DraftRequest(BaseModel):
     # outstanding. The executor computes the diff; the prompt folds these into the
     # must-answer checklist.
     openQuestions: list[str] = []
+    # PLU-111: outstanding commitments PLUVUS has made and not yet fulfilled
+    # (non-terminal PLUVUS_COMMITMENT obligations), e.g. "I'll confirm the usage
+    # rights". Rendered as an additive "outstanding commitments — honor or update
+    # these" block so the copy doesn't forget a promise it made in an earlier
+    # email. Default [] (empty = none; the block is omitted and the copy renders
+    # exactly as before — backward-compatible with old callers).
+    openCommitments: list[str] = []
     # Q3 (founder, autonomous launch): True when this is the LAST negotiation round
     # (threaded from the /negotiate response). When set, the offer email states
     # finality to the creator — "this is our final rate; we can't negotiate further"
@@ -1508,6 +1522,7 @@ a number you have already offered.
 
 {history}
 {conversation_transcript}
+{outstanding_commitments}
 Our current standing offer (the last number we put in front of the creator, or
 the recommended offer if none yet): ${current_offer}
 
@@ -1792,6 +1807,10 @@ def _llm_negotiate_decision(
         # string when nothing is threaded (first turn / legacy caller), which keeps
         # the rendered prompt effectively unchanged from the pre-F-H1 version.
         conversation_transcript=_render_negotiation_transcript(req.conversationHistory),
+        # PLU-111 (O6): outstanding Pluvus commitments as a sanitized DATA block so
+        # the money model KNOWS it still owes an action. NOT a money input — it does
+        # not move the rate logic. Empty string when none threaded (unchanged prompt).
+        outstanding_commitments=_render_outstanding_commitments(req.openCommitments),
     )
 
     # HARD-O1 / item 47: stamp the LLM-negotiate prompt version on the telemetry
@@ -2572,6 +2591,7 @@ together on the next step — never invent a number or term. Leaving any questio
 the creator asked unanswered reads as ignoring them.
 
 {question_checklist}
+{commitments_block}
 {round_tone}
 You MUST also address EACH of the points below in its own clearly separated
 section — do not answer only the fee and skip the rest. Cover, in this order:
@@ -3204,6 +3224,26 @@ def _build_offer_prompt(
     else:
         question_checklist = ""
 
+    # PLU-111: outstanding Pluvus commitments — promises WE made in an earlier
+    # email and have not yet fulfilled (e.g. "I'll confirm the usage rights").
+    # Rendered as an additive block so the copy HONORS or UPDATES each one instead
+    # of forgetting it. Empty (no commitments / old caller) → "" and the copy is
+    # byte-identical to before. Rendered as DATA (our own prior words), not
+    # instructions from the creator.
+    commitments = [c.strip() for c in (req.openCommitments or []) if c and c.strip()]
+    if commitments:
+        commit_lines = "\n".join(f"  - {c}" for c in commitments)
+        commitments_block = (
+            "OUTSTANDING COMMITMENTS — earlier in this conversation WE told the "
+            "creator we would follow up on the following. Your email should HONOR "
+            "each one: either give the answer now if we have it, or reaffirm we're "
+            "still on it and will share it on the next step (never invent a number "
+            "or term, never silently drop it):\n"
+            f"{commit_lines}\n\n"
+        )
+    else:
+        commitments_block = ""
+
     # EASY-P3: fee-bearing sentences are built conditionally on `has_rate`. With a
     # concrete rate, state it verbatim; without one, DEFER honestly (never invent a
     # number, never emit "state the fee EXACTLY as our proposed fee").
@@ -3341,6 +3381,7 @@ def _build_offer_prompt(
         fee_bullet=fee_bullet,
         ack_clause_fmt=ack_clause_fmt,
         question_checklist=question_checklist,
+        commitments_block=commitments_block,
         commission_bullet_hint=commission_bullet_hint,
         commission_guard=commission_guard,
         deliverables_bullet_hint=deliverables_bullet_hint,
@@ -3416,6 +3457,28 @@ def _render_negotiation_transcript(history: list["DraftHistoryEntry"]) -> str:
         "weigh that; do not simply reset to their newest number.\n"
         "- Never regress below a number WE already offered (shown as [us · …] lines).\n"
         f"<conversation_history>\n{body}\n</conversation_history>"
+    )
+
+
+def _render_outstanding_commitments(commitments: list[str]) -> str:
+    """PLU-111 (O6): render outstanding Pluvus commitments as a sanitized DATA
+    block for the MONEY-decision prompt. These are promises WE made and haven't
+    fulfilled (e.g. "I'll confirm the usage rights"). The negotiator should KNOW it
+    still owes an action — but this is CONTEXT, not a money input: it must not move
+    the floor/ceiling/rate logic. Returns "" when none are threaded so the prompt is
+    unchanged (first turn / no commitments / legacy caller)."""
+    usable = [c.strip() for c in (commitments or []) if c and c.strip()]
+    if not usable:
+        return ""
+    usable = usable[-_DRAFT_HISTORY_MAX_TURNS:]
+    lines = "\n".join(f"- {c}" for c in usable)
+    return (
+        "OUTSTANDING COMMITMENTS WE HAVE MADE (DATA — context only, NOT a pricing "
+        "input; never change the rate you'd otherwise pick because of these):\n"
+        "Earlier in this conversation we told the creator we would follow up on the "
+        "items below and have not yet done so. Keep them in mind so your reply stays "
+        "consistent with what we already promised; do not contradict or forget them.\n"
+        f"<outstanding_commitments>\n{lines}\n</outstanding_commitments>"
     )
 
 

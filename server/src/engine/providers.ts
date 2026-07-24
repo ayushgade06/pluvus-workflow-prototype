@@ -283,6 +283,10 @@ export interface IAgentProvider {
       // earlier unanswered question rather than dropping it.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // PLU-111: outstanding Pluvus commitments (non-terminal PLUVUS_COMMITMENT
+      // obligations) so the copy honors or updates a promise we made earlier
+      // (e.g. "I'll confirm the usage rights"). Additive — empty → copy unchanged.
+      openCommitments?: string[];
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
@@ -443,6 +447,11 @@ export function buildNegotiationRequest(
   // any legacy caller that doesn't build it are unchanged.
   const conversationHistory = priorContext?.conversationHistory;
 
+  // PLU-111 (O6): outstanding Pluvus commitments — sanitized DATA, never a money
+  // input. Attached only when non-empty so first-contact / no-commitment behavior
+  // is unchanged.
+  const openCommitments = priorContext?.openCommitments;
+
   return {
     creatorReply,
     currentOffer,
@@ -450,6 +459,7 @@ export function buildNegotiationRequest(
     maxRounds,
     negotiationHistory,
     ...(conversationHistory && conversationHistory.length ? { conversationHistory } : {}),
+    ...(openCommitments && openCommitments.length ? { openCommitments } : {}),
     campaignConstraints: {
       termFloor,
       termCeiling,

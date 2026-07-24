@@ -279,6 +279,8 @@ export class AgentProviderAdapter implements IAgentProvider {
       // HARD-N2: prior conversation (both sides) + answered-questions ledger.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // PLU-111: outstanding Pluvus commitments to honor or update.
+      openCommitments?: string[];
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
@@ -316,6 +318,10 @@ export class AgentProviderAdapter implements IAgentProvider {
       // unanswered question rather than dropping it.
       history: extra?.history,
       openQuestions: extra?.openQuestions,
+      // PLU-111: forward outstanding Pluvus commitments so /draft renders the
+      // "honor or update these commitments" block. Undefined → the Python default
+      // ([]) keeps the copy byte-identical for callers that pass none.
+      openCommitments: extra?.openCommitments,
       // Q3 (founder, autonomous launch): forward the final-round flag so the
       // Python offer prompt renders the "this is our final rate" copy.
       isFinalRound: extra?.isFinalRound,

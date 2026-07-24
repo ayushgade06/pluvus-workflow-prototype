@@ -11,6 +11,7 @@ import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } fro
 import { db } from "../db/drizzle.js";
 import {
   brandNotifications,
+  conversationObligations as conversationObligationsTable,
   creators,
   events as eventsTable,
   executionInstances,
@@ -18,6 +19,7 @@ import {
   messages as messagesTable,
   workflows,
   workflowVersions,
+  type ConversationObligation,
   type Event,
   type ExecutionInstance,
   type InstanceState,
@@ -26,6 +28,12 @@ import {
   type LlmCallRole,
   type Message,
 } from "../db/schema.js";
+import {
+  isTerminalObligationStatus,
+  resolveObligationManual,
+  listObligationsByInstance,
+  type ManualResolveStatus,
+} from "../db/conversationObligations.js";
 import { collectWorkerMetrics } from "../workers/workerMetrics.js";
 import { buildAlertsReport, type AlertInputs, type AlertsReportDTO } from "./alerts.js";
 import {
@@ -49,6 +57,7 @@ import {
   type LlmUsageBreakdownEntryDTO,
   type LlmUsageSummaryDTO,
   type LlmSpendGuardDTO,
+  type ConversationObligationDTO,
 } from "./dto.js";
 
 // An instance in a waiting state is "stuck" if its dueAt passed more than this
@@ -456,6 +465,25 @@ function mapEvent(e: Event): EventDTO {
   };
 }
 
+/** PLU-111: map a ConversationObligation row to its inspector DTO. */
+function mapObligation(o: ConversationObligation): ConversationObligationDTO {
+  return {
+    id: o.id,
+    type: o.type,
+    status: o.status,
+    open: !isTerminalObligationStatus(o.status),
+    originalText: o.originalText,
+    category: o.category,
+    resolution: o.resolution,
+    resolutionSource: o.resolutionSource,
+    sourceMessageId: o.sourceMessageId,
+    resolutionMessageId: o.resolutionMessageId,
+    createdAt: o.createdAt.toISOString(),
+    updatedAt: o.updatedAt.toISOString(),
+    resolvedAt: o.resolvedAt ? o.resolvedAt.toISOString() : null,
+  };
+}
+
 /** Extract agent (AI) decisions from the event log for the inspector. */
 function extractAgentDecisions(events: Event[]): AgentDecisionDTO[] {
   const out: AgentDecisionDTO[] = [];
@@ -505,7 +533,7 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
     .limit(1);
   const versionInfo = versionRows[0] ?? null;
 
-  const [instMessages, instEvents, instLlmCalls] = await Promise.all([
+  const [instMessages, instEvents, instLlmCalls, instObligations] = await Promise.all([
     db
       .select()
       .from(messagesTable)
@@ -521,6 +549,9 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
       .from(llmCallsTable)
       .where(eq(llmCallsTable.instanceId, id))
       .orderBy(asc(llmCallsTable.createdAt)),
+    // PLU-111: every obligation for the instance (open + resolved), oldest-first.
+    // Reuses the DB access module (same query, one source of truth).
+    listObligationsByInstance(id),
   ]);
 
   // Attribute each outbound message to a negotiation round, when discoverable
@@ -574,7 +605,57 @@ export async function getInstanceDetail(id: string): Promise<InstanceDetailDTO |
       totals: llmTotalsFromCalls(instLlmCalls),
       calls: instLlmCalls.map(mapLlmCall),
     },
+    obligations: instObligations.map(mapObligation),
   };
+}
+
+// ---------------------------------------------------------------------------
+// PLU-111 — operator manual resolution (§4.9)
+// ---------------------------------------------------------------------------
+// Terminal-status set an operator may apply by hand. Kept in sync with the DB
+// layer's ManualResolveStatus so the route can validate the request body against
+// a single source of truth.
+export const MANUAL_RESOLVE_STATUSES: readonly ManualResolveStatus[] = [
+  "ANSWERED",
+  "COMPLETED",
+  "CANCELED",
+  "NO_LONGER_RELEVANT",
+];
+
+export function isManualResolveStatus(v: unknown): v is ManualResolveStatus {
+  return typeof v === "string" && (MANUAL_RESOLVE_STATUSES as readonly string[]).includes(v);
+}
+
+export type ManualResolveOutcome =
+  | { ok: true; obligation: ConversationObligationDTO }
+  | { ok: false; reason: "instance_not_found" | "obligation_not_found" };
+
+/**
+ * Resolve one obligation manually to a terminal status (resolutionSource =
+ * "operator"). Guards that the obligation belongs to the instance in the URL —
+ * so the operator can't resolve an unrelated instance's obligation by id. The
+ * underlying resolveObligationManual is idempotent: resolving an already-terminal
+ * row no-ops and returns the current row (still ok:true — the desired end state
+ * holds).
+ */
+export async function resolveInstanceObligation(
+  instanceId: string,
+  obligationId: string,
+  opts: { status: ManualResolveStatus; resolution?: string | null },
+): Promise<ManualResolveOutcome> {
+  // Confirm the obligation exists AND is scoped to this instance.
+  const rows = await db
+    .select()
+    .from(conversationObligationsTable)
+    .where(eq(conversationObligationsTable.id, obligationId))
+    .limit(1);
+  const existing = rows[0];
+  if (!existing || existing.instanceId !== instanceId) {
+    return { ok: false, reason: "obligation_not_found" };
+  }
+  const updated = await resolveObligationManual(obligationId, opts, "operator");
+  if (!updated) return { ok: false, reason: "obligation_not_found" };
+  return { ok: true, obligation: mapObligation(updated) };
 }
 
 // ---------------------------------------------------------------------------

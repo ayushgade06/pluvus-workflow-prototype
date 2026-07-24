@@ -186,6 +186,34 @@ enum DealHandoffStatus {
   COMPLETED
 }
 
+/// PLU-111: what kind of open conversation thread a ConversationObligation
+/// tracks. A CREATOR_QUESTION is something the creator asked and we owe an
+/// answer to; a PLUVUS_COMMITMENT is a promise WE made (e.g. "I'll confirm the
+/// usage rights") that we owe an action/response on. NOTE: intentionally NOT the
+/// same as the payout-ledger `Obligation`/`ObligationStatus` (money owed) — a
+/// different concept (conversation threads owed), so the type/status are named
+/// distinctly to avoid collision.
+enum ObligationType {
+  CREATOR_QUESTION
+  PLUVUS_COMMITMENT
+}
+
+/// PLU-111: the lifecycle of a ConversationObligation.
+///   Non-terminal (stays in the AI context every turn): OPEN, DEFERRED, ESCALATED.
+///   Terminal   (drops out; resolvedAt set): ANSWERED, COMPLETED, CANCELED,
+///     NO_LONGER_RELEVANT.
+/// ANSWERED applies to CREATOR_QUESTION, COMPLETED to PLUVUS_COMMITMENT;
+/// CANCELED / NO_LONGER_RELEVANT apply to either (operator or system).
+enum ConversationObligationStatus {
+  OPEN
+  ANSWERED
+  DEFERRED
+  ESCALATED
+  COMPLETED
+  CANCELED
+  NO_LONGER_RELEVANT
+}
+
 /// Lifecycle of a Workflow definition.
 enum WorkflowStatus {
   DRAFT
@@ -492,6 +520,7 @@ model ExecutionInstance {
   paymentInfo        PaymentInfo?
   dealHandoff        DealHandoff?
   outboxJobs         OutboxJob[]
+  conversationObligations ConversationObligation[]
 
   @@unique([workflowVersionId, creatorId])
   /// HARD-R1: the poller and reconciliation sweep both query by currentState
@@ -553,6 +582,10 @@ model Message {
   createdAt DateTime @default(now())
 
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
+  /// PLU-111: obligations pointing at this row as the one that raised them
+  /// (inbound) or the one that resolved them (a sent outbound answer).
+  raisedObligations   ConversationObligation[] @relation("ConversationObligationSource")
+  resolvedObligations ConversationObligation[] @relation("ConversationObligationResolution")
 
   @@index([threadId])
   @@index([instanceId])
@@ -766,9 +799,19 @@ model DealHandoff {
   fixedFee       Float?
   commissionRate Float?
 
+  /// The negotiation band the deal closed within, so the brand confirmation
+  /// email can show "your range: $500–$600" without re-reading the node config.
+  /// Null when the campaign had no band configured.
+  negotiationFloor   Float?
+  negotiationCeiling Float?
+
   deliverables String?
   timeline     String?
   paymentTerms String?
+
+  /// The campaign perk/reward blurb (e.g. "one pair of the Tempo trainer"),
+  /// surfaced in the brand confirmation email. Null when the campaign has none.
+  rewardDescription String?
 
   /// The accepting turn's message text, and a pointer into the existing thread —
   /// not the thread itself.
@@ -789,4 +832,51 @@ model DealHandoff {
   instance ExecutionInstance @relation(fields: [instanceId], references: [id])
 
   @@index([status])
+}
+
+/// PLU-111: a durable record of an open conversation thread with its own
+/// lifecycle — a creator question we owe an answer to, or a Pluvus commitment we
+/// owe an action on. This is ONLY-lifecycle data: it persists what has its own
+/// state plus pointers back into the canonical Message rows (sourceMessageId /
+/// resolutionMessageId) and the original wording for audit. It is NOT a second
+/// copy of the conversation (the transcript stays sourced from Message rows,
+/// PLU-85). Read into every subsequent /negotiate + /draft context until it
+/// reaches a terminal state, and surfaced to operators for manual resolution.
+model ConversationObligation {
+  id         String                       @id @default(cuid())
+  instanceId String
+  type       ObligationType
+  status     ConversationObligationStatus @default(OPEN)
+
+  /// Verbatim wording as first raised (never overwritten — audit).
+  originalText String
+  /// Conservative dedup key: lowercase, trimmed, punctuation-stripped,
+  /// whitespace-collapsed form of originalText. A rephrase of a still-open
+  /// question collapses to the same key (updates the row); two genuinely
+  /// different asks stay two rows.
+  normalizedKey String
+  /// Optional light bucket (e.g. usage_rights, shipping, timeline), best-effort.
+  category String?
+  /// Short note / answer summary set on resolution.
+  resolution String?
+  /// Who resolved it: "ai" | "operator" | "system".
+  resolutionSource String?
+
+  /// The inbound Message row that raised it (a question's source), when known.
+  sourceMessageId String?
+  /// The SENT Message row that resolved it. Stamped at reserve time (intended
+  /// link, status unchanged) and only flipped to ANSWERED/COMPLETED once that
+  /// row's sentAt is set (flush). So a resolution can never precede delivery.
+  resolutionMessageId String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  /// Set ONLY on a terminal transition.
+  resolvedAt DateTime?
+
+  instance         ExecutionInstance @relation(fields: [instanceId], references: [id])
+  sourceMessage    Message?          @relation("ConversationObligationSource", fields: [sourceMessageId], references: [id])
+  resolutionMessage Message?         @relation("ConversationObligationResolution", fields: [resolutionMessageId], references: [id])
+
+  @@index([instanceId, status])
 }

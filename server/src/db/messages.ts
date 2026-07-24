@@ -1,6 +1,10 @@
 import { and, asc, eq, isNull, gt, lt, sql } from "drizzle-orm";
 import { db } from "./drizzle.js";
 import { messages, type Message, type MessageInsert } from "./schema.js";
+import {
+  resolveObligationsByResolutionMessage,
+  type DeferralClassifier,
+} from "./conversationObligations.js";
 
 export async function createMessage(data: MessageInsert): Promise<Message> {
   const rows = await db.insert(messages).values(data).returning();
@@ -41,25 +45,47 @@ export async function findMessageByIdempotencyKey(
 }
 
 /** Finalize a reserved outbound message after the email actually sent (FIX-11):
- *  attach the provider's message/thread id and stamp sentAt. */
+ *  attach the provider's message/thread id and stamp sentAt.
+ *
+ *  PLU-111 (§4.5 step 2, THE crux): the SENT gate for conversation obligations.
+ *  Stamping sentAt is the exact moment "the answer was actually sent" becomes
+ *  true, so we resolve every non-terminal obligation pointing at this message IN
+ *  THE SAME TRANSACTION — an ANSWERED/COMPLETED can therefore never accompany a
+ *  row without a real sentAt (never on draft generation, invariant #2). Idempotent:
+ *  resolveObligationsByResolutionMessage only flips non-terminal rows, so a BullMQ
+ *  retry of the flush finds them already terminal and no-ops.
+ *
+ *  `deferralClassifier` is injected by the flush path (idempotentSend) — it holds
+ *  the sent body and the §4.8 deferral vocabulary to decide, per open question,
+ *  answered-vs-deferred. Absent → every open question resolves to ANSWERED (still
+ *  correct; just without the deferral→commitment refinement). Kept OUT of this DB
+ *  module so messages.ts stays free of engine-layer imports. */
 export async function updateMessageSent(
   id: string,
   data: { externalMessageId: string; threadId: string },
+  deferralClassifier?: DeferralClassifier,
 ): Promise<Message> {
-  const rows = await db
-    .update(messages)
-    .set({
-      externalMessageId: data.externalMessageId,
-      threadId: data.threadId,
-      sentAt: new Date(),
-    })
-    .where(eq(messages.id, id))
-    .returning();
-  const updated = rows[0];
-  if (!updated) {
-    // Prisma threw P2025 here; a reserved row must exist.
-    throw new Error(`Message ${id} not found`);
-  }
+  const updated = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(messages)
+      .set({
+        externalMessageId: data.externalMessageId,
+        threadId: data.threadId,
+        sentAt: new Date(),
+      })
+      .where(eq(messages.id, id))
+      .returning();
+    const row = rows[0];
+    if (!row) {
+      // Prisma threw P2025 here; a reserved row must exist.
+      throw new Error(`Message ${id} not found`);
+    }
+    // Now that sentAt is set, resolve obligations this send answers/completes
+    // (§4.5). In the SAME tx so the two can never diverge (sentAt without the
+    // resolution, or vice versa).
+    await resolveObligationsByResolutionMessage(id, tx, deferralClassifier);
+    return row;
+  });
   return updated;
 }
 

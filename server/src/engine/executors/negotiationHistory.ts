@@ -1,4 +1,8 @@
-import type { Event, Message } from "../../db/schema.js";
+import type {
+  ConversationObligation,
+  Event,
+  Message,
+} from "../../db/schema.js";
 import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../types.js";
 import type { DraftHistoryEntry } from "../../adapters/negotiation/types.js";
 import { extractReplyText } from "./replyText.js";
@@ -313,4 +317,143 @@ export function computeOpenQuestions(
     }
   }
   return open;
+}
+
+// ---------------------------------------------------------------------------
+// PLU-111: Conversation-obligation plan builder + read (supersedes the diff)
+// ---------------------------------------------------------------------------
+// The obligation ledger (db/conversationObligations.ts) replaces the
+// event-diff computeOpenQuestions above as the source of truth for "what's
+// open". These are the PURE pieces the executor uses: normalize a question to
+// its dedup key, decide inserts-vs-touches for a turn's questions against the
+// existing open rows, and split non-terminal rows into the openQuestions /
+// openCommitments the AI context reads. Kept here (pure, no DB) so they unit-
+// test exactly like computeOpenQuestions. computeOpenQuestions itself is RETAINED
+// as the empty-table fallback (§4.7) until old instances drain (a follow-up).
+
+/**
+ * The conservative dedup key for an obligation (§4.3): lowercase, trimmed,
+ * punctuation-stripped, whitespace-collapsed. Collapses the trivial cross-turn
+ * rephrases the agent's own per-turn _normalize_questions can't see, WITHOUT
+ * fuzzy/semantic merging — two genuinely different asks keep distinct keys (a
+ * wrong merge silently drops a real question, the worse failure, invariant #3).
+ */
+export function normalizeObligationKey(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFKC")
+    // strip punctuation/symbols but keep letters, numbers, and whitespace.
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** One planned obligation write for the turn — pure, applied later in-tx. */
+export interface QuestionObligationPlanItem {
+  /** "insert" mints a new OPEN row; "touch" updates an existing open row. */
+  op: "insert" | "touch";
+  /** Present on "touch": the id of the existing open row to update. */
+  existingId?: string;
+  originalText: string;
+  normalizedKey: string;
+  category?: string | undefined;
+}
+
+/**
+ * Decide the create/update plan for a turn's creator questions against the
+ * instance's existing NON-TERMINAL obligations (§4.3, §4.4). Pure — the executor
+ * applies the plan inside stepInstance's transaction (§4.6).
+ *
+ *   - a question whose normalizedKey matches an existing open CREATOR_QUESTION
+ *     row → "touch" (a re-ask of a still-open question; no new row).
+ *   - otherwise → "insert" (a new open thread). A re-ask matching only a
+ *     TERMINAL row is NOT in existingOpenRows, so it correctly inserts (the
+ *     creator re-opened the thread).
+ *
+ * De-duplicates WITHIN the turn too: two incoming questions that normalize to
+ * the same key produce a single plan item (the first wording wins).
+ *
+ * @param categoryOf optional best-effort bucket for a question (§4.4 / O5).
+ */
+export function buildQuestionObligationPlan(
+  creatorQuestions: string[] | undefined,
+  existingOpenRows: ConversationObligation[],
+  categoryOf?: (question: string) => string | undefined,
+): QuestionObligationPlanItem[] {
+  const openByKey = new Map<string, ConversationObligation>();
+  for (const row of existingOpenRows) {
+    if (row.type !== "CREATOR_QUESTION") continue;
+    // First open row per key wins the touch target (there's at most one under
+    // the partial-unique index anyway).
+    if (!openByKey.has(row.normalizedKey)) openByKey.set(row.normalizedKey, row);
+  }
+
+  const plan: QuestionObligationPlanItem[] = [];
+  const seenThisTurn = new Set<string>();
+  for (const raw of creatorQuestions ?? []) {
+    if (typeof raw !== "string") continue;
+    const originalText = raw.trim();
+    if (!originalText) continue;
+    const normalizedKey = normalizeObligationKey(originalText);
+    if (!normalizedKey) continue;
+    if (seenThisTurn.has(normalizedKey)) continue; // collapse intra-turn repeats
+    seenThisTurn.add(normalizedKey);
+
+    const category = categoryOf?.(originalText);
+    const existing = openByKey.get(normalizedKey);
+    if (existing) {
+      plan.push({
+        op: "touch",
+        existingId: existing.id,
+        originalText,
+        normalizedKey,
+        ...(category ? { category } : {}),
+      });
+    } else {
+      plan.push({
+        op: "insert",
+        originalText,
+        normalizedKey,
+        ...(category ? { category } : {}),
+      });
+    }
+  }
+  return plan;
+}
+
+/** The AI-context read: non-terminal obligations split by type (§4.7). */
+export interface OpenObligations {
+  openQuestions: string[];
+  openCommitments: string[];
+}
+
+/**
+ * Split a set of NON-TERMINAL obligation rows into the openQuestions (fed to the
+ * /draft must-answer checklist, unchanged field) and openCommitments (the new
+ * "outstanding Pluvus commitments" block). Callers pass the rows from
+ * listOpenObligationsByInstance; this is pure so it's trivially testable.
+ * De-duplicated case-insensitively, order preserved (rows arrive chronological).
+ */
+export function buildOpenObligations(
+  rows: ConversationObligation[],
+): OpenObligations {
+  const openQuestions: string[] = [];
+  const openCommitments: string[] = [];
+  const seenQ = new Set<string>();
+  const seenC = new Set<string>();
+  for (const row of rows) {
+    const text = row.originalText.trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (row.type === "CREATOR_QUESTION") {
+      if (seenQ.has(key)) continue;
+      seenQ.add(key);
+      openQuestions.push(text);
+    } else if (row.type === "PLUVUS_COMMITMENT") {
+      if (seenC.has(key)) continue;
+      seenC.add(key);
+      openCommitments.push(text);
+    }
+  }
+  return { openQuestions, openCommitments };
 }

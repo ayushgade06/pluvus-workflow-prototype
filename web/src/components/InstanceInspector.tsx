@@ -16,8 +16,9 @@ import { MessageThread } from "./MessageThread";
 import { AgentDecisions } from "./AgentDecisions";
 import { LogsTrace } from "./LogsTrace";
 import { InstanceLlmUsage } from "./LlmUsagePanel";
+import { ObligationsPanel } from "./ObligationsPanel";
 
-type Tab = "timeline" | "messages" | "decisions" | "usage" | "logs";
+type Tab = "timeline" | "messages" | "decisions" | "obligations" | "usage" | "logs";
 
 interface Props {
   instanceId: string;
@@ -101,6 +102,12 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
         <TabButton label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} count={timeline.data?.entries.length} />
         <TabButton label="Messages" active={tab === "messages"} onClick={() => setTab("messages")} count={d?.messages.length} />
         <TabButton label="AI Decisions" active={tab === "decisions"} onClick={() => setTab("decisions")} count={d?.agentDecisions.length} />
+        <TabButton
+          label="Obligations"
+          active={tab === "obligations"}
+          onClick={() => setTab("obligations")}
+          count={d?.obligations?.filter((o) => o.open).length}
+        />
         <TabButton label="AI Usage" active={tab === "usage"} onClick={() => setTab("usage")} count={d?.llmUsage?.calls.length} />
         <TabButton label="Logs" active={tab === "logs"} onClick={() => setTab("logs")} count={logs.data?.trace.length} />
       </div>
@@ -123,6 +130,16 @@ export function InstanceInspector({ instanceId, onClose }: Props) {
           <>
             <SectionTitle>Agent Decisions</SectionTitle>
             {detail.isLoading ? <Spinner /> : <AgentDecisions decisions={d?.agentDecisions ?? []} />}
+          </>
+        )}
+        {tab === "obligations" && (
+          <>
+            <SectionTitle>Questions &amp; Commitments</SectionTitle>
+            {detail.isLoading ? (
+              <Spinner />
+            ) : (
+              <ObligationsPanel instanceId={instanceId} obligations={d?.obligations ?? []} />
+            )}
           </>
         )}
         {tab === "usage" && (

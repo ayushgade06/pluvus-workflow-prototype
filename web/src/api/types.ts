@@ -163,7 +163,48 @@ export interface InstanceDetail {
     totals: LlmUsageTotals;
     calls: LlmCallDTO[];
   };
+  // PLU-111: open creator questions + Pluvus commitments (and resolved history).
+  obligations: ConversationObligationDTO[];
 }
+
+// ---- Conversation obligations (PLU-111) ----
+// Distinct from the payout-ledger `Obligation` type below (money owed) — this is
+// a conversation thread owed (a creator question, or a Pluvus commitment).
+
+export type ObligationType = "CREATOR_QUESTION" | "PLUVUS_COMMITMENT";
+
+export type ConversationObligationStatus =
+  | "OPEN"
+  | "ANSWERED"
+  | "DEFERRED"
+  | "ESCALATED"
+  | "COMPLETED"
+  | "CANCELED"
+  | "NO_LONGER_RELEVANT";
+
+export interface ConversationObligationDTO {
+  id: string;
+  type: ObligationType;
+  status: ConversationObligationStatus;
+  /** True for OPEN/DEFERRED/ESCALATED — still in the AI context, still actionable. */
+  open: boolean;
+  originalText: string;
+  category: string | null;
+  resolution: string | null;
+  resolutionSource: string | null;
+  sourceMessageId: string | null;
+  resolutionMessageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+/** The terminal statuses an operator may set from the inspector. */
+export type ManualResolveStatus =
+  | "ANSWERED"
+  | "COMPLETED"
+  | "CANCELED"
+  | "NO_LONGER_RELEVANT";
 
 // ---- LLM usage (HARD-O1) ----
 

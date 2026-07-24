@@ -5,7 +5,7 @@
 // Polling lives here (refetchInterval) so the dashboard "feels alive" without
 // any websocket plumbing — Part 2 target is a 5–10s refresh.
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { withOperatorKey } from "./operatorKey";
 import type {
   WorkflowSummary,
@@ -16,6 +16,8 @@ import type {
   Logs,
   InstanceState,
   LlmUsageSummary,
+  ConversationObligationDTO,
+  ManualResolveStatus,
 } from "./types";
 
 const BASE = "/api/observability";
@@ -121,5 +123,53 @@ export function useLogs(id: string | null) {
     queryFn: () => getJson<Logs>(`${BASE}/logs/${id}`),
     enabled: !!id,
     refetchInterval: POLL_INTERVAL_MS,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PLU-111 — operator manual resolution of a conversation obligation
+// ---------------------------------------------------------------------------
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(
+    url,
+    withOperatorKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = JSON.stringify(await res.json());
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status} ${res.statusText} ${detail}`.trim());
+  }
+  return (await res.json()) as T;
+}
+
+/** Resolve one obligation to a terminal status (operator action). Invalidates the
+ *  instance detail so the inspector reflects the new status immediately. */
+export function useResolveObligation(instanceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      obligationId: string;
+      status: ManualResolveStatus;
+      resolution?: string;
+    }) =>
+      postJson<{ obligation: ConversationObligationDTO }>(
+        `${BASE}/instances/${instanceId}/obligations/${vars.obligationId}/resolve`,
+        {
+          status: vars.status,
+          ...(vars.resolution ? { resolution: vars.resolution } : {}),
+        },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["instance", instanceId] });
+    },
   });
 }
