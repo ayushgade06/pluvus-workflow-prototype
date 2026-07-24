@@ -1,6 +1,11 @@
 // Input / Textarea / Select — design-system form controls.
 // They forward every native prop (value, onChange, onBlur, etc.) untouched, so
 // dropping them into existing forms changes appearance only, never behaviour.
+// Input and Textarea also forward a `ref` to the underlying element (via
+// forwardRef) so callers that need the DOM node — e.g. caret-aware variable
+// insertion in the outreach composer — can reach it. Callers that don't pass a
+// ref are unaffected.
+import { forwardRef } from "react";
 import type {
   InputHTMLAttributes,
   TextareaHTMLAttributes,
@@ -23,15 +28,14 @@ const base: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-export function Input({
-  invalid,
-  style,
-  className,
-  ...rest
-}: InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }) {
+export const Input = forwardRef<
+  HTMLInputElement,
+  InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }
+>(function Input({ invalid, style, className, ...rest }, ref) {
   return (
     <input
       {...rest}
+      ref={ref}
       className={`ds-input ds-focusable${className ? ` ${className}` : ""}`}
       style={{
         ...base,
@@ -40,17 +44,16 @@ export function Input({
       }}
     />
   );
-}
+});
 
-export function Textarea({
-  invalid,
-  style,
-  className,
-  ...rest
-}: TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean }) {
+export const Textarea = forwardRef<
+  HTMLTextAreaElement,
+  TextareaHTMLAttributes<HTMLTextAreaElement> & { invalid?: boolean }
+>(function Textarea({ invalid, style, className, ...rest }, ref) {
   return (
     <textarea
       {...rest}
+      ref={ref}
       className={`ds-input ds-focusable${className ? ` ${className}` : ""}`}
       style={{
         ...base,
@@ -61,7 +64,7 @@ export function Textarea({
       }}
     />
   );
-}
+});
 
 export function Select({
   invalid,

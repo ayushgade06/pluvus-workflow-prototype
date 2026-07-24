@@ -279,9 +279,19 @@ export class AgentProviderAdapter implements IAgentProvider {
       // HARD-N2: prior conversation (both sides) + answered-questions ledger.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // PLU-111: outstanding Pluvus commitments to honor or update.
+      openCommitments?: string[];
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
+      // drafting-humanization (§Conversation State): style hints so the offer copy
+      // states deltas (not full state) and warms up across the thread. Both purely
+      // stylistic; absent = today's behavior.
+      changedFields?: string[];
+      relationshipWarmth?: string;
+      // Option A (negotiate→draft answer sync): the /negotiate model's own vetted
+      // reply, so the copy rephrases approved answers instead of inventing them.
+      negotiatorAnswers?: string;
     },
   ): Promise<EmailDraft | null> {
     // PLU-109: the CSV import accepts creator-discovery vendor exports carrying
@@ -316,9 +326,22 @@ export class AgentProviderAdapter implements IAgentProvider {
       // unanswered question rather than dropping it.
       history: extra?.history,
       openQuestions: extra?.openQuestions,
+      // PLU-111: forward outstanding Pluvus commitments so /draft renders the
+      // "honor or update these commitments" block. Undefined → the Python default
+      // ([]) keeps the copy byte-identical for callers that pass none.
+      openCommitments: extra?.openCommitments,
       // Q3 (founder, autonomous launch): forward the final-round flag so the
       // Python offer prompt renders the "this is our final rate" copy.
       isFinalRound: extra?.isFinalRound,
+      // drafting-humanization (§Conversation State): forward the style hints so the
+      // Python offer prompt renders the say-only-what-changed hint + warmth rung.
+      // Both default safely agent-side when absent (empty delta / "new" warmth).
+      changedFields: extra?.changedFields,
+      relationshipWarmth: extra?.relationshipWarmth,
+      // Option A: forward the negotiator's vetted answers so /draft renders the
+      // authoritative <vetted_answers> block. Undefined → Python default (None)
+      // omits the block, so the copy is byte-identical for callers that pass none.
+      negotiatorAnswers: extra?.negotiatorAnswers,
       // Strip the internal price band before handing config to the copy
       // generator. The negotiation prompt is told to keep floor/ceiling
       // secret, but the draft endpoint was being handed the raw band

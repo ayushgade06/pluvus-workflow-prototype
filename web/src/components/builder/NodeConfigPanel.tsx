@@ -11,7 +11,7 @@ import {
   Badge,
 } from "../ds";
 import { stateColor, stateLabel } from "../../theme";
-import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "./nodeMeta";
+import { nodeLabel, nodeIconComponent, nodeColor, nodeDescription } from "./nodeMeta";
 import type {
   DraftNode,
   InitialOutreachConfig,
@@ -20,10 +20,30 @@ import type {
   RewardSetupConfig,
   ContentBriefConfig,
 } from "../../api/builderTypes";
-import { uploadFile } from "../../api/builderClient";
+import { uploadFile, generateOutreachTemplate } from "../../api/builderClient";
+import {
+  REQUIRED_OUTREACH_VARIABLE_NAMES,
+  type OutreachVariable,
+  PREVIEW_SAMPLE,
+  renderOutreachPreview,
+  extractUnknownTokens,
+  unavailableUsedTokens,
+  availableOutreachVariables,
+  validateOutreachConfig,
+} from "../../workflow/outreachVariables";
 
 interface Props {
   node: DraftNode;
+  /** Owning workflow — needed by the outreach AI-assist proxy route (PLU-117). */
+  workflowId: string;
+  /**
+   * The parent campaign's brand + name (PLU-117). Threaded so the outreach
+   * builder resolves {{brandName}}/{{senderName}}/{{campaignName}} to the REAL
+   * campaign values in the preview — the same values the server stamps at
+   * save/publish — instead of a blank or an internal fallback.
+   */
+  campaignBrand?: string | null;
+  campaignName?: string | null;
   onUpdate: (nodeId: string, config: Record<string, unknown>) => void;
   onDelete: (nodeId: string) => void;
   onMoveUp: (nodeId: string) => void;
@@ -37,6 +57,9 @@ interface Props {
 
 export function NodeConfigPanel({
   node,
+  workflowId,
+  campaignBrand = null,
+  campaignName = null,
   onUpdate,
   onDelete,
   onMoveUp,
@@ -49,6 +72,7 @@ export function NodeConfigPanel({
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const color = nodeColor(node.type);
+  const Icon = nodeIconComponent(node.type);
 
   return (
     <div
@@ -84,19 +108,19 @@ export function NodeConfigPanel({
           <span
             aria-hidden
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 9,
-              background: `${color}1c`,
-              border: `1px solid ${color}26`,
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: `${color}2e`,
+              border: `1.5px solid ${colors.cardBorder}`,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 16,
+              color: colors.text,
               flexShrink: 0,
             }}
           >
-            {nodeIcon(node.type)}
+            <Icon size={18} strokeWidth={2.25} />
           </span>
           <div style={{ minWidth: 0 }}>
             <div
@@ -123,7 +147,13 @@ export function NodeConfigPanel({
 
       {/* Config form */}
       <div style={{ flex: 1, overflow: "auto", padding: "20px" }}>
-        <NodeForm node={node} onUpdate={onUpdate} />
+        <NodeForm
+          node={node}
+          workflowId={workflowId}
+          campaignBrand={campaignBrand}
+          campaignName={campaignName}
+          onUpdate={onUpdate}
+        />
       </div>
 
       {/* Sticky save status */}
@@ -214,9 +244,15 @@ export function NodeConfigPanel({
 
 function NodeForm({
   node,
+  workflowId,
+  campaignBrand,
+  campaignName,
   onUpdate,
 }: {
   node: DraftNode;
+  workflowId: string;
+  campaignBrand?: string | null;
+  campaignName?: string | null;
   onUpdate: (id: string, cfg: Record<string, unknown>) => void;
 }) {
   switch (node.type) {
@@ -224,6 +260,9 @@ function NodeForm({
       return (
         <InitialOutreachForm
           nodeId={node.id}
+          workflowId={workflowId}
+          campaignBrand={campaignBrand ?? null}
+          campaignName={campaignName ?? null}
           config={node.config as InitialOutreachConfig}
           onUpdate={onUpdate}
         />
@@ -273,65 +312,684 @@ function NodeForm({
 
 function InitialOutreachForm({
   nodeId,
+  workflowId,
+  campaignBrand,
+  campaignName,
   config,
   onUpdate,
 }: {
   nodeId: string;
+  workflowId: string;
+  campaignBrand?: string | null;
+  campaignName?: string | null;
   config: InitialOutreachConfig;
   onUpdate: (id: string, cfg: Record<string, unknown>) => void;
 }) {
+  // PLU-117: the config the builder resolves against for the PREVIEW / palette /
+  // availability. The node config may not carry brandName/senderName/campaignName
+  // until the next save (the server stamps them via restampBrand +
+  // stampOutreachDerivedFields), so we overlay the campaign's real values here —
+  // config still WINS when it already has a value — so the operator sees exactly
+  // what will be sent instead of a blank or an internal fallback.
+  const previewConfig: Record<string, unknown> = { ...(config as unknown as Record<string, unknown>) };
+  const fillIf = (key: string, val: string | null | undefined): void => {
+    const cur = previewConfig[key];
+    if ((typeof cur !== "string" || cur.trim() === "") && typeof val === "string" && val.trim() !== "") {
+      previewConfig[key] = val;
+    }
+  };
+  fillIf("brandName", campaignBrand);
+  fillIf("senderName", campaignBrand);
+  fillIf("campaignName", campaignName);
+  // Absent mode is treated as "ai" (legacy default, matches the executor). New
+  // nodes are stamped "manual" by nodeDefaults, so this branch only affects
+  // already-created legacy drafts, which stay on AI until the operator switches.
+  const [mode, setMode] = useState<"manual" | "ai">(config.outreachMode ?? "ai");
   const [subject, setSubject] = useState(config.subjectTemplate ?? "");
   const [body, setBody] = useState(config.bodyTemplate ?? "");
   const subjectId = useId();
   const bodyId = useId();
 
+  // Refs + last-focused tracking so the variable palette inserts a {{token}} at
+  // the caret of whichever field the operator last touched.
+  const subjectRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const focusedRef = useRef<"subject" | "body">("body");
+
   useEffect(() => {
+    setMode(config.outreachMode ?? "ai");
     setSubject(config.subjectTemplate ?? "");
     setBody(config.bodyTemplate ?? "");
-  }, [nodeId, config.subjectTemplate, config.bodyTemplate]);
+  }, [nodeId, config.outreachMode, config.subjectTemplate, config.bodyTemplate]);
 
-  // Identical payload to before: spread config, override subject/body.
-  function flush() {
+  // Spread config, override mode + subject/body. `over` lets us flush a value
+  // that hasn't round-tripped through state yet (mode toggle, palette insert).
+  function flush(over?: Partial<InitialOutreachConfig>) {
     onUpdate(nodeId, {
       ...config,
+      outreachMode: mode,
       subjectTemplate: subject,
       bodyTemplate: body,
+      ...over,
     });
   }
 
+  function selectMode(next: "manual" | "ai") {
+    setMode(next);
+    flush({ outreachMode: next });
+  }
+
+  // Insert `{{name}}` at the caret of the last-focused field. Splices into the
+  // string, updates state, flushes, and restores the caret after the token.
+  function insertVariable(name: string) {
+    const token = `{{${name}}}`;
+    const target = focusedRef.current;
+    if (target === "subject") {
+      const el = subjectRef.current;
+      const at = el?.selectionStart ?? subject.length;
+      const next = subject.slice(0, at) + token + subject.slice(el?.selectionEnd ?? at);
+      setSubject(next);
+      flush({ subjectTemplate: next });
+      requestAnimationFrame(() => {
+        if (el) {
+          el.focus();
+          const pos = at + token.length;
+          el.setSelectionRange(pos, pos);
+        }
+      });
+    } else {
+      const el = bodyRef.current;
+      const at = el?.selectionStart ?? body.length;
+      const next = body.slice(0, at) + token + body.slice(el?.selectionEnd ?? at);
+      setBody(next);
+      flush({ bodyTemplate: next });
+      requestAnimationFrame(() => {
+        if (el) {
+          el.focus();
+          const pos = at + token.length;
+          el.setSelectionRange(pos, pos);
+        }
+      });
+    }
+  }
+
+  // Live validation against the effective config so inline errors mirror what
+  // the publish check will report.
+  const validationIssue = validateOutreachConfig({
+    outreachMode: mode,
+    subjectTemplate: subject,
+    bodyTemplate: body,
+  });
+  const subjectError = validationIssue?.field === "subject" ? validationIssue.message : undefined;
+  const bodyError = validationIssue?.field === "body" ? validationIssue.message : undefined;
+
+  const isManual = mode === "manual";
+
+  // --- PLU-117 §4.3: AI-assist (template authoring, manual mode only) ---------
+  // The AI helps author/revise the ONE reusable template at SETUP time. Its
+  // output NEVER auto-sends: it proposes copy, the operator explicitly Applies it
+  // (confirm-before-overwrite so a revise can't silently clobber edits), and a
+  // one-step Undo restores the prior copy. Every send is still the operator's
+  // approved template with only placeholders swapped.
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [proposal, setProposal] = useState<{
+    subject: string;
+    body: string;
+    alternateSubjects: string[];
+    flaggedPlaceholders: string[];
+  } | null>(null);
+  // Snapshot of the copy BEFORE the last Apply, for one-step Undo.
+  const [undoState, setUndoState] = useState<{ subject: string; body: string } | null>(null);
+
+  async function runAi(over?: { instruction?: string; includeCurrent?: boolean }) {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const instr = over?.instruction ?? (instruction.trim() || undefined);
+      // Include the current copy as context when REVISING (an instruction present,
+      // or the operator already has copy) so the model improves rather than
+      // discards edits. A blank generate from scratch omits it.
+      const revising = !!instr || subject.trim().length > 0 || body.trim().length > 0;
+      const result = await generateOutreachTemplate(workflowId, {
+        ...(instr ? { instruction: instr } : {}),
+        ...(revising && subject.trim() ? { currentSubject: subject } : {}),
+        ...(revising && body.trim() ? { currentBody: body } : {}),
+      });
+      setProposal(result);
+    } catch (err) {
+      setAiError(
+        err instanceof Error && /400/.test(err.message)
+          ? "That instruction looks like a prompt-injection attempt — rephrase it."
+          : "Couldn't generate a template right now. Try again in a moment.",
+      );
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  // Apply the proposed subject+body over the current copy (with an Undo snapshot).
+  function applyProposal() {
+    if (!proposal) return;
+    setUndoState({ subject, body });
+    setSubject(proposal.subject);
+    setBody(proposal.body);
+    flush({ subjectTemplate: proposal.subject, bodyTemplate: proposal.body });
+    setProposal(null);
+  }
+
+  // Apply just an alternate subject line (no body change, still undoable).
+  function applyAlternateSubject(alt: string) {
+    setUndoState({ subject, body });
+    setSubject(alt);
+    flush({ subjectTemplate: alt });
+  }
+
+  function undoApply() {
+    if (!undoState) return;
+    setSubject(undoState.subject);
+    setBody(undoState.body);
+    flush({ subjectTemplate: undoState.subject, bodyTemplate: undoState.body });
+    setUndoState(null);
+  }
+
+  // Required placeholders (creatorName / brandName) the template USES — warn the
+  // operator that a creator whose value is blank will be skipped (PLU-117 §3).
+  const usedRequired = [
+    ...new Set(
+      [...(subject + " " + body).matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)]
+        .map((m) => m[1]!)
+        .filter((name) => REQUIRED_OUTREACH_VARIABLE_NAMES.has(name)),
+    ),
+  ];
+
   return (
     <FormStack>
-      <InfoBox>
-        The first email sent to each creator is written by the AI, personalized from your campaign
-        details (brand, deliverables, reward, deal terms). The subject and body below are an{" "}
-        <strong>optional fallback</strong> — used only if AI generation is unavailable. Leave them
-        blank to use the built-in default. Fallback text supports template variables:{" "}
-        <Code>{"{{creatorName}}"}</Code>, <Code>{"{{brandName}}"}</Code>,{" "}
-        <Code>{"{{rewardDescription}}"}</Code> (the campaign's product/sample reward, blank when
-        none).
-      </InfoBox>
-      <Section title="Fallback message (optional)">
-        <FormField label="Subject Line" htmlFor={subjectId}>
+      <OutreachModeToggle mode={mode} onSelect={selectMode} />
+
+      {isManual ? (
+        <InfoBox>
+          You are writing the exact first email each creator receives. It is sent{" "}
+          <strong>verbatim</strong> after variables are filled in — the AI does not rewrite it. Use
+          the variables below to personalize it; leave money out (rates are negotiated on reply).
+        </InfoBox>
+      ) : (
+        <InfoBox>
+          The first email is written by the <strong>AI</strong>, personalized from your campaign
+          details. The subject and body below are an <strong>optional fallback</strong>, used only if
+          AI generation is unavailable. Switch to <strong>Write it myself</strong> above to send your
+          own copy instead.
+        </InfoBox>
+      )}
+
+      {isManual && (
+        <OutreachAiAssist
+          loading={aiLoading}
+          error={aiError}
+          instruction={instruction}
+          onInstruction={setInstruction}
+          onGenerate={() => runAi()}
+          onQuickInstruction={(i) => runAi({ instruction: i })}
+          proposal={proposal}
+          onApply={applyProposal}
+          onDiscard={() => setProposal(null)}
+          onApplyAlternate={applyAlternateSubject}
+          canUndo={!!undoState}
+          onUndo={undoApply}
+          hasCopy={subject.trim().length > 0 || body.trim().length > 0}
+        />
+      )}
+
+      <VariablePalette onInsert={insertVariable} config={previewConfig} />
+
+      <Section title={isManual ? "Your outreach email" : "Fallback message (optional)"}>
+        <FormField label="Subject Line" htmlFor={subjectId} error={subjectError}>
           <Input
             id={subjectId}
+            ref={subjectRef}
             value={subject}
+            invalid={!!subjectError}
+            onFocus={() => (focusedRef.current = "subject")}
             onChange={(e) => setSubject(e.target.value)}
-            onBlur={flush}
+            onBlur={() => flush()}
             placeholder="e.g. Partnership opportunity with {{brandName}}"
           />
         </FormField>
-        <FormField label="Email Body" htmlFor={bodyId} hint="Plain text. Template variables are supported.">
+        <FormField
+          label="Email Body"
+          htmlFor={bodyId}
+          hint="Plain text. Click a variable above to insert it at your cursor."
+          error={bodyError}
+        >
           <Textarea
             id={bodyId}
+            ref={bodyRef}
             value={body}
+            invalid={!!bodyError}
+            onFocus={() => (focusedRef.current = "body")}
             onChange={(e) => setBody(e.target.value)}
-            onBlur={flush}
-            rows={10}
-            placeholder="Leave blank to use the built-in default…"
+            onBlur={() => flush()}
+            rows={12}
+            placeholder={
+              isManual
+                ? "Hi {{creatorName}},\n\nWrite your outreach here…"
+                : "Leave blank to use the built-in default…"
+            }
           />
         </FormField>
       </Section>
+
+      {isManual && usedRequired.length > 0 && (
+        <InfoBox>
+          This template uses{" "}
+          {usedRequired.map((v, i) => (
+            <span key={v}>
+              {i > 0 && ", "}
+              <Code>{`{{${v}}}`}</Code>
+            </span>
+          ))}
+          , which {usedRequired.length > 1 ? "are" : "is"} <strong>required</strong>. A creator
+          whose value is missing is <strong>skipped and sent to Manual Review</strong> rather than
+          emailed a broken sentence — the others still send.
+        </InfoBox>
+      )}
+
+      <OutreachPreview subject={subject} body={body} config={previewConfig} />
     </FormStack>
+  );
+}
+
+// PLU-117 §4.3: AI-assist panel for authoring/revising the reusable template. AI
+// operates at the TEMPLATE level (not per-creator). It proposes copy; the operator
+// Applies it (confirm-before-overwrite) — nothing here is ever auto-sent.
+const QUICK_INSTRUCTIONS = [
+  "Make it shorter",
+  "Make it more casual",
+  "Remove marketing language",
+  "Suggest alternate subject lines",
+] as const;
+
+function OutreachAiAssist({
+  loading,
+  error,
+  instruction,
+  onInstruction,
+  onGenerate,
+  onQuickInstruction,
+  proposal,
+  onApply,
+  onDiscard,
+  onApplyAlternate,
+  canUndo,
+  onUndo,
+  hasCopy,
+}: {
+  loading: boolean;
+  error: string | null;
+  instruction: string;
+  onInstruction: (v: string) => void;
+  onGenerate: () => void;
+  onQuickInstruction: (i: string) => void;
+  proposal: {
+    subject: string;
+    body: string;
+    alternateSubjects: string[];
+    flaggedPlaceholders: string[];
+  } | null;
+  onApply: () => void;
+  onDiscard: () => void;
+  onApplyAlternate: (alt: string) => void;
+  canUndo: boolean;
+  onUndo: () => void;
+  hasCopy: boolean;
+}) {
+  const instrId = useId();
+  return (
+    <Section title="AI assist">
+      <div
+        style={{
+          border: `1px solid ${colors.border}`,
+          borderRadius: radii.md,
+          background: colors.bg,
+          padding: "14px 16px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+      >
+        <div style={{ fontSize: font.size.sm, color: colors.textMuted, lineHeight: 1.6 }}>
+          AI helps you write <strong>one</strong> reusable template from your campaign details — it
+          does not write a different email per creator. Generate a starting point or refine what you
+          have, then edit and preview below. Nothing is sent until you publish.
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <Button size="sm" variant="secondary" onClick={onGenerate} disabled={loading}>
+            {loading ? "Generating…" : hasCopy ? "Regenerate template" : "Generate template with AI"}
+          </Button>
+          {canUndo && (
+            <Button size="sm" variant="ghost" onClick={onUndo} disabled={loading}>
+              Undo
+            </Button>
+          )}
+        </div>
+
+        <FormField
+          label="Improve it"
+          htmlFor={instrId}
+          hint='Tell the AI how to revise your current copy — e.g. "make it shorter".'
+        >
+          <Input
+            id={instrId}
+            value={instruction}
+            onChange={(e) => onInstruction(e.target.value)}
+            placeholder="e.g. make it warmer and more concise"
+            disabled={loading}
+          />
+        </FormField>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {QUICK_INSTRUCTIONS.map((q) => (
+            <button
+              key={q}
+              type="button"
+              disabled={loading}
+              onClick={() => onQuickInstruction(q)}
+              className="ds-focusable"
+              style={{
+                cursor: loading ? "default" : "pointer",
+                fontSize: 11,
+                background: colors.panelAlt,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 4,
+                padding: "4px 9px",
+                color: colors.text,
+                opacity: loading ? 0.5 : 1,
+              }}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+
+        {error && (
+          <div style={{ fontSize: font.size.xs, color: colors.danger }}>{error}</div>
+        )}
+
+        {proposal && (
+          <div
+            style={{
+              border: `1px solid ${colors.border}`,
+              borderRadius: radii.md,
+              background: colors.panel,
+              padding: "12px 14px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div
+              style={{
+                fontSize: font.size.xs,
+                fontWeight: font.weight.semibold,
+                textTransform: "uppercase",
+                letterSpacing: 0.6,
+                color: colors.textDim,
+              }}
+            >
+              Proposed template
+            </div>
+            <div style={{ fontSize: font.size.sm, fontWeight: font.weight.semibold, color: colors.text }}>
+              {proposal.subject}
+            </div>
+            <div
+              style={{
+                fontSize: font.size.sm,
+                color: colors.textMuted,
+                whiteSpace: "pre-wrap",
+                lineHeight: 1.6,
+              }}
+            >
+              {proposal.body}
+            </div>
+
+            {proposal.flaggedPlaceholders.length > 0 && (
+              <div style={{ fontSize: font.size.xs, color: colors.danger }}>
+                The AI used unsupported placeholder
+                {proposal.flaggedPlaceholders.length > 1 ? "s" : ""}:{" "}
+                {proposal.flaggedPlaceholders.map((p) => `{{${p}}}`).join(", ")} — these are removed
+                when sent. Replace or remove them.
+              </div>
+            )}
+
+            {proposal.alternateSubjects.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: font.size.xs, color: colors.textDim }}>
+                  Alternate subject lines
+                </span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {proposal.alternateSubjects.map((alt) => (
+                    <button
+                      key={alt}
+                      type="button"
+                      onClick={() => onApplyAlternate(alt)}
+                      className="ds-focusable"
+                      style={{
+                        cursor: "pointer",
+                        fontSize: 11,
+                        background: colors.panelAlt,
+                        border: `1px solid ${colors.border}`,
+                        borderRadius: 4,
+                        padding: "4px 9px",
+                        color: colors.text,
+                        textAlign: "left",
+                      }}
+                      title="Use this subject line"
+                    >
+                      {alt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button size="sm" variant="primary" onClick={onApply}>
+                Apply to fields
+              </Button>
+              <Button size="sm" variant="ghost" onClick={onDiscard}>
+                Discard
+              </Button>
+            </div>
+            <div style={{ fontSize: font.size.xs, color: colors.textDim }}>
+              Applying replaces your current subject and body. You can Undo once after.
+            </div>
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
+// Segmented control: manual vs AI. Manual is the recommended, product-default
+// path (each new node ships manual); AI is the opt-in fallback path.
+function OutreachModeToggle({
+  mode,
+  onSelect,
+}: {
+  mode: "manual" | "ai";
+  onSelect: (m: "manual" | "ai") => void;
+}) {
+  const options: { key: "manual" | "ai"; label: string; sub: string }[] = [
+    { key: "manual", label: "Write it myself", sub: "Recommended — your copy is sent as-is" },
+    { key: "ai", label: "Let AI write it", sub: "The AI drafts the first email" },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Outreach mode"
+      style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+    >
+      {options.map((o) => {
+        const active = mode === o.key;
+        return (
+          <button
+            key={o.key}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onSelect(o.key)}
+            className="ds-focusable"
+            style={{
+              textAlign: "left",
+              cursor: "pointer",
+              padding: "12px 14px",
+              borderRadius: radii.md,
+              border: `1px solid ${active ? colors.accent : colors.border}`,
+              background: active ? colors.accentWash : colors.panel,
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+            }}
+          >
+            <span
+              style={{
+                fontSize: font.size.sm,
+                fontWeight: font.weight.semibold,
+                color: active ? colors.accent : colors.text,
+              }}
+            >
+              {o.label}
+            </span>
+            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{o.sub}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Click-to-insert palette of the allowed template variables, grouped. Each chip
+// inserts its {{token}} at the caret of the last-focused field.
+function VariablePalette({
+  onInsert,
+  config,
+}: {
+  onInsert: (name: string) => void;
+  config: Record<string, unknown>;
+}) {
+  const groups: OutreachVariable["group"][] = ["Creator", "Brand", "Campaign"];
+  // PLU-117: only offer variables that will resolve to a real value for this
+  // campaign — a placeholder the brand didn't fill in (e.g. {{campaignName}} with
+  // no campaign name) would render blank, so it isn't shown at all.
+  const available = availableOutreachVariables(config);
+  const shownGroups = groups.filter((g) => available.some((v) => v.group === g));
+  return (
+    <Section title="Insert a variable">
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {shownGroups.map((g) => (
+          <div key={g} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: font.size.xs, color: colors.textDim }}>{g}</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {available.filter((v) => v.group === g).map((v) => (
+                <button
+                  key={v.name}
+                  type="button"
+                  title={`${v.label} (${v.fallbackNote})`}
+                  onClick={() => onInsert(v.name)}
+                  className="mono ds-focusable"
+                  style={{
+                    cursor: "pointer",
+                    fontSize: 11,
+                    background: colors.panelAlt,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: 4,
+                    padding: "3px 7px",
+                    color: colors.text,
+                  }}
+                >
+                  {`{{${v.name}}}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// Read-only live preview: resolves variables against the campaign's real brand/
+// campaign values (on config) + sample creator values, mirroring the server
+// send-time render. Unknown {{tokens}} are highlighted so a typo is obvious.
+function OutreachPreview({
+  subject,
+  body,
+  config,
+}: {
+  subject: string;
+  body: string;
+  // The effective preview config (node config + the campaign's real brand/name).
+  config: Record<string, unknown>;
+}) {
+  const cfg = config;
+  const previewSubject = renderOutreachPreview(subject, cfg);
+  const previewBody = renderOutreachPreview(body, cfg);
+  const unknown = [
+    ...new Set([...extractUnknownTokens(subject), ...extractUnknownTokens(body)]),
+  ];
+  // PLU-117: known placeholders the brand didn't fill in — they render as a blank
+  // gap. Flag them so the operator removes/fills them instead of shipping a
+  // sentence with a hole ("upcoming  campaign").
+  const unavailable = unavailableUsedTokens(subject, body, cfg);
+
+  return (
+    <Section title="Preview">
+      <div
+        style={{
+          border: `1px solid ${colors.border}`,
+          borderRadius: radii.md,
+          background: colors.bg,
+          padding: "14px 16px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 10,
+        }}
+      >
+        <div style={{ fontSize: font.size.xs, color: colors.textDim }}>
+          Sample creator: {PREVIEW_SAMPLE.creatorName} ({PREVIEW_SAMPLE.platform},{" "}
+          {PREVIEW_SAMPLE.niche})
+        </div>
+        <div style={{ fontSize: font.size.sm, fontWeight: font.weight.semibold, color: colors.text }}>
+          {previewSubject || <span style={{ color: colors.textDim }}>No subject</span>}
+        </div>
+        <div
+          style={{
+            fontSize: font.size.sm,
+            color: colors.textMuted,
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.6,
+          }}
+        >
+          {previewBody || <span style={{ color: colors.textDim }}>No body</span>}
+        </div>
+        {unavailable.length > 0 && (
+          <div style={{ fontSize: font.size.xs, color: colors.danger }}>
+            No value for {unavailable.map((u) => `{{${u}}}`).join(", ")} in this campaign — {}
+            {unavailable.length > 1 ? "they render" : "it renders"} blank. Remove{" "}
+            {unavailable.length > 1 ? "them" : "it"} or add the value to the campaign.
+          </div>
+        )}
+        {unknown.length > 0 && (
+          <div style={{ fontSize: font.size.xs, color: colors.danger }}>
+            Unknown variable{unknown.length > 1 ? "s" : ""}:{" "}
+            {unknown.map((u) => `{{${u}}}`).join(", ")} — these are removed when sent. Fix or remove
+            them before publishing.
+          </div>
+        )}
+      </div>
+    </Section>
   );
 }
 

@@ -7,6 +7,7 @@
 // Dispute badge + unpaid highlighting.
 
 import { useState } from "react";
+import { Handshake } from "lucide-react";
 import type { PartnershipListItem } from "../../api/types";
 import { formatCents } from "../../api/partnersClient";
 import { colors, font, radii } from "../../theme";
@@ -79,7 +80,7 @@ export function PartnersList({ partnerships, selectedId, onSelect, onRefresh }: 
       {/* Empty state */}
       {sorted.length === 0 && (
         <EmptyState
-          icon="🤝"
+          icon={<Handshake size={24} strokeWidth={1.75} color={colors.textMuted} />}
           title="No partners yet"
           description="Partners appear here when creators complete the workflow and submit their payout info."
         />

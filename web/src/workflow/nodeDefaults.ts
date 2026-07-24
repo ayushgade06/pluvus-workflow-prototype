@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import type { NodeType, NodeConfig } from "../api/builderTypes";
-import { nodeLabel, nodeIcon, nodeColor, nodeDescription } from "../components/builder/nodeMeta";
+import { nodeLabel, nodeColor, nodeDescription } from "../components/builder/nodeMeta";
 
 // Types a user may add from the palette. IMPORT_CREATOR_LIST is an implicit
 // entry concept (creators enroll into the first node) and END is legacy, so the
@@ -27,7 +27,6 @@ export const PALETTE_NODE_TYPES: NodeType[] = [
 export interface PaletteItem {
   type: NodeType;
   label: string;
-  icon: string;
   color: string;
   description: string;
 }
@@ -36,7 +35,6 @@ export function paletteItems(): PaletteItem[] {
   return PALETTE_NODE_TYPES.map((type) => ({
     type,
     label: nodeLabel(type),
-    icon: nodeIcon(type),
     color: nodeColor(type),
     description: nodeDescription(type),
   }));
@@ -49,10 +47,14 @@ export function paletteItems(): PaletteItem[] {
 export function defaultConfigFor(type: NodeType): NodeConfig {
   switch (type) {
     case "INITIAL_OUTREACH":
+      // Ships manual-first: the operator writes the first email and it's sent
+      // as-is. The starter copy is a genuine, sendable first-touch (no price —
+      // rates are negotiated on reply) rather than a placeholder.
       return {
+        outreachMode: "manual",
         subjectTemplate: "Partnership opportunity with {{brandName}}",
         bodyTemplate:
-          "Hi {{creatorName}},\n\nWe'd love to work with you. Interested in learning more?\n\nBest,\n{{brandName}} Team",
+          "Hi {{creatorName}},\n\nI'm reaching out from {{brandName}} — we've been enjoying your {{platform}} content and think there could be a great fit for a partnership.\n\nWould you be open to hearing the details? Happy to share what we have in mind.\n\nBest,\n{{senderName}}",
         delaySeconds: 0,
       };
     case "FOLLOW_UP":

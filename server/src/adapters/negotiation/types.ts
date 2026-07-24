@@ -28,6 +28,22 @@ export interface NegotiationRequest {
    * and sanitized agent-side. Empty/absent on the first turn → behaves as before.
    */
   conversationHistory?: DraftHistoryEntry[];
+  /**
+   * PLU-111: outstanding commitments Pluvus has made and not yet fulfilled
+   * (non-terminal PLUVUS_COMMITMENT obligations), e.g. "I'll confirm the usage
+   * rights". Threaded so the money-decision model knows it still owes an action.
+   * Rendered agent-side as sanitized DATA (like conversationHistory), NEVER a
+   * money input. Empty/absent → behaves as before.
+   */
+  openCommitments?: string[];
+  /**
+   * classify→negotiate hint: the intent the first-reply classifier assigned to the
+   * reply being negotiated (POSITIVE / QUESTION / DEFERRED / …). A SOFT advisory
+   * signal the agent renders as a one-line prompt hint — never a money input and
+   * never an override of the decision guards. Absent for a mid-negotiation reply
+   * (round >= 1 skips classify) or an un-classified row → agent renders no hint.
+   */
+  intent?: string;
   campaignConstraints: {
     /**
      * The floor of the fee band — "Preferred Budget" in the product (V1 #1):
@@ -166,12 +182,44 @@ export interface DraftRequest {
   history?: DraftHistoryEntry[] | undefined;
   /** HARD-N2 answered-questions ledger: questions the creator raised in EARLIER
    *  rounds that our prior emails never answered, re-surfaced so they aren't
-   *  silently dropped. Distinct from creatorQuestions (this turn's asks). */
+   *  silently dropped. Distinct from creatorQuestions (this turn's asks).
+   *  PLU-111: now sourced from the ConversationObligation ledger (non-terminal
+   *  CREATOR_QUESTION rows), falling back to the computeOpenQuestions diff when
+   *  the ledger has no rows for the instance. */
   openQuestions?: string[] | undefined;
+  /** PLU-111: outstanding commitments PLUVUS has made and not yet fulfilled
+   *  (e.g. "I'll confirm the usage rights"), sourced from the non-terminal
+   *  PLUVUS_COMMITMENT obligation rows. Rendered by /draft as an additive
+   *  "outstanding commitments — honor or update these" block so the model stops
+   *  forgetting a promise it made. Absent/empty → no-op (copy unchanged). */
+  openCommitments?: string[] | undefined;
   /** Q3 (founder, autonomous launch): true on the LAST negotiation round so the
    *  offer copy states finality ("this is our final rate; no further negotiation").
    *  Default/absent on every non-final turn (copy renders exactly as before). */
   isFinalRound?: boolean | undefined;
+  /** drafting-humanization (§Conversation State): which offer terms actually
+   *  changed THIS turn, from the closed vocabulary "fee" | "commission" |
+   *  "deliverables" | "timeline" | "perk". Lets the offer copy state DELTAS
+   *  instead of the full state (§Repetition Reduction). Purely stylistic — the
+   *  decision layer never reads it. Absent/[] = "nothing changed this turn" → the
+   *  copy restates only what the creator asked about, exactly as before. */
+  changedFields?: string[] | undefined;
+  /** drafting-humanization (§Conversation State): coarse relationship-warmth
+   *  signal for tone progression, one of "new" | "warming" | "established",
+   *  derived server-side from round count + whether the creator has been
+   *  cooperative. Selects the offer email's warmth rung; augments `round` and
+   *  never overrides the final-round tone. Purely stylistic. Absent/"new" =
+   *  today's round-1 tone (copy renders exactly as before). */
+  relationshipWarmth?: string | undefined;
+  /** Option A (negotiate→draft answer sync): the /negotiate model's OWN written
+   *  reply (its responseDraft) — the vetted answers to every creator question this
+   *  turn. /draft renders it as an authoritative <vetted_answers> block the copy
+   *  must REPHRASE (adding no fact/figure/promise beyond it or the campaign terms;
+   *  deferring honestly on anything it doesn't cover). Threaded ONLY when the money
+   *  guards did NOT alter the decision (guard-altered → no advisory draft upstream),
+   *  so the copy can never restate a number that contradicts the recorded deal.
+   *  Absent = today's behavior (block omitted). */
+  negotiatorAnswers?: string | undefined;
 }
 
 /** HARD-N2: one turn of the threaded /draft conversation. `role` is "us" for a

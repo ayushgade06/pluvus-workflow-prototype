@@ -9,6 +9,9 @@ import type {
 // F-H1: the full both-sides transcript entry, reused from the draft seam so the
 // negotiator receives the same conversation shape the copywriter already gets.
 import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
+// PLU-111: the pure obligation write-plan the executor returns and the runtime
+// applies in-tx.
+import type { QuestionObligationPlanItem } from "./executors/negotiationHistory.js";
 
 // NodeSnapshot — matches what is stored in WorkflowVersion.nodeGraph
 export interface NodeSnapshot {
@@ -59,6 +62,34 @@ export interface NodeResult {
     messageId: string;
     /** The drawn delay in ms (0 when the feature is disabled). */
     delayMs: number;
+  };
+  /**
+   * PLU-111: the conversation-obligation write-plan for this turn, applied by the
+   * runtime INSIDE stepInstance's db.transaction — alongside the NEGOTIATION_TURN
+   * event + OCC state write — so a rolled-back turn (StaleInstanceError) leaves no
+   * half-written obligation (invariant #5, §4.6). The executor keeps the plan pure
+   * (build-only); the runtime owns the tx-scoped DB writes, mirroring how
+   * `deferredSend` is returned and actioned. Absent on turns with no obligation
+   * activity (escalate/reject with no questions, etc.).
+   *
+   * The create/update runs here; the ANSWERED/COMPLETED transition fires LATER at
+   * flush (when sentAt is stamped) — see resolveObligationsByResolutionMessage.
+   */
+  obligationWrites?: {
+    /** Create/update creator-question obligations (§4.4). */
+    questionPlan: QuestionObligationPlanItem[];
+    /** The inbound Message row that raised this turn's questions, if any. */
+    sourceMessageId?: string | undefined;
+    /** The reserved outbound Message id to LINK as the intended resolver of the
+     *  open questions this turn's draft was meant to answer (§4.5 step 1). The
+     *  status is left unchanged — the terminal transition is at flush. */
+    reservedResolutionMessageId?: string | undefined;
+    /** §4.2: when this turn ESCALATED (an always-escalate topic), move ALL of the
+     *  instance's non-terminal obligations — including the ones this plan just
+     *  created — to ESCALATED (non-terminal). Nothing is lost: they stay in the AI
+     *  context AND surface in the Manual Queue. The runtime resolves the ids AFTER
+     *  applying questionPlan (so newly-minted rows are included). */
+    escalateAfterWrite?: boolean | undefined;
   };
 }
 
@@ -143,6 +174,19 @@ export interface NegotiateResult {
    * non-final turn.
    */
   isFinalRound?: boolean;
+  /**
+   * Option A (negotiate→draft answer sync): the /negotiate model's OWN written
+   * reply (its responseDraft) — the vetted answers to every creator question this
+   * turn. DISTINCT from `message`: `message` always has a fallback string, whereas
+   * this is set ONLY when the agent returned a genuine advisory draft — i.e. the
+   * LLM strategy ran AND the money guards did NOT alter the decision (a guard-
+   * altered decision nulls responseDraft upstream so the copy can never restate a
+   * number that contradicts the recorded deal; rules mode emits only a placeholder).
+   * The executor threads it into the /draft `extra` as `negotiatorAnswers` so the
+   * copy model rephrases these approved answers instead of re-deriving (and
+   * hallucinating) them. Undefined when there is no genuine draft to pass.
+   */
+  negotiatorAnswers?: string;
 }
 
 // PriorNegotiationContext — assembled by the executor (the state authority) and
@@ -162,6 +206,18 @@ export interface PriorNegotiationContext {
   history: NegotiationHistoryEntryLite[];
   currentOffer?: number | undefined;
   conversationHistory?: DraftHistoryEntry[] | undefined;
+  // PLU-111: outstanding Pluvus commitments (non-terminal PLUVUS_COMMITMENT
+  // obligations) so the money-decision model knows it owes an action too. Rendered
+  // by /negotiate as sanitized DATA (like the transcript), NEVER as a money input.
+  // Empty/absent → no change to behavior.
+  openCommitments?: string[] | undefined;
+  // classify→negotiate hint: the intent the first-reply classifier assigned to the
+  // reply being negotiated (from the persisted Message.replyIntent). Threaded as a
+  // SOFT advisory signal so the money-decision model has the upstream read of the
+  // creator's stance — never a money input, never an override of the guards. Absent
+  // for a mid-negotiation reply (round >= 1 skips classify) or an un-classified row,
+  // so the /negotiate prompt renders exactly as before.
+  intent?: string | undefined;
 }
 
 // A trimmed history entry the executor can build purely from persisted events.

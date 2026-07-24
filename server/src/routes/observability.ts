@@ -23,6 +23,9 @@ import {
   getLogs,
   getLlmUsage,
   getAlertsReport,
+  resolveInstanceObligation,
+  isManualResolveStatus,
+  MANUAL_RESOLVE_STATUSES,
 } from "../observability/repository.js";
 import { WORKFLOW_STATE_ORDER, TERMINAL_STATES, WAITING_STATES } from "../observability/dto.js";
 
@@ -185,6 +188,45 @@ router.get("/instances/:id", async (req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: "instance_detail_failed", message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /observability/instances/:id/obligations/:obligationId/resolve  (PLU-111)
+// ---------------------------------------------------------------------------
+// Operator manual resolution (§4.9). Operator-gated with the rest of the router
+// (X-Operator-Key applied at mount). Sets the obligation to a terminal status
+// with resolutionSource="operator". Idempotent — resolving an already-terminal
+// row returns 200 with the current row. Body: { status, resolution? } where
+// status ∈ {ANSWERED, COMPLETED, CANCELED, NO_LONGER_RELEVANT}.
+
+router.post("/instances/:id/obligations/:obligationId/resolve", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!isManualResolveStatus(body["status"])) {
+      res.status(400).json({
+        error: "invalid_status",
+        allowed: MANUAL_RESOLVE_STATUSES,
+        value: body["status"] ?? null,
+      });
+      return;
+    }
+    const resolution =
+      typeof body["resolution"] === "string" ? body["resolution"] : undefined;
+
+    const outcome = await resolveInstanceObligation(
+      req.params.id,
+      req.params.obligationId,
+      { status: body["status"], ...(resolution !== undefined ? { resolution } : {}) },
+    );
+    if (!outcome.ok) {
+      res.status(404).json({ error: outcome.reason, id: req.params.obligationId });
+      return;
+    }
+    res.json({ obligation: outcome.obligation });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: "obligation_resolve_failed", message });
   }
 });
 

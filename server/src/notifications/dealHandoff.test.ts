@@ -54,9 +54,12 @@ function makeHandoff(overrides: Partial<DealHandoff> = {}): DealHandoff {
     campaignName: "Summer Launch",
     fixedFee: 750,
     commissionRate: 30,
+    negotiationFloor: 500,
+    negotiationCeiling: 1000,
     deliverables: "3 IG Reels",
     timeline: "Live by Sept 15",
     paymentTerms: "net-30 after approval",
+    rewardDescription: "One pair of the Tempo trainer, creator's size",
     acceptanceMessage: "Works for me — let's do it.",
     threadId: "thread-abc",
     acceptedAt: ACCEPTED_AT,
@@ -154,7 +157,7 @@ function makeEmail(opts?: { throwOnSend?: boolean }) {
 async function main() {
   console.log("\nbuildDealFinalizationEmail\n");
 
-  await test("carries every field an operator needs to finalize the deal", async () => {
+  await test("reads as a human confirmation request carrying every agreed term", async () => {
     const draft = buildDealFinalizationEmail(
       {
         creator,
@@ -169,17 +172,47 @@ async function main() {
       makeHandoff(),
     );
 
-    assert.equal(draft.subject, "Creator agreement ready for finalization — Robin Vega");
-    assert.match(draft.body, /Robin Vega/);
-    assert.match(draft.body, /robin@creators\.test/);
-    assert.match(draft.body, /Summer Launch/);
-    assert.match(draft.body, /\$750 fixed fee \+ 30% commission/);
+    // Subject names the creator + campaign and asks for confirmation.
+    assert.equal(draft.subject, "Robin Vega agreed to terms — Summer Launch (please confirm)");
+    // Human greeting + lead line (not "Hi <brand> team,").
+    assert.match(draft.body, /^Hi Acme Co,/);
+    assert.match(draft.body, /Robin Vega has agreed to terms for the Summer Launch campaign, within the range you set\./);
+    // Terms block with the real agreed figures.
+    assert.match(draft.body, /Terms agreed/);
+    assert.match(draft.body, /Creator: Robin Vega \(@robinv\) on YouTube/);
+    assert.match(draft.body, /Fee: \$750 \(your range: \$500-\$1000\)/);
+    assert.match(draft.body, /Commission: 30% on sales through the referral link/);
     assert.match(draft.body, /3 IG Reels/);
     assert.match(draft.body, /Live by Sept 15/);
     assert.match(draft.body, /net-30 after approval/);
-    assert.match(draft.body, /2026-07-20T09:30:00\.000Z/);
-    assert.match(draft.body, /i1/); // execution reference
-    assert.match(draft.body, /Manual Queue/);
+    assert.match(draft.body, /Perk: One pair of the Tempo trainer/);
+    // The confirmation ask + hold-until-confirmed line.
+    assert.match(draft.body, /The creator is holding on this pending your confirmation\./);
+    assert.match(draft.body, /Reply "Yes" to approve/);
+    assert.match(draft.body, /we'll hold the campaign until you confirm\./);
+    // Signed by a named human, not the system.
+    assert.match(draft.body, /Best,\nRicky$/);
+    assert.ok(!/Pluvus Workflow Automation/.test(draft.body));
+  });
+
+  await test("omits the range when no band was captured (falls back to bare fee)", async () => {
+    const draft = buildDealFinalizationEmail(
+      {
+        creator,
+        campaignName: "Summer Launch",
+        brandName: "Acme Co",
+        workflowName: "Summer Outreach",
+        notifyEmail: null,
+        transcript: [],
+        threadId: null,
+        gmailRfc822MessageId: null,
+      },
+      makeHandoff({ negotiationFloor: null, negotiationCeiling: null }),
+    );
+    assert.match(draft.body, /Fee: \$750\n/);
+    assert.ok(!/your range/.test(draft.body));
+    // "within the range you set" is dropped when there is no range.
+    assert.ok(!/within the range you set/.test(draft.body));
   });
 
   await test("does NOT duplicate the email thread into the notice", async () => {
@@ -216,8 +249,9 @@ async function main() {
       },
       makeHandoff({ fixedFee: null }),
     );
-    assert.match(draft.body, /Compensation:\s+30% commission/);
-    assert.ok(!/fixed fee/.test(draft.body));
+    // No "Fee:" line at all; the commission line still states the deal.
+    assert.ok(!/^Fee:/m.test(draft.body));
+    assert.match(draft.body, /Commission: 30% on sales through the referral link/);
   });
 
   console.log("\nnotifyOperatorOfDealFinalization\n");

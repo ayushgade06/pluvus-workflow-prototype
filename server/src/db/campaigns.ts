@@ -4,9 +4,12 @@ import {
   brandNotifications,
   campaigns,
   clicks,
+  conversationObligations,
   conversions,
+  dealHandoffs,
   events,
   executionInstances,
+  llmCalls,
   messages,
   obligations,
   outboxJobs,
@@ -83,6 +86,17 @@ export async function deleteInstanceCascade(
   // Event/Message, later phases added BrandNotification and PaymentInfo — each
   // with an instanceId FK — so they must be cleaned up here too (omitting them
   // was what broke campaign deletion).
+  // PLU-70 DealHandoff + PLU-111 ConversationObligation each carry an instanceId
+  // FK with NO ON DELETE rule, so an instance that reached ACCEPTED (handoff) or
+  // ran any negotiation (obligations) blocks the executionInstances DELETE below
+  // with a foreign-key violation — the 500 that broke campaign deletion once a run
+  // produced either. Delete them FIRST: ConversationObligation ALSO references
+  // Message (sourceMessageId / resolutionMessageId, no ON DELETE rule), so it must
+  // be gone BEFORE the messages delete below or that delete FK-violates in turn.
+  await tx.delete(dealHandoffs).where(inArray(dealHandoffs.instanceId, instanceIds));
+  await tx
+    .delete(conversationObligations)
+    .where(inArray(conversationObligations.instanceId, instanceIds));
   await tx.delete(events).where(inArray(events.instanceId, instanceIds));
   await tx.delete(messages).where(inArray(messages.instanceId, instanceIds));
   await tx.delete(outboxJobs).where(inArray(outboxJobs.instanceId, instanceIds));
@@ -90,6 +104,10 @@ export async function deleteInstanceCascade(
     .delete(brandNotifications)
     .where(inArray(brandNotifications.instanceId, instanceIds));
   await tx.delete(paymentInfo).where(inArray(paymentInfo.instanceId, instanceIds));
+  // HARD-O1 LlmCall carries an instanceId FK (no ON DELETE rule); a nullable FK
+  // still blocks the parent delete while rows reference it, so any instance that
+  // made an LLM call (every negotiated run) must have its telemetry purged here.
+  await tx.delete(llmCalls).where(inArray(llmCalls.instanceId, instanceIds));
   // Attribution/payout ledger (Phase 2–4) hangs off the instance's Partnership,
   // not the instance directly. clicks/conversions/obligations/payouts all carry
   // a partnershipId FK, so they MUST be deleted before the partnerships

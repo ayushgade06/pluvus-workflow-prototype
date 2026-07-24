@@ -29,6 +29,8 @@ const affiliateNodes: NodeSnapshot[] = [
     type: "INITIAL_OUTREACH",
     order: 0,
     config: {
+      // Manual-first: the operator's copy is the email sent to each creator.
+      outreachMode: "manual",
       subjectTemplate: "Partnership opportunity with {{brandName}}",
       bodyTemplate:
         "Hi {{creatorName}},\n\nWe love your content and think you'd be a great fit for our affiliate program. You'd earn a commission on every sale driven by your unique link.\n\nInterested in learning more?\n\nBest,\n{{brandName}} Team",
@@ -117,6 +119,8 @@ const hybridNodes: NodeSnapshot[] = [
     type: "INITIAL_OUTREACH",
     order: 0,
     config: {
+      // Manual-first: the operator's copy is the email sent to each creator.
+      outreachMode: "manual",
       subjectTemplate: "Paid partnership + affiliate opportunity",
       bodyTemplate:
         "Hi {{creatorName}},\n\nWe'd love to work with you on a hybrid deal — a base fee for the content plus an affiliate commission on sales. It's the best of both worlds.\n\nOpen to a quick chat?\n\nBest,\n{{brandName}} Team",
@@ -192,6 +196,8 @@ const fixedFeeNodes: NodeSnapshot[] = [
     type: "INITIAL_OUTREACH",
     order: 0,
     config: {
+      // Manual-first: the operator's copy is the email sent to each creator.
+      outreachMode: "manual",
       subjectTemplate: "Paid collaboration with {{brandName}}",
       bodyTemplate:
         "Hi {{creatorName}},\n\nWe're looking for creators to partner with on a paid collaboration — one dedicated post in exchange for a flat fee. No strings attached.\n\nInterested?\n\nBest,\n{{brandName}} Team",

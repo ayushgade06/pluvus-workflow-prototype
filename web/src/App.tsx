@@ -12,10 +12,12 @@
 // back on the campaign list.
 
 import { Suspense, lazy, useState, useEffect, useCallback } from "react";
+import { Sun, Moon } from "lucide-react";
 import { CampaignList } from "./components/builder/CampaignList";
 import { WorkflowBuilder } from "./components/builder/WorkflowBuilder";
 import { ToastProvider } from "./components/ds";
-import { colors, font } from "./theme";
+import { useThemeMode } from "./theme-mode";
+import { colors, font, radii } from "./theme";
 
 // Lazy-load the observability dashboard so its React Flow graph + inspector
 // stack stay out of the builder's initial bundle.
@@ -112,6 +114,7 @@ export default function App() {
 // ---------------------------------------------------------------------------
 
 function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View) => void }) {
+  const { mode, toggle } = useThemeMode();
   const tabs: { key: View; label: string }[] = [
     { key: "campaigns", label: "Builder" },
     { key: "observe", label: "Observability" },
@@ -122,50 +125,46 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 24,
-        borderBottom: `1px solid ${colors.border}`,
+        gap: 20,
+        borderBottom: `2px solid ${colors.cardBorder}`,
         background: colors.panel,
         flexShrink: 0,
-        height: 48,
+        height: 54,
         padding: "0 20px",
       }}
     >
-      <div
+      {/* Serif wordmark with an accent tick — the Tano editorial mark. */}
+      <button
+        onClick={() => onChangeView("campaigns")}
+        className="ds-focusable"
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 9,
-          fontSize: font.size.md,
-          fontWeight: font.weight.semibold,
-          color: colors.text,
-          letterSpacing: -0.2,
+          gap: 8,
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          padding: 0,
         }}
       >
+        <span aria-hidden style={{ width: 4, height: 18, borderRadius: 2, background: colors.accent }} />
         <span
-          aria-hidden
+          className="serif"
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            background: `linear-gradient(135deg, ${colors.accent}, ${colors.accentDim})`,
-            boxShadow: `0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2)`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontSize: 12,
-            fontWeight: 700,
+            fontSize: 22,
+            fontWeight: font.weight.black,
+            color: colors.text,
+            letterSpacing: -0.6,
           }}
         >
-          P
+          Pluvus
         </span>
-        Pluvus
-      </div>
+      </button>
+      <div aria-hidden style={{ width: 2, height: 20, background: colors.hairline }} />
       <div style={{ display: "flex", alignItems: "center", gap: 4 }} role="tablist">
         {tabs.map((tab) => {
           const activeView =
-            view === tab.key ||
-            (tab.key === "campaigns" && view === "builder");
+            view === tab.key || (tab.key === "campaigns" && view === "builder");
           return (
             <button
               key={tab.key}
@@ -174,15 +173,15 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
               aria-selected={activeView}
               className="ds-focusable"
               style={{
-                height: 30,
-                padding: "0 12px",
-                background: activeView ? colors.panelAlt : "none",
-                border: "1px solid transparent",
-                borderColor: activeView ? colors.border : "transparent",
-                borderRadius: 7,
-                color: activeView ? colors.text : colors.textMuted,
+                height: 34,
+                padding: "0 14px",
+                // Active tab = a solid sticker pill with the ink outline.
+                background: activeView ? colors.accent : "transparent",
+                border: `2px solid ${activeView ? colors.cardBorder : "transparent"}`,
+                borderRadius: radii.pill,
+                color: activeView ? "#fff" : colors.textMuted,
                 fontSize: font.size.md,
-                fontWeight: activeView ? font.weight.semibold : font.weight.medium,
+                fontWeight: font.weight.semibold,
                 cursor: "pointer",
               }}
             >
@@ -191,6 +190,29 @@ function AppTopbar({ view, onChangeView }: { view: View; onChangeView: (v: View)
           );
         })}
       </div>
+
+      {/* Theme toggle — sticker icon button, far right. */}
+      <button
+        onClick={toggle}
+        aria-label={mode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        title={mode === "dark" ? "Light theme" : "Dark theme"}
+        className="ds-focusable ds-btn"
+        style={{
+          marginLeft: "auto",
+          width: 38,
+          height: 38,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: colors.panel,
+          border: `2px solid ${colors.cardBorder}`,
+          borderRadius: radii.pill,
+          color: colors.text,
+          cursor: "pointer",
+        }}
+      >
+        {mode === "dark" ? <Sun size={17} strokeWidth={2.25} /> : <Moon size={17} strokeWidth={2.25} />}
+      </button>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { Trash2, ChevronDown, FolderOpen, AlertTriangle } from "lucide-react";
 import { useCampaigns, useCampaign, deleteCampaign } from "../../api/builderClient";
-import { colors, radii, font, formatTimestamp } from "../../theme";
+import { colors, radii, font, text, formatTimestamp } from "../../theme";
 import {
   Button,
   Card,
@@ -45,17 +46,8 @@ export function CampaignList({ onSelectWorkflow }: Props) {
           }}
         >
           <div>
-            <div
-              style={{
-                fontSize: 20,
-                fontWeight: font.weight.semibold,
-                color: colors.text,
-                letterSpacing: -0.4,
-              }}
-            >
-              Campaigns
-            </div>
-            <div style={{ fontSize: font.size.md, color: colors.textMuted, marginTop: 4 }}>
+            <h1 style={{ ...text.title, margin: 0 }}>Campaigns</h1>
+            <div style={{ ...text.body, marginTop: 4 }}>
               Create and manage creator outreach campaigns
             </div>
           </div>
@@ -71,7 +63,7 @@ export function CampaignList({ onSelectWorkflow }: Props) {
         {isLoading && <SkeletonRows count={4} height={76} />}
         {isError && (
           <EmptyState
-            icon="⚠"
+            icon={<AlertTriangle size={24} strokeWidth={1.75} color={colors.warning} />}
             title="Couldn't load campaigns"
             description="The server may be unreachable. Check that it's running, then retry."
             action={
@@ -83,7 +75,7 @@ export function CampaignList({ onSelectWorkflow }: Props) {
         )}
         {!isLoading && !isError && (!campaigns || campaigns.length === 0) && (
           <EmptyState
-            icon="📋"
+            icon={<FolderOpen size={24} strokeWidth={1.75} color={colors.textMuted} />}
             title="No campaigns yet"
             description="Create your first campaign to start building outreach workflows for creators."
             action={
@@ -162,16 +154,7 @@ function CampaignCard({
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span
-                style={{
-                  fontSize: font.size.lg,
-                  fontWeight: font.weight.semibold,
-                  color: colors.text,
-                  letterSpacing: -0.2,
-                }}
-              >
-                {campaign.name}
-              </span>
+              <span style={{ ...text.heading }}>{campaign.name}</span>
               <Badge color={colors.textMuted} small>
                 {campaign.brand}
               </Badge>
@@ -193,10 +176,11 @@ function CampaignCard({
           </div>
           <IconButton
             label="Delete campaign"
-            icon="🗑"
+            icon={<Trash2 size={15} strokeWidth={1.75} />}
             onClick={() => setConfirmDelete(true)}
             disabled={deleting}
-            style={{ color: colors.danger, flexShrink: 0 }}
+            className="ds-danger-hover"
+            style={{ color: colors.textDim, opacity: 0.75, flexShrink: 0 }}
           />
         </div>
 
@@ -247,9 +231,12 @@ function CampaignCard({
         }}
       >
         <span>{expanded ? "Hide workflows" : "View workflows"}</span>
-        <span aria-hidden style={{ transition: "transform 0.15s", transform: expanded ? "rotate(180deg)" : "none" }}>
-          ▾
-        </span>
+        <ChevronDown
+          size={14}
+          strokeWidth={2}
+          aria-hidden
+          style={{ transition: "transform 0.15s", transform: expanded ? "rotate(180deg)" : "none" }}
+        />
       </button>
 
       {/* Expanded workflow list */}

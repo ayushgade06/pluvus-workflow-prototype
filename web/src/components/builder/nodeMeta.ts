@@ -6,6 +6,20 @@
 // Pure presentation derived from the existing DraftNode.config shapes. No data
 // is mutated and no config field names change — this only READS config.
 // ---------------------------------------------------------------------------
+import type { ComponentType } from "react";
+import {
+  Mail,
+  Bell,
+  Bot,
+  MessagesSquare,
+  Handshake,
+  CreditCard,
+  FileText,
+  CheckCircle2,
+  Users,
+  Diamond,
+  type LucideProps,
+} from "lucide-react";
 import type { DraftNode, NodeType } from "../../api/builderTypes";
 import { colors } from "../../theme";
 
@@ -21,17 +35,25 @@ export const NODE_LABEL: Record<NodeType, string> = {
   IMPORT_CREATOR_LIST: "Import Creators",
 };
 
-export const NODE_ICON: Record<NodeType, string> = {
-  INITIAL_OUTREACH: "✉",
-  FOLLOW_UP: "🔔",
-  REPLY_DETECTION: "🤖",
-  NEGOTIATION: "💬",
-  REWARD_SETUP: "🤝",
-  PAYMENT_INFO: "💳",
-  CONTENT_BRIEF: "📄",
-  END: "✓",
-  IMPORT_CREATOR_LIST: "👥",
+// Aesthetic geometric icons (lucide) — replaces the old pictographic emoji so
+// the canvas nodes read as an intentional icon set, not stock emoji.
+type IconComponent = ComponentType<LucideProps>;
+
+export const NODE_ICON_COMPONENT: Record<NodeType, IconComponent> = {
+  INITIAL_OUTREACH: Mail,
+  FOLLOW_UP: Bell,
+  REPLY_DETECTION: Bot,
+  NEGOTIATION: MessagesSquare,
+  REWARD_SETUP: Handshake,
+  PAYMENT_INFO: CreditCard,
+  CONTENT_BRIEF: FileText,
+  END: CheckCircle2,
+  IMPORT_CREATOR_LIST: Users,
 };
+
+export function nodeIconComponent(type: string): IconComponent {
+  return NODE_ICON_COMPONENT[type as NodeType] ?? Diamond;
+}
 
 export const NODE_COLOR: Record<NodeType, string> = {
   INITIAL_OUTREACH: "#8b96f8",
@@ -63,9 +85,6 @@ export const NODE_DESCRIPTION: Record<NodeType, string> = {
 
 export function nodeLabel(type: string): string {
   return NODE_LABEL[type as NodeType] ?? type;
-}
-export function nodeIcon(type: string): string {
-  return NODE_ICON[type as NodeType] ?? "◆";
 }
 export function nodeColor(type: string): string {
   return NODE_COLOR[type as NodeType] ?? colors.textMuted;
@@ -133,6 +152,9 @@ export function configChips(node: DraftNode): string[] {
     case "INITIAL_OUTREACH": {
       const chips: string[] = [];
       const delay = cfg["delaySeconds"] as number | undefined;
+      // Lead with the mode so the canvas shows at a glance whether the first
+      // email is operator-written or AI-drafted. Absent = legacy AI default.
+      chips.push(cfg["outreachMode"] === "manual" ? "manual" : "AI");
       if (cfg["subjectTemplate"]) chips.push("subject");
       if (cfg["bodyTemplate"]) chips.push("body");
       if (delay !== undefined) chips.push(delay === 0 ? "no delay" : `delay ${delay}s`);

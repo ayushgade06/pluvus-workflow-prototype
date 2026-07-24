@@ -12,6 +12,7 @@
 // followers and engagement are now plain aligned text rather than pills; only
 // status stays visual.
 
+import { Trash2 } from "lucide-react";
 import { colors, radii, font } from "../../theme";
 import { Chip, HoverCard, IconButton } from "../ds";
 import type { CreatorItem, CreatorPlatformSummary } from "../../api/builderTypes";
@@ -351,7 +352,7 @@ export function CreatorTableRow({ row, selected, onToggle, onDelete, showBatchSt
 
       <IconButton
         label={`Remove ${creator.name} from the roster`}
-        icon="🗑"
+        icon={<Trash2 size={15} strokeWidth={1.75} />}
         onClick={onDelete}
         className="ds-danger-hover"
         style={{ opacity: 0.45, justifySelf: "end" }}

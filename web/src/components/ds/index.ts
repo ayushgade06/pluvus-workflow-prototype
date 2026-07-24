@@ -10,6 +10,8 @@ export { Slider } from "./Slider";
 export { Card } from "./Card";
 export { Badge, Chip, StatusBadge } from "./Badge";
 export { StatTile } from "./StatTile";
+export { Donut, Sparkline } from "./Charts";
+export type { DonutSlice } from "./Charts";
 export { SectionHeader } from "./SectionHeader";
 export { Skeleton, SkeletonLines, SkeletonRows } from "./Skeleton";
 export { EmptyState } from "./EmptyState";

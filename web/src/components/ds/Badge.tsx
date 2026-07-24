@@ -23,18 +23,20 @@ export function Badge({
         alignItems: "center",
         gap: 6,
         fontSize: small ? font.size.xs : font.size.sm,
-        fontWeight: font.weight.medium,
-        color,
-        background: `${color}17`,
-        border: `1px solid ${color}2e`,
+        fontWeight: font.weight.semibold,
+        color: colors.text,
+        // Sticker chip: a light tint of the status colour behind ink text, with
+        // a solid ink outline so it reads as a cut-out token, not a soft pill.
+        background: `${color}26`,
+        border: `1.5px solid ${colors.cardBorder}`,
         borderRadius: radii.pill,
-        padding: small ? "1.5px 8px" : "3px 10px",
+        padding: small ? "1.5px 9px" : "3px 11px",
         whiteSpace: "nowrap",
         lineHeight: 1.5,
         letterSpacing: 0,
       }}
     >
-      {dot && <span style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />}
+      {dot && <span style={{ width: 7, height: 7, borderRadius: "50%", background: color }} />}
       {children}
     </span>
   );
@@ -49,7 +51,7 @@ export function Chip({
   color?: string;
   title?: string;
 }) {
-  const c = color ?? colors.textMuted;
+  const c = color ?? colors.text;
   return (
     <span
       title={title}
@@ -58,12 +60,12 @@ export function Chip({
         alignItems: "center",
         gap: 4,
         fontSize: font.size.xs,
-        fontWeight: font.weight.medium,
+        fontWeight: font.weight.semibold,
         color: c,
         background: colors.panelAlt,
-        border: `1px solid ${colors.border}`,
+        border: `1.5px solid ${colors.cardBorder}`,
         borderRadius: radii.pill,
-        padding: "1.5px 9px",
+        padding: "1.5px 10px",
         whiteSpace: "nowrap",
         lineHeight: 1.6,
         maxWidth: 180,

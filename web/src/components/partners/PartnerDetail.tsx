@@ -6,6 +6,7 @@
 // resolve-and-settle confirm.
 
 import { useState } from "react";
+import { AlertTriangle, ClipboardList, Banknote, CreditCard, Link2, BarChart3 } from "lucide-react";
 import {
   usePartnershipDetail,
   usePartnershipPayouts,
@@ -17,7 +18,7 @@ import {
   formatCents,
 } from "../../api/partnersClient";
 import type { Payout, Obligation, PayoutStatus } from "../../api/types";
-import { colors, font, radii } from "../../theme";
+import { colors, font, radii, text } from "../../theme";
 import {
   Badge,
   Button,
@@ -58,7 +59,7 @@ export function PartnerDetail({ partnershipId, onClose }: Props) {
   if (detail.error || !p) {
     return (
       <EmptyState
-        icon="⚠"
+        icon={<AlertTriangle size={24} strokeWidth={1.75} color={colors.warning} />}
         title="Failed to load partner"
         description={detail.error ? (detail.error as Error).message : "Not found"}
       />
@@ -121,16 +122,7 @@ export function PartnerDetail({ partnershipId, onClose }: Props) {
         }}
       >
         <div>
-          <div
-            style={{
-              fontSize: font.size.lg,
-              fontWeight: font.weight.semibold,
-              color: colors.text,
-              letterSpacing: -0.2,
-            }}
-          >
-            {p.creatorName}
-          </div>
+          <div style={{ ...text.heading }}>{p.creatorName}</div>
           <div style={{ fontSize: font.size.sm, color: colors.textMuted }}>
             {p.creatorEmail}
             {p.campaignName && (
@@ -161,7 +153,7 @@ export function PartnerDetail({ partnershipId, onClose }: Props) {
         {payoutsQ.isLoading ? (
           <PanelLoading compact />
         ) : !payoutsData || payoutsData.obligations.length === 0 ? (
-          <EmptyState compact icon="📋" title="No obligations" description="No fixed fee was agreed." />
+          <EmptyState compact icon={<ClipboardList size={24} strokeWidth={1.75} color={colors.textMuted} />} title="No obligations" description="No fixed fee was agreed." />
         ) : (
           <ObligationsTable
             obligations={payoutsData.obligations}
@@ -209,7 +201,7 @@ export function PartnerDetail({ partnershipId, onClose }: Props) {
         {payoutsQ.isLoading ? (
           <PanelLoading compact />
         ) : !payoutsData || payoutsData.payouts.length === 0 ? (
-          <EmptyState compact icon="💸" title="No payouts yet" description="Create a payout above to get started." />
+          <EmptyState compact icon={<Banknote size={24} strokeWidth={1.75} color={colors.textMuted} />} title="No payouts yet" description="Create a payout above to get started." />
         ) : (
           <PayoutsTable
             payouts={payoutsData.payouts}
@@ -284,7 +276,7 @@ function PayoutInfoCard({ paymentInfo }: { paymentInfo: { method: string | null;
     return (
       <EmptyState
         compact
-        icon="💳"
+        icon={<CreditCard size={24} strokeWidth={1.75} color={colors.textMuted} />}
         title="No payout info"
         description="Creator hasn't completed the payment form yet."
       />
@@ -385,7 +377,7 @@ function AttributionPanel({ partnership: p }: { partnership: { metrics: { clicks
       ) : (
         <EmptyState
           compact
-          icon="🔗"
+          icon={<Link2 size={24} strokeWidth={1.75} color={colors.textMuted} />}
           title="No tracking link"
           description="No conversions yet — share the tracking link"
         />
@@ -433,7 +425,7 @@ function AttributionPanel({ partnership: p }: { partnership: { metrics: { clicks
         </div>
       )}
       {p.recentConversions.length === 0 && (
-        <EmptyState compact icon="📊" title="No conversions yet" description="Share the tracking link to start attributing." />
+        <EmptyState compact icon={<BarChart3 size={24} strokeWidth={1.75} color={colors.textMuted} />} title="No conversions yet" description="Share the tracking link to start attributing." />
       )}
     </div>
   );
@@ -666,17 +658,7 @@ function ObligationStatusBadge({ status }: { status: "PENDING" | "PAID" | "CANCE
 
 function SectionTitle({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
-    <div
-      style={{
-        fontSize: font.size.sm,
-        fontWeight: font.weight.semibold,
-        color: colors.textMuted,
-        textTransform: "uppercase",
-        letterSpacing: 0.8,
-        marginBottom: 10,
-        ...style,
-      }}
-    >
+    <div style={{ ...text.label, fontSize: font.size.sm, color: colors.textMuted, marginBottom: 10, ...style }}>
       {children}
     </div>
   );

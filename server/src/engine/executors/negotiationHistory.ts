@@ -1,7 +1,19 @@
-import type { Event, Message } from "../../db/schema.js";
+import type {
+  ConversationObligation,
+  Event,
+  Message,
+} from "../../db/schema.js";
 import type { PriorNegotiationContext, NegotiationHistoryEntryLite } from "../types.js";
 import type { DraftHistoryEntry } from "../../adapters/negotiation/types.js";
 import { extractReplyText } from "./replyText.js";
+
+// drafting-humanization (§Conversation State): the closed vocabulary a term may
+// be flagged with in `changedFields`. Mirrors the agent-side vocabulary. Only the
+// fee is negotiated per-turn in this system (commission/perk/deliverables/timeline
+// are FIXED campaign config), so `computeChangedFields` only ever emits "fee" —
+// but the vocabulary is kept complete for parity with the agent and forward use.
+export type ChangedField = "fee" | "commission" | "deliverables" | "timeline" | "perk";
+export type RelationshipWarmth = "new" | "warming" | "established";
 
 // ---------------------------------------------------------------------------
 // Negotiation history assembly (FIX-1 history threading + FIX-2 current offer)
@@ -313,4 +325,208 @@ export function computeOpenQuestions(
     }
   }
   return open;
+}
+
+// ---------------------------------------------------------------------------
+// PLU-111: Conversation-obligation plan builder + read (supersedes the diff)
+// ---------------------------------------------------------------------------
+// The obligation ledger (db/conversationObligations.ts) replaces the
+// event-diff computeOpenQuestions above as the source of truth for "what's
+// open". These are the PURE pieces the executor uses: normalize a question to
+// its dedup key, decide inserts-vs-touches for a turn's questions against the
+// existing open rows, and split non-terminal rows into the openQuestions /
+// openCommitments the AI context reads. Kept here (pure, no DB) so they unit-
+// test exactly like computeOpenQuestions. computeOpenQuestions itself is RETAINED
+// as the empty-table fallback (§4.7) until old instances drain (a follow-up).
+
+/**
+ * The conservative dedup key for an obligation (§4.3): lowercase, trimmed,
+ * punctuation-stripped, whitespace-collapsed. Collapses the trivial cross-turn
+ * rephrases the agent's own per-turn _normalize_questions can't see, WITHOUT
+ * fuzzy/semantic merging — two genuinely different asks keep distinct keys (a
+ * wrong merge silently drops a real question, the worse failure, invariant #3).
+ */
+export function normalizeObligationKey(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFKC")
+    // strip punctuation/symbols but keep letters, numbers, and whitespace.
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** One planned obligation write for the turn — pure, applied later in-tx. */
+export interface QuestionObligationPlanItem {
+  /** "insert" mints a new OPEN row; "touch" updates an existing open row. */
+  op: "insert" | "touch";
+  /** Present on "touch": the id of the existing open row to update. */
+  existingId?: string;
+  originalText: string;
+  normalizedKey: string;
+  category?: string | undefined;
+}
+
+/**
+ * Decide the create/update plan for a turn's creator questions against the
+ * instance's existing NON-TERMINAL obligations (§4.3, §4.4). Pure — the executor
+ * applies the plan inside stepInstance's transaction (§4.6).
+ *
+ *   - a question whose normalizedKey matches an existing open CREATOR_QUESTION
+ *     row → "touch" (a re-ask of a still-open question; no new row).
+ *   - otherwise → "insert" (a new open thread). A re-ask matching only a
+ *     TERMINAL row is NOT in existingOpenRows, so it correctly inserts (the
+ *     creator re-opened the thread).
+ *
+ * De-duplicates WITHIN the turn too: two incoming questions that normalize to
+ * the same key produce a single plan item (the first wording wins).
+ *
+ * @param categoryOf optional best-effort bucket for a question (§4.4 / O5).
+ */
+export function buildQuestionObligationPlan(
+  creatorQuestions: string[] | undefined,
+  existingOpenRows: ConversationObligation[],
+  categoryOf?: (question: string) => string | undefined,
+): QuestionObligationPlanItem[] {
+  const openByKey = new Map<string, ConversationObligation>();
+  for (const row of existingOpenRows) {
+    if (row.type !== "CREATOR_QUESTION") continue;
+    // First open row per key wins the touch target (there's at most one under
+    // the partial-unique index anyway).
+    if (!openByKey.has(row.normalizedKey)) openByKey.set(row.normalizedKey, row);
+  }
+
+  const plan: QuestionObligationPlanItem[] = [];
+  const seenThisTurn = new Set<string>();
+  for (const raw of creatorQuestions ?? []) {
+    if (typeof raw !== "string") continue;
+    const originalText = raw.trim();
+    if (!originalText) continue;
+    const normalizedKey = normalizeObligationKey(originalText);
+    if (!normalizedKey) continue;
+    if (seenThisTurn.has(normalizedKey)) continue; // collapse intra-turn repeats
+    seenThisTurn.add(normalizedKey);
+
+    const category = categoryOf?.(originalText);
+    const existing = openByKey.get(normalizedKey);
+    if (existing) {
+      plan.push({
+        op: "touch",
+        existingId: existing.id,
+        originalText,
+        normalizedKey,
+        ...(category ? { category } : {}),
+      });
+    } else {
+      plan.push({
+        op: "insert",
+        originalText,
+        normalizedKey,
+        ...(category ? { category } : {}),
+      });
+    }
+  }
+  return plan;
+}
+
+/** The AI-context read: non-terminal obligations split by type (§4.7). */
+export interface OpenObligations {
+  openQuestions: string[];
+  openCommitments: string[];
+}
+
+/**
+ * Split a set of NON-TERMINAL obligation rows into the openQuestions (fed to the
+ * /draft must-answer checklist, unchanged field) and openCommitments (the new
+ * "outstanding Pluvus commitments" block). Callers pass the rows from
+ * listOpenObligationsByInstance; this is pure so it's trivially testable.
+ * De-duplicated case-insensitively, order preserved (rows arrive chronological).
+ */
+export function buildOpenObligations(
+  rows: ConversationObligation[],
+): OpenObligations {
+  const openQuestions: string[] = [];
+  const openCommitments: string[] = [];
+  const seenQ = new Set<string>();
+  const seenC = new Set<string>();
+  for (const row of rows) {
+    const text = row.originalText.trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (row.type === "CREATOR_QUESTION") {
+      if (seenQ.has(key)) continue;
+      seenQ.add(key);
+      openQuestions.push(text);
+    } else if (row.type === "PLUVUS_COMMITMENT") {
+      if (seenC.has(key)) continue;
+      seenC.add(key);
+      openCommitments.push(text);
+    }
+  }
+  return { openQuestions, openCommitments };
+}
+
+// ---------------------------------------------------------------------------
+// drafting-humanization (§Conversation State): the two STYLE hints for /draft
+// ---------------------------------------------------------------------------
+// Both are purely stylistic — the money decision never reads them — and both
+// default so an unset value reproduces today's copy exactly. Pure functions over
+// already-fetched context so they're unit-testable without a DB.
+
+/**
+ * Which offer terms actually CHANGED this turn, so the offer copy can state the
+ * delta instead of restating the full state (§Repetition Reduction).
+ *
+ * Only the fixed FEE is negotiated per-turn here (commission / perk / deliverables
+ * / timeline are fixed campaign config, never re-proposed), so this diffs the rate
+ * we're putting on the table this turn against the last rate we offered
+ * (`priorContext.currentOffer`, tracked by buildPriorContextFromEvents). Returns
+ * ["fee"] when the fee is being presented for the FIRST time (no prior offer) or
+ * differs from our last offer; [] when it's unchanged or absent — in which case
+ * the agent omits the delta hint and falls back to "restate only what was asked",
+ * i.e. today's behavior.
+ */
+export function computeChangedFields(
+  priorContext: PriorNegotiationContext,
+  proposedRate: number | undefined,
+): ChangedField[] {
+  if (proposedRate === undefined || !Number.isFinite(proposedRate)) return [];
+  const lastOffer = priorContext.currentOffer;
+  // First offer (no prior rate on the table) → the fee is news. A changed rate
+  // vs our last offer → news. Same rate as last time → not news (don't restate).
+  if (lastOffer === undefined || lastOffer !== proposedRate) return ["fee"];
+  return [];
+}
+
+/**
+ * Coarse relationship-warmth for the offer email's tone (§Progressive Conversation
+ * Behaviour). Derived from round count + a cheap cooperativeness read, never from
+ * anything confidential:
+ *   "new"         — round <= 1 (first offer; today's round-1 tone).
+ *   "warming"     — mid-thread and engaged (default once past round 1).
+ *   "established" — a cooperative back-and-forth that's deep in the thread: the
+ *                   creator has engaged over multiple rounds AND either moved
+ *                   toward our number or we're near the round ceiling (closing out).
+ *
+ * `creatorMovedToward` is the caller's optional read of "did the creator concede
+ * toward us" (e.g. their ask dropped). Absent/false is safe — warmth then steps up
+ * to "established" only via thread depth, never below the round-derived rung. The
+ * agent takes the WARMER of this hint and what `round` implies, so this can only
+ * add warmth, never cool the email.
+ */
+export function computeRelationshipWarmth(args: {
+  round: number;
+  maxRounds: number;
+  priorTurnCount: number;
+  creatorMovedToward?: boolean;
+}): RelationshipWarmth {
+  const { round, maxRounds, priorTurnCount, creatorMovedToward } = args;
+  if (round <= 1) return "new";
+  // Engaged = we've actually exchanged prior turns (not a one-shot). Deep = we're
+  // at least a third of the way through the round budget (maxRounds <= 0 means
+  // unlimited, so depth alone can't trigger "established" there — cooperation can).
+  const engaged = priorTurnCount >= 1;
+  const deep = maxRounds > 0 && round >= Math.max(2, Math.ceil(maxRounds / 3));
+  if (engaged && (creatorMovedToward === true || deep)) return "established";
+  return "warming";
 }

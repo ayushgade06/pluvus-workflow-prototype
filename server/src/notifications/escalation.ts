@@ -48,7 +48,6 @@ import {
   listMessagesByInstance,
 } from "../db/index.js";
 import { findDealHandoffByInstance } from "../db/dealHandoffs.js";
-import { formatAgreedCompensation } from "../engine/dealTerms.js";
 import { buildDraftHistory } from "../engine/executors/negotiationHistory.js";
 import type { DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import type { IEmailProvider } from "../engine/providers.js";
@@ -99,6 +98,13 @@ const REASON_LABELS: Record<string, string> = {
 // exactly once while a retried delivery cannot double-send.
 export const DEAL_FINALIZATION_REASON = "needs_deal_finalization";
 export const HANDOFF_REPLY_REASON_PREFIX = "handoff_reply";
+
+// The human name the brand confirmation email is signed with. The handoff note
+// is written to read like a real campaign manager, not a system alert, so it
+// carries a person's name rather than "— Pluvus Workflow Automation". A single
+// operator runs the pilot today; when that changes, source this per-deployment
+// (env var / campaign config) instead of the constant.
+const HANDOFF_SENDER_NAME = "Ricky";
 
 function reasonLabel(reason: string): string {
   return REASON_LABELS[reason] ?? `it was escalated for human review (${reason})`;
@@ -714,50 +720,108 @@ export async function notifyBrandOfEscalation(
 // PLU-70 — operator handoff notices
 // ---------------------------------------------------------------------------
 
+/** Render a dollar amount without a trailing ".0" (e.g. 560 → "$560"). */
+function formatDollars(n: number): string {
+  return `$${Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)))}`;
+}
+
 /**
- * "A creator agreed and the deal is waiting on you."
+ * The "Fee" line of the confirmation email: the agreed fixed fee, with the
+ * negotiation range in parentheses when it was captured — e.g.
+ *   "$560 (your range: $500-$600)".
+ * Commission-only deals (no fixed fee) return null so the caller omits the line;
+ * the "Commission" line still states the commission.
+ */
+function formatFeeLine(handoff: DealHandoff): string | null {
+  const { fixedFee, negotiationFloor, negotiationCeiling } = handoff;
+  if (typeof fixedFee !== "number" || !Number.isFinite(fixedFee) || fixedFee <= 0) {
+    return null;
+  }
+  const hasRange =
+    typeof negotiationFloor === "number" &&
+    Number.isFinite(negotiationFloor) &&
+    typeof negotiationCeiling === "number" &&
+    Number.isFinite(negotiationCeiling);
+  const range = hasRange
+    ? ` (your range: ${formatDollars(negotiationFloor!)}-${formatDollars(negotiationCeiling!)})`
+    : "";
+  return `${formatDollars(fixedFee)}${range}`;
+}
+
+/**
+ * "A creator agreed to terms — reply Yes to approve."
+ *
+ * Written to read like a real campaign manager wrote it, not a system alert:
+ * it restates the agreed terms as a confirmation request and asks the brand to
+ * reply "Yes" to approve. It carries the AGREEMENT, not the conversation — the
+ * operator opens the execution inspector when they want the thread.
  *
  * Reuses the campaign's existing escalation contact and the existing email
  * transport — there is no separate notification-email configuration for handoff.
- * The only deliberate difference from buildEscalationEmail is brevity: this one
- * carries the AGREEMENT, not the conversation. The operator opens the execution
- * inspector when they want the thread.
+ *
+ * NOTE (copy only): the "reply Yes" ask is currently answered by a human. There
+ * is no inbound "Yes" parser wired to auto-advance the deal — the operator reads
+ * the reply and finalizes it in the Manual Queue as before.
  */
 export function buildDealFinalizationEmail(
   ctx: EscalationContext,
   handoff: DealHandoff,
 ): EmailDraft {
   const { creator, brandName } = ctx;
-  const brand = brandName ?? "your brand";
+  const campaignLabel = handoff.campaignName ?? ctx.campaignName;
   const creatorLine = creator.handle
     ? `${creator.name} (@${creator.handle})`
     : creator.name;
 
-  const subject = `Creator agreement ready for finalization — ${creator.name}`;
+  const subject = `${creator.name} agreed to terms${
+    campaignLabel ? ` — ${campaignLabel}` : ""
+  } (please confirm)`;
+
+  const feeLine = formatFeeLine(handoff);
+  const hasCommission =
+    typeof handoff.commissionRate === "number" &&
+    Number.isFinite(handoff.commissionRate) &&
+    handoff.commissionRate > 0;
+
+  // Lead line — "within the range you set" only when we actually captured a band.
+  const hasRange =
+    typeof handoff.negotiationFloor === "number" &&
+    Number.isFinite(handoff.negotiationFloor) &&
+    typeof handoff.negotiationCeiling === "number" &&
+    Number.isFinite(handoff.negotiationCeiling);
+  const leadRange = hasRange ? ", within the range you set" : "";
+  const campaignPhrase = campaignLabel ? ` for the ${campaignLabel} campaign` : "";
 
   const lines = [
-    `Hi ${brand} team,`,
+    `Hi ${brandName ?? "there"},`,
     ``,
-    `${creator.name} accepted the offer. The automated workflow has PAUSED here — the deal now needs a human to finalize it and onboard them in Pluvus.`,
+    `${creator.name} has agreed to terms${campaignPhrase}${leadRange}. Details below for your confirmation:`,
     ``,
-    `Creator:       ${creatorLine}`,
-    `Email:         ${creator.email}`,
-    ...(handoff.campaignName ? [`Campaign:      ${handoff.campaignName}`] : []),
-    `Compensation:  ${formatAgreedCompensation(handoff.fixedFee, handoff.commissionRate)}`,
-    ...(handoff.deliverables ? [`Deliverables:  ${handoff.deliverables}`] : []),
-    ...(handoff.timeline ? [`Timeline:      ${handoff.timeline}`] : []),
+    `Terms agreed`,
+    `Creator: ${creatorLine}${creator.platform ? ` on ${creator.platform}` : ""}`,
+    ...(feeLine ? [`Fee: ${feeLine}`] : []),
+    ...(hasCommission
+      ? [`Commission: ${formatAmount(handoff.commissionRate!)}% on sales through the referral link`]
+      : []),
+    ...(handoff.deliverables ? [`Deliverables: ${handoff.deliverables}`] : []),
+    ...(handoff.timeline ? [`Timeline: ${handoff.timeline}`] : []),
     ...(handoff.paymentTerms ? [`Payment terms: ${handoff.paymentTerms}`] : []),
-    `Accepted:      ${handoff.acceptedAt.toISOString()}`,
-    `Execution:     ${handoff.instanceId}`,
+    ...(handoff.rewardDescription ? [`Perk: ${handoff.rewardDescription}`] : []),
     ``,
-    `${creator.name} has been told a campaign manager will follow up shortly with their onboarding link.`,
+    `The creator is holding on this pending your confirmation.`,
     ``,
-    `Open the Manual Queue in the Pluvus dashboard to see the full conversation and mark the handoff complete once they're onboarded.`,
+    `Reply "Yes" to approve and we'll send the contract and move into production. If we don't hear back, we'll hold the campaign until you confirm.`,
     ``,
-    `— Pluvus Workflow Automation`,
+    `Best,`,
+    HANDOFF_SENDER_NAME,
   ];
 
   return { subject, body: lines.join("\n") };
+}
+
+/** Trim a trailing ".0" so a whole number reads as "10", not "10.0". */
+function formatAmount(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)));
 }
 
 /**

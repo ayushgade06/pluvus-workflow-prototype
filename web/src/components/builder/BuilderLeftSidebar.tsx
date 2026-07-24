@@ -9,7 +9,7 @@ import { colors, radii, font, formatTimestamp } from "../../theme";
 import { Input, StatusBadge, SectionHeader, Tooltip } from "../ds";
 import {
   nodeLabel,
-  nodeIcon,
+  nodeIconComponent,
   nodeColor,
   nodeDescription,
   nodeTypeToState,
@@ -187,6 +187,7 @@ function NodeIndexItem({
   isLast: boolean;
 }) {
   const color = nodeColor(node.type);
+  const Icon = nodeIconComponent(node.type);
   const nodeIssueList = issues && issues.length ? dedupeIssues(issues) : [];
   const validity = nodeValidity(nodeIssueList); // "ok" | "warning" | "error"
   const issueColor = validity === "error" ? colors.danger : colors.warning;
@@ -237,16 +238,16 @@ function NodeIndexItem({
             width: 24,
             height: 24,
             borderRadius: 7,
-            background: `${color}1c`,
-            border: `1px solid ${color}26`,
+            background: `${color}2e`,
+            border: `1.5px solid ${colors.cardBorder}`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 12,
+            color: colors.text,
             flexShrink: 0,
           }}
         >
-          {nodeIcon(node.type)}
+          <Icon size={13} strokeWidth={2.25} />
         </span>
         <span
           style={{

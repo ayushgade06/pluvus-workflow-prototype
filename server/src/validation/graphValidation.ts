@@ -12,6 +12,8 @@
 // only the input adapter (NodeSnapshot[] → graph) differs.
 // ---------------------------------------------------------------------------
 
+import { validateOutreachConfig } from "../engine/outreachVariables.js";
+
 export type Severity = "error" | "warning";
 
 export interface ValidationIssue {
@@ -419,12 +421,14 @@ export function validateWorkflowGraph(
 function validateNodeConfig(n: GNode): ValidationIssue | null {
   const cfg = n.config ?? {};
   switch (n.type) {
-    case "INITIAL_OUTREACH":
-      if (!nonEmpty(cfg["subjectTemplate"]))
-        return err(n, "MISSING_SUBJECT", "Initial Outreach needs an email subject.");
-      if (!nonEmpty(cfg["bodyTemplate"]))
-        return err(n, "MISSING_BODY", "Initial Outreach needs an email body.");
-      return null;
+    case "INITIAL_OUTREACH": {
+      // Manual Initial Outreach: mode-aware validation lives in the shared
+      // outreachVariables module (one source of truth with the renderer + web
+      // palette). Manual mode requires subject+body; both modes reject an
+      // unknown {{variable}} so a typo can never mail literal braces.
+      const issue = validateOutreachConfig(cfg);
+      return issue ? err(n, issue.code, issue.message) : null;
+    }
     case "FOLLOW_UP":
       if (!nonEmpty(cfg["bodyTemplate"]))
         return err(n, "MISSING_FOLLOWUP_BODY", "Follow-Up needs an email body.");

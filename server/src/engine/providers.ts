@@ -9,6 +9,7 @@ import type {
 import { MockNegotiationProvider } from "../adapters/negotiation/MockNegotiationProvider.js";
 import type { NegotiationTerm, NegotiationHistoryEntry, DraftHistoryEntry } from "../adapters/negotiation/types.js";
 import { resolveBand } from "./band.js";
+import { resolveOutreachTemplate } from "./outreachVariables.js";
 
 // ---------------------------------------------------------------------------
 // IEmailProvider
@@ -151,28 +152,28 @@ export class MockEmailProvider implements IEmailProvider {
     template: string,
     config: Record<string, unknown>,
   ): Promise<EmailDraft> {
+    // senderName / platform are used by the generic fallback body below when no
+    // template is supplied. All {{variable}} substitution in a supplied template
+    // is done by resolveOutreachTemplate (the shared allow-list), not here. The
+    // sender is the campaign brand (brandName or senderName) — NEVER the internal
+    // "Pluvus Partnerships" name, which must not appear in a brand's outreach.
     const senderName =
-      typeof config["senderName"] === "string" ? config["senderName"] : "Pluvus Partnerships";
-    const brandName =
-      typeof config["brandName"] === "string" ? config["brandName"] : senderName;
+      (typeof config["senderName"] === "string" && config["senderName"]) ||
+      (typeof config["brandName"] === "string" && config["brandName"]) ||
+      "our team";
     const platform =
       typeof creator.platform === "string" ? creator.platform : "social media";
-    // Free-text product/sample reward blurb stamped from the campaign. Empty
-    // when the campaign is cash-only, so {{rewardDescription}} resolves to "".
-    const rewardDescription =
-      typeof config["rewardDescription"] === "string" ? config["rewardDescription"] : "";
 
     const subjectTemplate =
       typeof config["subjectTemplate"] === "string" ? config["subjectTemplate"] : "";
 
-    const resolve = (s: string) =>
-      s
-        .replace(/\{\{creatorName\}\}/g, creator.name)
-        .replace(/\{\{brandName\}\}/g, brandName)
-        .replace(/\{\{senderName\}\}/g, senderName)
-        .replace(/\{\{platform\}\}/g, platform)
-        .replace(/\{\{niche\}\}/g, creator.niche ?? "your niche")
-        .replace(/\{\{rewardDescription\}\}/g, rewardDescription);
+    // Variable substitution goes through the shared allow-list resolver
+    // (outreachVariables.ts) so the renderer, graph validation, and the builder
+    // palette can never disagree on which {{tokens}} exist. It resolves every
+    // allow-listed variable and STRIPS any unknown token to "" — the send-time
+    // net that keeps literal {{braces}} out of a creator's inbox even if a typo
+    // slipped past publish validation.
+    const resolve = (s: string) => resolveOutreachTemplate(s, creator, config);
 
     // Use node config template when provided; fall back to generic body.
     const body = template.trim()
@@ -283,9 +284,27 @@ export interface IAgentProvider {
       // earlier unanswered question rather than dropping it.
       history?: DraftHistoryEntry[];
       openQuestions?: string[];
+      // PLU-111: outstanding Pluvus commitments (non-terminal PLUVUS_COMMITMENT
+      // obligations) so the copy honors or updates a promise we made earlier
+      // (e.g. "I'll confirm the usage rights"). Additive — empty → copy unchanged.
+      openCommitments?: string[];
       // Q3 (founder, autonomous launch): true on the LAST negotiation round so
       // the offer email states finality to the creator.
       isFinalRound?: boolean;
+      // drafting-humanization (§Conversation State): style hints so the offer copy
+      // states deltas (not full state) and warms up across the thread. Both purely
+      // stylistic; absent = today's behavior.
+      changedFields?: string[];
+      relationshipWarmth?: string;
+      // Option A (negotiate→draft answer sync): the /negotiate model's OWN written
+      // reply for this turn (its responseDraft) — the vetted answers to every
+      // creator question. The copy model rephrases THESE instead of re-deriving
+      // answers from raw facts (which is where the cheaper copy model invents perk/
+      // term details the campaign never specified). Threaded ONLY when the money
+      // guards did NOT alter the decision (a guard-altered decision has no advisory
+      // draft, so the copy can never restate a number that contradicts the recorded
+      // deal). Absent = today's behavior exactly.
+      negotiatorAnswers?: string;
     },
   ): Promise<EmailDraft | null>;
 }
@@ -443,6 +462,16 @@ export function buildNegotiationRequest(
   // any legacy caller that doesn't build it are unchanged.
   const conversationHistory = priorContext?.conversationHistory;
 
+  // PLU-111 (O6): outstanding Pluvus commitments — sanitized DATA, never a money
+  // input. Attached only when non-empty so first-contact / no-commitment behavior
+  // is unchanged.
+  const openCommitments = priorContext?.openCommitments;
+
+  // classify→negotiate hint: the first-reply classifier's intent, forwarded as a
+  // SOFT advisory signal (agent renders a one-line hint). Never a money input.
+  // Attached only when present so a mid-negotiation / un-classified turn is unchanged.
+  const intent = priorContext?.intent;
+
   return {
     creatorReply,
     currentOffer,
@@ -450,6 +479,8 @@ export function buildNegotiationRequest(
     maxRounds,
     negotiationHistory,
     ...(conversationHistory && conversationHistory.length ? { conversationHistory } : {}),
+    ...(openCommitments && openCommitments.length ? { openCommitments } : {}),
+    ...(intent ? { intent } : {}),
     campaignConstraints: {
       termFloor,
       termCeiling,
@@ -505,6 +536,14 @@ export function mapNegotiationResponse(
     // outcome so the offer branches (accept/counter/present_offer) can thread it
     // into /draft. Only spread when true so non-final turns leave it undefined.
     ...(resp.isFinalRound === true ? { isFinalRound: true as const } : {}),
+    // Option A (negotiate→draft answer sync): carry the GENUINE advisory draft
+    // (responseDraft) distinctly from `message` (which has a fallback). Set only
+    // when the agent returned a real, non-empty draft — i.e. the LLM strategy ran
+    // and the guards did NOT null it. The offer branches thread this into /draft as
+    // negotiatorAnswers so the copy rephrases approved answers instead of inventing.
+    ...(typeof resp.responseDraft === "string" && resp.responseDraft.trim()
+      ? { negotiatorAnswers: resp.responseDraft }
+      : {}),
   };
 
   switch (resp.action) {

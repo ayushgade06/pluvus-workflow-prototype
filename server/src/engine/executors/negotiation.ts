@@ -1,14 +1,20 @@
 import {
   listMessagesByInstance,
   listEventsByInstance,
+  listOpenObligationsByInstance,
 } from "../../db/index.js";
-import type { Message } from "../../db/schema.js";
+import type { ConversationObligation, Message } from "../../db/schema.js";
 import type { ExecutionContext, NodeResult, NegotiationHistoryEntryLite, PriorNegotiationContext, EmailDraft } from "../types.js";
 import type { IEmailProvider, IAgentProvider } from "../providers.js";
 import {
   buildPriorContextFromEvents,
   buildDraftHistory,
   computeOpenQuestions,
+  buildOpenObligations,
+  buildQuestionObligationPlan,
+  type QuestionObligationPlanItem,
+  computeChangedFields,
+  computeRelationshipWarmth,
 } from "./negotiationHistory.js";
 import { resolveBriefKnowledge } from "./briefKnowledge.js";
 import { scanOutboundDraft, guardConstraintsFromConfig } from "../guards/outputGuard.js";
@@ -375,6 +381,25 @@ export function escalateNoCeiling(args: { round: number }): NodeResult {
   };
 }
 
+// PLU-111 (§4.4 / O5): a light, best-effort category bucket for a creator
+// question, keyword-detected from the text. Optional metadata only (never a
+// control-flow input) — an unmatched question gets `undefined`, which is fine.
+// Kept deliberately small; the robust taxonomy is a flagged follow-up.
+const OBLIGATION_CATEGORY_PATTERNS: { category: string; re: RegExp }[] = [
+  { category: "usage_rights", re: /\busage rights?\b|\blicens|\bexclusiv|\bwhitelist|\busage of\b/i },
+  { category: "shipping", re: /\bship|\bshipping\b|\baddress\b|\bdeliver(?:y|ed)\b|\btracking\b/i },
+  { category: "timeline", re: /\bdeadline\b|\btimeline\b|\bwhen\b.*\b(?:live|due|post|deliver)|\bhow long\b|\bturnaround\b/i },
+  { category: "payment", re: /\bpay(?:ment|out)?\b|\binvoice\b|\bnet ?\d+\b|\bwhen.*paid\b|\bpaypal\b|\bbank\b/i },
+  { category: "deliverables", re: /\bdeliverabl|\bhow many\b|\breels?\b|\bstories\b|\bposts?\b|\bvideos?\b/i },
+];
+
+function detectObligationCategory(question: string): string | undefined {
+  for (const { category, re } of OBLIGATION_CATEGORY_PATTERNS) {
+    if (re.test(question)) return category;
+  }
+  return undefined;
+}
+
 export async function executeNegotiation(
   ctx: ExecutionContext,
   email: IEmailProvider,
@@ -486,6 +511,15 @@ export async function executeNegotiation(
   // Empty on the first negotiation turn, so first-contact copy is unchanged.
   const draftHistory = buildDraftHistory(allInboundSource, brandReplyMsgIds, priorEvents);
 
+  // PLU-111: load this instance's NON-TERMINAL obligations ONCE, up front. The
+  // outstanding Pluvus commitments feed BOTH /negotiate (below) and /draft (§4.7,
+  // O6); the open questions + the write-plan are derived after the model returns
+  // (they depend on this turn's creatorQuestions). Empty for pre-existing / fresh
+  // instances → every downstream use no-ops and falls back to today's behavior.
+  const openObligationRows = await listOpenObligationsByInstance(instance.id);
+  const ledgerSplit = buildOpenObligations(openObligationRows);
+  const openCommitments = ledgerSplit.openCommitments;
+
   // F-H1: thread that SAME full both-sides transcript into the money-decision
   // model (not just the copywriter). The negotiator previously saw only our-side
   // moves (`priorContext.history`) + the single latest inbound line, so it was
@@ -495,9 +529,24 @@ export async function executeNegotiation(
   // first-contact behavior. `buildNegotiationRequest` only attaches it when
   // non-empty, and the agent renders it as a sanitized <conversation_history>
   // DATA block, so the money guards and injection defenses are unaffected.
-  const negotiationContext: PriorNegotiationContext = draftHistory.length
-    ? { ...priorContext, conversationHistory: draftHistory }
-    : priorContext;
+  //
+  // PLU-111 (O6): openCommitments ride along as sanitized DATA so the negotiator
+  // knows it owes an action — NEVER a money input. Attached only when non-empty.
+  //
+  // classify→negotiate hint: the first-reply classifier's intent for the reply
+  // being negotiated (persisted on the inbound Message row). Threaded as a SOFT
+  // advisory signal only — never a money input, never an override of the guards. A
+  // mid-negotiation reply (round >= 1) skips classify so replyIntent is null there;
+  // NEGATIVE/OPT_OUT never reach negotiation (routed terminal upstream). Attached
+  // only when present so the prompt renders exactly as before otherwise.
+  const classifiedIntent =
+    typeof latestInbound?.replyIntent === "string" ? latestInbound.replyIntent : undefined;
+  const negotiationContext: PriorNegotiationContext = {
+    ...priorContext,
+    ...(draftHistory.length ? { conversationHistory: draftHistory } : {}),
+    ...(openCommitments.length ? { openCommitments } : {}),
+    ...(classifiedIntent ? { intent: classifiedIntent } : {}),
+  };
 
   // creatorQuestions / pushedFixedTerms: the comprehension /negotiate already did
   // (the creator's questions + which fixed terms they pushed), threaded across
@@ -511,7 +560,7 @@ export async function executeNegotiation(
   // feeds the MONEY path (context.creatorRate on a brand decision, which a brand
   // APPROVE records as the deal rate). The regex remains a fallback for copy
   // acknowledgment and guard allowlisting only.
-  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound } =
+  const { outcome, message, proposedRate, creatorQuestions, pushedFixedTerms, creatorRequestedRate, escalationReason, isFinalRound, negotiatorAnswers } =
     await agent.negotiate(instance.negotiationRound, config, creatorReply, negotiationContext);
 
   // For acknowledgment copy + the output-guard allowlist (NOT the money path):
@@ -525,16 +574,97 @@ export async function executeNegotiation(
   const briefKnowledge = await resolveBriefKnowledge(nodeGraph);
   const draftConfig = briefKnowledge ? { ...config, briefKnowledge } : config;
 
-  // HARD-N2: questions the creator raised in EARLIER rounds that we never carried
-  // forward — re-surfaced so a round-1 question dropped by round 3 isn't lost.
-  // Computed from the creatorQuestions persisted on prior NEGOTIATION_TURN events
-  // (see the eventPayload writes below), minus this turn's questions.
-  const openQuestions = computeOpenQuestions(priorEvents, creatorQuestions);
-  // Shared HARD-N2 draft context threaded into every draftEmail call this turn.
+  // PLU-111: the durable obligation ledger (loaded above) supersedes the event-
+  // diff as the source of "what creator questions are still open". FALLBACK
+  // (invariant #6, §4.7): when the ledger has NO rows for this instance (a
+  // pre-existing/old instance created before this feature, or a genuinely empty
+  // table), fall back to computeOpenQuestions so behavior is byte-identical to
+  // today. The ledger's ANSWERED rows have already dropped out, so a still-open
+  // question surfaces here and an answered one does not.
+  let openQuestions: string[];
+  if (openObligationRows.length > 0) {
+    const seen = new Set<string>();
+    openQuestions = [];
+    for (const q of ledgerSplit.openQuestions) {
+      const k = q.trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      openQuestions.push(q);
+    }
+  } else {
+    // Empty ledger → today's HARD-N2 event-diff behavior, byte-identical.
+    openQuestions = computeOpenQuestions(priorEvents, creatorQuestions);
+  }
+
+  // PLU-111 (§4.4): the create/update plan for THIS turn's creator questions
+  // against the existing open rows (pure; applied in-tx by the runtime, §4.6).
+  // Built even when the ledger was previously empty — this is what starts
+  // populating it. The reserve-time resolution link is attached per-branch below,
+  // once we know the reserved outbound messageId.
+  const questionPlan = buildQuestionObligationPlan(
+    creatorQuestions,
+    openObligationRows,
+    detectObligationCategory,
+  );
+
+  // drafting-humanization (§Conversation State): the two STYLE hints threaded into
+  // /draft so the offer copy states deltas (not full state) and warms up across the
+  // thread. Both are purely stylistic — the money decision above already ran and
+  // never reads them — and both default so an unset value renders as today.
+  //   changedFields — "fee" when the rate we're presenting is new/changed vs our
+  //     last offer; [] when unchanged (agent then omits the delta hint). Uses
+  //     proposedRate, the number this turn actually puts on the table.
+  //   relationshipWarmth — from the round + a cheap cooperativeness read. The
+  //     creator "moved toward us" when their current ask is at or below the rate we
+  //     last offered (they've met us or come under). ackRequestedRate is the
+  //     agent's validated read of their ask (regex fallback), and currentOffer is
+  //     our last standing number — both already computed above, no extra work.
+  const changedFields = computeChangedFields(priorContext, proposedRate);
+  const creatorMovedToward =
+    ackRequestedRate !== undefined &&
+    priorContext.currentOffer !== undefined &&
+    ackRequestedRate <= priorContext.currentOffer;
+  const relationshipWarmth = computeRelationshipWarmth({
+    round: instance.negotiationRound,
+    maxRounds,
+    priorTurnCount: priorContext.history.length,
+    creatorMovedToward,
+  });
+
+  // Shared HARD-N2 / PLU-111 + humanization draft context threaded into every
+  // draftEmail call this turn. openCommitments is additive (PLU-111);
+  // changedFields/relationshipWarmth are the humanization style hints, only
+  // meaningful on the offer purposes (counter/accept/present) — the branches
+  // below spread this into exactly those. Empty changedFields is omitted so the
+  // request stays minimal; every field defaults so the copy is unchanged when unset.
   const draftHistoryExtra = {
     ...(draftHistory.length ? { history: draftHistory } : {}),
     ...(openQuestions.length ? { openQuestions } : {}),
+    ...(openCommitments.length ? { openCommitments } : {}),
+    ...(changedFields.length ? { changedFields } : {}),
+    relationshipWarmth,
+    // Option A (negotiate→draft answer sync): thread the negotiator's OWN vetted
+    // answers into the copy so it rephrases them instead of re-deriving (and
+    // hallucinating) answers from raw facts. Present ONLY when the agent returned a
+    // genuine advisory draft — the mapper sets negotiatorAnswers only when the LLM
+    // strategy ran AND the guards did NOT null responseDraft, so a guard-altered
+    // decision (or rules mode) threads nothing and the copy renders exactly as
+    // before. Spread only when non-empty to keep the request minimal. Renders in the
+    // offer/onboarding prompts (the answer-bearing purposes); a no-op elsewhere.
+    ...(negotiatorAnswers && negotiatorAnswers.trim() ? { negotiatorAnswers } : {}),
   };
+
+  // The reserve-time obligation writes shared across the send branches. The
+  // runtime applies these in-tx; `reservedResolutionMessageId` is filled from the
+  // branch's reserved outbound messageId. sourceMessageId is the inbound row that
+  // raised the questions. Escalation ids are attached only on the escalate path.
+  const buildObligationWrites = (
+    reservedMessageId: string | undefined,
+  ): NonNullable<NodeResult["obligationWrites"]> => ({
+    questionPlan,
+    ...(latestInbound?.id ? { sourceMessageId: latestInbound.id } : {}),
+    ...(reservedMessageId ? { reservedResolutionMessageId: reservedMessageId } : {}),
+  });
 
   switch (outcome) {
     case "present_offer": {
@@ -574,7 +704,9 @@ export async function executeNegotiation(
       // quotes a fee. (For the mock provider, null just means "use the template";
       // that path keeps the existing fallback so mock-mode dev/harnesses work.)
       if (aiDraft === null && agent.generatesDraftCopy) {
-        return draftUnavailable(instance.negotiationRound, "present_offer");
+        // PLU-111: record this turn's questions (open, unresolved) but attach NO
+        // resolution link — a failed draft must not mark a question answered.
+        return { ...draftUnavailable(instance.negotiationRound, "present_offer"), obligationWrites: buildObligationWrites(undefined) };
       }
       const body = aiDraft?.body ?? message;
       const draft = aiDraft ?? await email.draft(creator, body, config);
@@ -587,7 +719,7 @@ export async function executeNegotiation(
         guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
-        return blockedByGuard(instance.negotiationRound, guard.hits);
+        return { ...blockedByGuard(instance.negotiationRound, guard.hits), obligationWrites: buildObligationWrites(undefined) };
       }
 
       // Idempotent send keyed on (instance, present, round, inbound message id).
@@ -611,6 +743,10 @@ export async function executeNegotiation(
         nextNodeId: node.id,
         ...(presentConsumesRound ? { negotiationRound: presentRound } : {}),
         ...(present.deferredSend ? { deferredSend: present.deferredSend } : {}),
+        // PLU-111: create/update this turn's question obligations and LINK the
+        // reserved reply as their intended resolver (§4.5 step 1). The ANSWERED
+        // transition fires later, at flush, only if the row actually sends.
+        obligationWrites: buildObligationWrites(present.deferredSend?.messageId),
         eventType: "NEGOTIATION_TURN",
         eventPayload: {
           outcome: "present_offer",
@@ -644,6 +780,12 @@ export async function executeNegotiation(
           nextNodeId: null,
           completedAt: new Date(),
           eventType: "NEGOTIATION_TURN",
+          // PLU-111: still record this turn's questions on the ledger. No email is
+          // sent from this branch (a downstream node owns it), so there is no
+          // resolution link — the questions stay OPEN until a later sent reply
+          // answers them (or the downstream node's send does, once it too is
+          // wired). Conservative: never resolve without a real send.
+          obligationWrites: buildObligationWrites(undefined),
           eventPayload: {
             outcome,
             round: instance.negotiationRound,
@@ -685,7 +827,7 @@ export async function executeNegotiation(
       // REAL AI generator returns null (retries exhausted), escalate to a human.
       // (Mock null → keep the template fallback so harnesses still close deals.)
       if (aiDraft === null && agent.generatesDraftCopy) {
-        return draftUnavailable(instance.negotiationRound, purpose);
+        return { ...draftUnavailable(instance.negotiationRound, purpose), obligationWrites: buildObligationWrites(undefined) };
       }
       const body = aiDraft?.body ?? message;
 
@@ -700,7 +842,7 @@ export async function executeNegotiation(
         guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
-        return blockedByGuard(instance.negotiationRound, guard.hits);
+        return { ...blockedByGuard(instance.negotiationRound, guard.hits), obligationWrites: buildObligationWrites(undefined) };
       }
 
       // FIX-11 + §4.1: reserve the acceptance/onboarding email keyed on
@@ -717,6 +859,9 @@ export async function executeNegotiation(
         completedAt: new Date(),
         eventType: "NEGOTIATION_TURN",
         ...(accept.deferredSend ? { deferredSend: accept.deferredSend } : {}),
+        // PLU-111: the onboarding/acceptance email answers this turn's questions —
+        // link it so they resolve on send (§4.5).
+        obligationWrites: buildObligationWrites(accept.deferredSend?.messageId),
         // Persist the agreed rate (FIX-2) so it is recoverable for audit and
         // for threading as currentOffer on any subsequent turn.
         eventPayload: {
@@ -748,12 +893,23 @@ export async function executeNegotiation(
       // (terminal). runtime emails the brand an FYI and the conversation surfaces
       // in the Manual Queue; a human takes over out-of-band. MED-N3: the creator's
       // ask recorded for Manual Queue context is the model's validated extraction.
-      return escalateOverCeiling({
+      const escalateResult = escalateOverCeiling({
         round: instance.negotiationRound,
         message,
         creatorRate: creatorRequestedRate,
         escalationReason,
       });
+      // PLU-111 (§4.2): record this turn's questions AND move every open
+      // obligation for this instance to ESCALATED (non-terminal) — nothing is
+      // lost, they stay in the AI context and are visible to the operator. No
+      // send happens on an escalate, so there's no resolution link.
+      return {
+        ...escalateResult,
+        obligationWrites: {
+          ...buildObligationWrites(undefined),
+          escalateAfterWrite: true,
+        },
+      };
     }
 
     case "counter": {
@@ -767,7 +923,7 @@ export async function executeNegotiation(
       // removed that loop. EASY-W1: `maxRounds <= 0` = unlimited (consistent with
       // the entry hard stop).
       if (maxRounds > 0 && newRound >= maxRounds) {
-        return maxRoundsReject(ctx, email, config, {
+        const rejectResult = await maxRoundsReject(ctx, email, config, {
           maxRounds,
           // Report the ceiling round we've reached, not a half-advanced counter.
           round: maxRounds,
@@ -775,6 +931,10 @@ export async function executeNegotiation(
           // extraction of the creator's ask (never the regex).
           creatorRate: creatorRequestedRate,
         });
+        // PLU-111: record this turn's questions (open). The courteous close email
+        // is a REJECT — it does NOT answer questions — so no resolution link. They
+        // remain visible to a human even though the run auto-closes.
+        return { ...rejectResult, obligationWrites: buildObligationWrites(undefined) };
       }
 
       // Try AI-generated counter copy; fall back to agent-provided message.
@@ -812,7 +972,7 @@ export async function executeNegotiation(
       // on a successful send below), so a human picks up at the same point.
       // (Mock null → keep the template fallback so mock-mode counters still send.)
       if (aiDraft === null && agent.generatesDraftCopy) {
-        return draftUnavailable(newRound, "counter_offer");
+        return { ...draftUnavailable(newRound, "counter_offer"), obligationWrites: buildObligationWrites(undefined) };
       }
       const body = aiDraft?.body ?? message;
 
@@ -828,7 +988,7 @@ export async function executeNegotiation(
         guardConstraintsFromConfig(config, proposedRate, ackRequestedRate),
       );
       if (!guard.ok) {
-        return blockedByGuard(newRound, guard.hits);
+        return { ...blockedByGuard(newRound, guard.hits), obligationWrites: buildObligationWrites(undefined) };
       }
 
       // FIX-11 + §4.1: reserve the counter email keyed on (instance,
@@ -844,6 +1004,9 @@ export async function executeNegotiation(
         nextNodeId: node.id,
         negotiationRound: newRound,
         ...(counter.deferredSend ? { deferredSend: counter.deferredSend } : {}),
+        // PLU-111: the counter email answers this turn's questions — link it as
+        // their intended resolver; they resolve to ANSWERED only on send (§4.5).
+        obligationWrites: buildObligationWrites(counter.deferredSend?.messageId),
         eventType: "NEGOTIATION_TURN",
         // Persist the rate we just countered with (FIX-2) so the next turn knows
         // its own last offer instead of falling back to the floor.

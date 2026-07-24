@@ -14,6 +14,8 @@ import {
   buildPriorContextFromEvents,
   buildDraftHistory,
   computeOpenQuestions,
+  computeChangedFields,
+  computeRelationshipWarmth,
 } from "./negotiationHistory.js";
 
 let n = 0;
@@ -400,6 +402,85 @@ test("returns [] when every prior question was re-asked this turn", () => {
     ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, creatorQuestions: ["what's the fee?"] }, 10),
   ];
   assert.deepEqual(computeOpenQuestions(events, ["what's the fee?"]), []);
+});
+
+// drafting-humanization (§Conversation State): the two style-hint helpers.
+
+console.log("\nnegotiationHistory.computeChangedFields (drafting-humanization)\n");
+
+test("first offer (no prior rate) → fee is news", () => {
+  const ctx = buildPriorContextFromEvents([]);
+  assert.deepEqual(computeChangedFields(ctx, 400), ["fee"]);
+});
+
+test("changed rate vs our last offer → fee is news", () => {
+  const ctx = buildPriorContextFromEvents([
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, rate: 350 }, 10),
+  ]);
+  assert.deepEqual(computeChangedFields(ctx, 400), ["fee"]);
+});
+
+test("same rate as our last offer → not news (empty)", () => {
+  const ctx = buildPriorContextFromEvents([
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, rate: 400 }, 10),
+  ]);
+  assert.deepEqual(computeChangedFields(ctx, 400), []);
+});
+
+test("no rate this turn → empty (nothing to flag)", () => {
+  const ctx = buildPriorContextFromEvents([
+    ev("NEGOTIATION_TURN", { outcome: "counter", round: 1, rate: 400 }, 10),
+  ]);
+  assert.deepEqual(computeChangedFields(ctx, undefined), []);
+});
+
+console.log("\nnegotiationHistory.computeRelationshipWarmth (drafting-humanization)\n");
+
+test("round <= 1 → new", () => {
+  assert.equal(
+    computeRelationshipWarmth({ round: 1, maxRounds: 5, priorTurnCount: 0 }),
+    "new",
+  );
+});
+
+test("mid-thread, engaged, not deep, no concession → warming", () => {
+  assert.equal(
+    computeRelationshipWarmth({ round: 2, maxRounds: 9, priorTurnCount: 1 }),
+    "warming",
+  );
+});
+
+test("engaged + creator moved toward us → established", () => {
+  assert.equal(
+    computeRelationshipWarmth({ round: 2, maxRounds: 9, priorTurnCount: 1, creatorMovedToward: true }),
+    "established",
+  );
+});
+
+test("engaged + deep in the round budget → established", () => {
+  // maxRounds 6 → deep threshold = ceil(6/3) = 2; round 3 >= 2 and engaged.
+  assert.equal(
+    computeRelationshipWarmth({ round: 3, maxRounds: 6, priorTurnCount: 2 }),
+    "established",
+  );
+});
+
+test("unlimited maxRounds (<=0): depth can't trigger established, cooperation can", () => {
+  assert.equal(
+    computeRelationshipWarmth({ round: 4, maxRounds: 0, priorTurnCount: 3 }),
+    "warming",
+  );
+  assert.equal(
+    computeRelationshipWarmth({ round: 4, maxRounds: 0, priorTurnCount: 3, creatorMovedToward: true }),
+    "established",
+  );
+});
+
+test("not engaged (no prior turns) stays warming even when deep", () => {
+  assert.equal(
+    computeRelationshipWarmth({ round: 3, maxRounds: 6, priorTurnCount: 0 }),
+    "warming",
+  );
 });
 
 console.log(`\n✓ negotiationHistory: all ${n} tests passed\n`);
